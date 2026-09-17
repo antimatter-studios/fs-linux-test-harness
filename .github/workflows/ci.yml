@@ -31,10 +31,6 @@ permissions:
 
 env:
   CHORE_VERSION: "0.11.0"
-  VAGRANT_VERSION: "2.4.9"
-  VAGRANT_QEMU_VERSION: "0.6.3"
-  # Must match the box pinned in vagrant/Vagrantfile; keys the box cache.
-  BOX_VERSION: "20260909.2596.0"
 
 jobs:
   unit:
@@ -63,15 +59,16 @@ jobs:
       - uses: ./.github/actions/install-chore
         with:
           version: ${{ env.CHORE_VERSION }}
-      - uses: ./.github/actions/install-vagrant-qemu
-        with:
-          vagrant-version: ${{ env.VAGRANT_VERSION }}
-          vagrant-qemu-version: ${{ env.VAGRANT_QEMU_VERSION }}
+      # The same script every consumer's CI runs from its sibling
+      # checkout: KVM access, QEMU, Vagrant and vagrant-qemu, pinned.
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: scripts/ci-setup-linux.sh
       - name: Cache the Vagrant box
         uses: actions/cache@v4
         with:
           path: ~/.vagrant.d/boxes
-          key: vagrant-box-cloud-image-debian-12-${{ env.BOX_VERSION }}-amd64
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
       - name: chore host:check
         run: chore host:check
       - name: chore smoke
