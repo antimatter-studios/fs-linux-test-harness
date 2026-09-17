@@ -153,7 +153,11 @@ returned reads exactly like one that passed, so an oracle suite on a
 machine without its oracle reports green having checked nothing. Put the
 lookups in one place (rust-fs-ext4: `fs_ext4_test_support::fixture` and
 `oracle_tool`) so there is exactly one way to reach a fixture or a tool,
-and nowhere to put an early return.
+and nowhere to put an early return. The rule covers shell tests too: a
+check written as `matches="$(rg ... || true)"` reports PASS when `rg` is not
+installed, and rust-fs-ext4's did exactly that on every CI run while two
+violations sat in the tree. Require the tool first, and have `chore tools`
+install it.
 
 ### The tasks
 
@@ -166,7 +170,7 @@ Same names in every consumer:
 | `chore fixtures` | Build every fixture image. Kernel work goes through the harness (`vm.sh run`, from a script that sources `vm-session.sh` so the VM comes down however the build ends); plain `mkfs`/debugger work happens on the host. Declares `sources`/`generates` so an unchanged recipe does not reboot a VM. Pins what makes a build vary (UUIDs, hash seeds) and says what still does. |
 | `chore test:unit` | The tests that need no tool and no fixture. CI runs it on a runner with no fixtures, which is what proves the split. |
 | `chore test:oracle` | The driver writes, independent tools read back: `fsck -n` for consistency **and** the filesystem's debugger for content and metadata (dump and compare, stat, extent maps, block ownership, the journal) — including a negative case that corrupts a data byte and shows the consistency checker passing while the content check fails, because that is the gap the second tool closes. |
-| `chore test` | Everything, exactly as CI runs it: unit, a check that the tools and fixtures are present, the whole suite, the script tests. |
+| `chore test` | Everything, exactly as CI runs it: unit, a check that the tools and fixtures are present (so a missing one fails once, not in every test), the oracles with their output shown (`--show-output`, so the log carries what was checked, not just a count), the whole suite, the script tests. |
 | `chore vm:*` | This harness's tasks, included from the sibling (see [Quickstart](#quickstart)). |
 
 Include `vm.chores.yml` with `optional: true`: the harness is a sibling
