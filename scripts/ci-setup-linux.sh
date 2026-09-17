@@ -88,7 +88,7 @@ endgroup
 group "QEMU"
 sudo apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qemu-system-x86 qemu-utils >/dev/null
-qemu-system-x86_64 --version | head -1
+qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
 endgroup
 
 group "Vagrant $VAGRANT_VERSION and vagrant-qemu $VAGRANT_QEMU_VERSION"
