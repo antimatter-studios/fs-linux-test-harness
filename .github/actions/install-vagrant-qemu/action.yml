@@ -14,15 +14,17 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # The hosted image ships /dev/kvm as root:kvm 0660 and, at the time
-        # of writing, no /etc/udev/rules directory — so it is created
-        # before the rule is written. Checked afterwards rather than
-        # assumed: the Vagrantfile refuses to run without it anyway.
+        # The hosted image ships /dev/kvm as root:kvm 0660. The usual udev
+        # rule is written for any later re-creation of the node, but on
+        # the 2026-09 image the trigger did not change the existing node
+        # (and /etc/udev/rules did not exist), so the mode is also set
+        # directly. Checked afterwards rather than assumed.
         [ -e /dev/kvm ] || { echo "::error::this runner has no /dev/kvm"; exit 1; }
         sudo mkdir -p /etc/udev/rules
         echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules/99-kvm4all.rules
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
+        sudo chmod 0666 /dev/kvm
         ls -l /dev/kvm
         [ -r /dev/kvm ] && [ -w /dev/kvm ] || { echo "::error::/dev/kvm is not read-write for $(id -un)"; exit 1; }
     - name: Install QEMU
