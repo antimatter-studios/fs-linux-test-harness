@@ -1,0 +1,24 @@
+# The smoke consumer: a stand-in for a filesystem driver repository,
+# shaped the way a real one uses the harness. tests/smoke.sh drives it
+# through a real VM, in CI and on any host with KVM or HVF.
+
+[project]
+name = "flth-smoke"
+
+[vm]
+memory = "2G"
+cpus = 2
+disk = "16G"
+ssh_port = 50122
+deadline_minutes = 120
+
+[share]
+dir = ".vm-share"
+
+[setup]
+# Runs as root INSIDE the VM. The consumer installs its own tooling.
+script = "setup.sh"
+
+[test]
+# Runs on the host, from this directory, with the VM up.
+command = "./suite.sh"

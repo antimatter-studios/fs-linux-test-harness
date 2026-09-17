@@ -1,0 +1,16 @@
+# The smallest useful consumer config. Copy it to the root of a
+# filesystem driver repository and edit the two required values.
+
+[project]
+# Names the VM (its hostname), its machine directory and its slot holder.
+name = "rust-fs-myfs"
+
+[setup]
+# Runs as root INSIDE the VM after the first boot, and again whenever the
+# script changes. Install your filesystem's tooling here.
+script = "scripts/vm-setup.sh"
+
+[test]
+# Optional. Runs on the host, from the repository root, with the VM up;
+# `chore vm:test` tears the VM down afterwards.
+command = "cargo test"

@@ -1,0 +1,4 @@
+# The smoke consumer's shared directory (images and results).
+.vm-share/
+# chore's fingerprint cache.
+.chore/

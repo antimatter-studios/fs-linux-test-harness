@@ -1,0 +1,201 @@
+# fs-linux-test-harness — the test VM.
+#
+# Driven ONLY through scripts/vm.sh (chore vm:*), which exports every
+# FLTH_* value read below and points VAGRANT_DOTFILE_PATH at the
+# consumer's machine directory. Run `vagrant` here by hand and it stops
+# at the first missing value, by design.
+#
+# THE GUEST ARCHITECTURE IS THE HOST'S, and so is the accelerator. There
+# is no emulated path: a VM run in software is a test suite that takes an
+# hour and times out somewhere unhelpful.
+#
+#   macOS arm64    HVF   box christhomas/vagrant-rpi-bookworm-arm64
+#                        plugins vagrant-qemu-christhomas and
+#                        vagrant-notify-forwarder-christhomas (forks that
+#                        fix problems specific to the Mac); share: virtiofs
+#   Linux aarch64  KVM   box cloud-image/debian-12 (arm64); stock
+#                        vagrant-qemu; UEFI firmware from FLTH_QEMU_DIR;
+#                        share: 9p
+#   Linux x86_64   KVM   box cloud-image/debian-12 (amd64); stock
+#                        vagrant-qemu; SeaBIOS; share: 9p
+#
+# WHY 9P ON LINUX. The stock plugin has no virtiofs support; 9p needs no
+# daemon, no root and nothing beyond QEMU itself, and it was proven on an
+# arm64 KVM host (see the PR that introduced this file).
+#
+# NOTHING FILESYSTEM-SPECIFIC BELONGS HERE. The consumer's setup script,
+# run inside the guest by scripts/vm.sh, installs its own tooling.
+
+require "rbconfig"
+
+def flth_env(name, pattern, what)
+  value = ENV[name]
+  if value.nil? || value.empty?
+    raise "#{name} is not set. This Vagrantfile is driven by fs-linux-test-harness " \
+          "(chore vm:up / scripts/vm.sh), not by running vagrant directly."
+  end
+  # \A and \z, NOT ^ and $: Ruby's ^ and $ match at line boundaries, so
+  # /^[0-9]+$/ accepts "480\nrm -rf /". Several of these values reach a
+  # QEMU command line or a root shell in the guest.
+  raise "#{name} must be #{what}, got #{value.inspect}" unless value =~ pattern
+  value
+end
+
+# A plugin can arrive two ways: `vagrant plugin install`, or a bundler
+# Gemfile's :plugins group when Vagrant runs from source (the only way to
+# get a current Vagrant on linux-arm64). has_plugin? sees only the first.
+def flth_plugin?(name)
+  Vagrant.has_plugin?(name) || Gem.loaded_specs.key?(name)
+end
+
+def flth_require_plugin(name, why)
+  return if flth_plugin?(name)
+  raise "Required Vagrant plugin #{name} is missing (#{why}). " \
+        "Install it: vagrant plugin install #{name}"
+end
+
+host_os  = RbConfig::CONFIG["host_os"]
+host_cpu = RbConfig::CONFIG["host_cpu"]
+
+host =
+  if host_os =~ /darwin/ && host_cpu =~ /\A(arm64|aarch64)/
+    :macos_arm64
+  elsif host_os =~ /linux/ && host_cpu =~ /\A(arm64|aarch64)/
+    :linux_arm64
+  elsif host_os =~ /linux/ && host_cpu =~ /\Ax86_64\z/
+    :linux_x86_64
+  else
+    raise "fs-linux-test-harness supports macOS arm64, Linux aarch64 and Linux x86_64 hosts; " \
+          "this is #{host_os} #{host_cpu}"
+  end
+
+vm_name   = flth_env("FLTH_VM_NAME", /\A[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\z/, "a hostname label")
+memory    = flth_env("FLTH_VM_MEMORY", /\A[1-9][0-9]{0,5}[MG]\z/, "a size like 4G or 2048M")
+cpus      = flth_env("FLTH_VM_CPUS", /\A[1-9][0-9]?\z/, "an integer from 1 to 99")
+disk      = flth_env("FLTH_VM_DISK", /\A[1-9][0-9]{0,4}G\z/, "a size like 32G")
+ssh_port  = flth_env("FLTH_VM_SSH_PORT", /\A[1-9][0-9]{3,4}\z/, "a port number")
+deadline  = flth_env("FLTH_VM_DEADLINE_MINUTES", /\A[1-9][0-9]{0,5}\z/, "a positive integer of at most six digits")
+share_dir = flth_env("FLTH_SHARE_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
+
+share_guest = "/share"
+share_tag   = "flth_share"
+
+case host
+when :macos_arm64
+  flth_require_plugin("vagrant-qemu-christhomas", "the QEMU provider used on macOS")
+  # DO NOT disable the notify forwarder. With it disabled the plugin's
+  # `up` hook truncates the boot chain: the VM imports and then never
+  # boots, with no error printed.
+  flth_require_plugin("vagrant-notify-forwarder-christhomas", "required companion of the macOS QEMU provider")
+when :linux_arm64, :linux_x86_64
+  flth_require_plugin("vagrant-qemu", "the stock QEMU provider used on Linux")
+  kvm = "/dev/kvm"
+  unless File.exist?(kvm) && File.readable?(kvm) && File.writable?(kvm)
+    raise "#{kvm} is missing or not read-write for this user. KVM is required; " \
+          "software emulation is refused. Add the user to the kvm group."
+  end
+end
+
+qemu_dir = nil
+if host == :linux_arm64
+  qemu_dir = flth_env("FLTH_QEMU_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
+  %w[edk2-aarch64-code.fd edk2-arm-vars.fd].each do |f|
+    path = File.join(qemu_dir, f)
+    raise "UEFI firmware #{path} is not readable (FLTH_FIRMWARE_CODE / FLTH_FIRMWARE_VARS)" unless File.readable?(path)
+  end
+end
+
+Vagrant.configure("2") do |config|
+  # The Linux box declares `config.vagrant.plugins = "vagrant-qemu"`.
+  # Vagrant's check of that cannot see a plugin loaded from a bundler
+  # Gemfile and stops to ask on a TTY, so the requirement is checked above
+  # instead and this one is cleared.
+  config.vagrant.plugins = {}
+
+  case host
+  when :macos_arm64
+    # A working UEFI bootloader and a kernel with the common filesystem
+    # modules. generic/debian12 is NOT used: it was rebuilt upstream
+    # without its \EFI\BOOT bootloader and no longer boots.
+    config.vm.box = "christhomas/vagrant-rpi-bookworm-arm64"
+  when :linux_arm64, :linux_x86_64
+    # Built from Debian's official cloud images, qemu provider for both
+    # architectures. Pinned so every run boots the same guest.
+    config.vm.box = "cloud-image/debian-12"
+    config.vm.box_version = "20260909.2596.0"
+  end
+  config.vm.box_architecture = (host == :linux_x86_64 ? "amd64" : "arm64")
+  config.vm.box_check_update = false
+  config.vm.hostname = vm_name
+
+  # The provider daemonizes QEMU and sends the console to a socket, so a
+  # failed boot prints nothing; give a cold boot room.
+  config.vm.boot_timeout = 600
+
+  config.vm.provider "qemu" do |qe|
+    qe.memory = memory
+    qe.smp = "cpus=#{cpus},sockets=1,cores=#{cpus},threads=1"
+    qe.ssh_port = Integer(ssh_port)
+    qe.ssh_auto_correct = true
+    qe.disk_resize = disk
+
+    case host
+    when :macos_arm64
+      qe.arch = "aarch64"
+      qe.machine = "virt,accel=hvf,highmem=on"
+      qe.cpu = "host"
+      qe.net_device = "virtio-net-device"
+      custom_virtiofsd = "/opt/homebrew/bin/virtiofsd-1.13.8-rc1"
+      qe.virtiofsd_bin = custom_virtiofsd if File.executable?(custom_virtiofsd)
+      # virtiofsd presents host files under this uid/gid; it must match
+      # the box's vagrant user (1001 on this box) or the share is
+      # read-only to it.
+      qe.virtiofs_guest_uid = 1001
+      qe.virtiofs_guest_gid = 1001
+      # Extended attributes must survive the share.
+      qe.extra_virtiofsd_args = ["--thread-pool-size=1", "--xattr"]
+    when :linux_arm64
+      qe.arch = "aarch64"
+      qe.machine = "virt,accel=kvm,highmem=on"
+      qe.cpu = "host"
+      qe.net_device = "virtio-net-device"
+      qe.qemu_dir = qemu_dir
+    when :linux_x86_64
+      qe.arch = "x86_64"
+      qe.machine = "q35,accel=kvm"
+      qe.cpu = "host"
+      qe.net_device = "virtio-net-pci"
+    end
+
+    if host != :macos_arm64
+      # mapped-xattr: guest ownership and modes are stored in host xattrs,
+      # so root in the guest can create files without root on the host.
+      # A comma is QEMU's option separator and is escaped by doubling.
+      qe.extra_qemu_args = %W(
+        -virtfs local,path=#{share_dir.gsub(",", ",,")},mount_tag=#{share_tag},security_model=mapped-xattr,id=#{share_tag}
+      )
+    end
+  end
+
+  # Vagrant's default share could fall back to SMB, which prompts for
+  # credentials and breaks a non-interactive `up`.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  if host == :macos_arm64
+    config.notify_forwarder.enable = true
+    config.vm.synced_folder share_dir, share_guest, type: "virtiofs", create: true
+  else
+    config.vm.provision "share", type: "shell", run: "always",
+                        path: "guest/mount-share.sh", args: [share_tag, share_guest]
+  end
+
+  # A DEADLINE THE HOST CANNOT FAIL TO ENFORCE. Every other teardown is
+  # passive: `down` needs the caller's control flow to reach it, `reap`
+  # needs a later chore invocation, and the slot reclaims only a DEAD
+  # holder. A host process that hangs holds a live VM and the global slot
+  # forever with every net behaving as written — it happened, for
+  # thirteen hours. So the guest schedules its own poweroff at every boot.
+  # `vm.sh hold` cancels it for a person working in the guest.
+  config.vm.provision "deadline", type: "shell", run: "always",
+                      path: "guest/deadline.sh", args: [deadline]
+end

@@ -1,0 +1,104 @@
+name: CI
+
+# WHAT A GREEN RUN PROVES, job by job (README "CI and automated merging"):
+#
+#   unit            every script parses and is shellcheck-clean; the config
+#                   parser, the slot lock, the orchestration (against a
+#                   stub engine), the session rules, the Vagrant engine
+#                   (against stub vagrant/ssh/ps), the guest deadline, the
+#                   Vagrantfile for every host, and the no-filesystem-
+#                   specifics contract — all without a VM.
+#   smoke-x86_64    a REAL VM boots under KVM through the harness, a
+#                   consumer's setup installs its tooling inside it, a
+#                   realistic filesystem suite passes, a corrupted image
+#                   FAILS, and the slot, hold, reap, teardown and destroy
+#                   behave on a real machine.
+#   ci-ok           the single required check: green only when every job
+#                   above ran and succeeded.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CHORE_VERSION: "0.11.0"
+  VAGRANT_VERSION: "2.4.9"
+  VAGRANT_QEMU_VERSION: "0.6.3"
+  # Must match the box pinned in vagrant/Vagrantfile; keys the box cache.
+  BOX_VERSION: "20260909.2596.0"
+
+jobs:
+  unit:
+    name: unit (VM-free)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-chore
+        with:
+          version: ${{ env.CHORE_VERSION }}
+      - name: Tool versions
+        run: |
+          bash --version | head -1
+          shellcheck --version | sed -n 2p
+          ruby --version
+      - name: chore check
+        run: chore check
+
+  smoke-x86_64:
+    name: smoke (real VM, x86_64 KVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-chore
+        with:
+          version: ${{ env.CHORE_VERSION }}
+      - uses: ./.github/actions/install-vagrant-qemu
+        with:
+          vagrant-version: ${{ env.VAGRANT_VERSION }}
+          vagrant-qemu-version: ${{ env.VAGRANT_QEMU_VERSION }}
+      - name: Cache the Vagrant box
+        uses: actions/cache@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: vagrant-box-cloud-image-debian-12-${{ env.BOX_VERSION }}-amd64
+      - name: chore host:check
+        run: chore host:check
+      - name: chore smoke
+        run: chore smoke
+      - name: Collect results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-x86_64-results
+          path: tests/smoke-consumer/.vm-share/results
+          if-no-files-found: ignore
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [unit, smoke-x86_64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job ran and succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad="$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          if [ -n "$bad" ]; then
+            echo "::error::not green: $bad (failed, cancelled or skipped)"
+            exit 1
+          fi
+          echo "all required jobs succeeded"
