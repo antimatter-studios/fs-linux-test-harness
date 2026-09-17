@@ -1,0 +1,11 @@
+# What must pass before main takes a merge. github-guard reads this from the
+# default branch on the server and applies it to branch protection.
+#
+#   ci-ok   ci.yml: the one always-run gate. It fails when any job it needs
+#           failed, was cancelled or was skipped: the VM-free unit tests and the
+#           smoke test that boots a real VM and runs a stand-in filesystem suite.
+#
+# Requiring the gate rather than each job means a job can be renamed, split or
+# made conditional without leaving a required check that never reports, which
+# would block every pull request with nothing to point at.
+ci-ok
