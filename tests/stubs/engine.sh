@@ -51,14 +51,16 @@ engine_destroy() {
     stub_read after_destroy absent > "$STUB/state"
 }
 
-# Runs the script HERE, with the guest's fixed paths redirected into the
-# stub directory, so the real setup-stamp logic executes.
+# Runs the script HERE, with the guest's fixed paths — the setup stamp,
+# the hold marker, the repository mount — redirected into the stub
+# directory, so the real logic executes against a tree a test can make.
 engine_run() {
     stub_log run
     printf '%s\n' "$1" >> "$STUB/scripts"
     printf '%s\n' "$1" |
         sed -e "s|/var/lib/fs-linux-test-harness|$STUB/guest-lib|g" \
-            -e "s|/run/fs-linux-test-harness-held|$STUB/guest-held|g" |
+            -e "s|/run/fs-linux-test-harness-held|$STUB/guest-held|g" \
+            -e "s|/repo|$STUB/guest-repo|g" |
         bash -s
 }
 

@@ -76,9 +76,19 @@ disk      = flth_env("FLTH_VM_DISK", /\A[1-9][0-9]{0,4}G\z/, "a size like 32G")
 ssh_port  = flth_env("FLTH_VM_SSH_PORT", /\A[1-9][0-9]{3,4}\z/, "a port number")
 deadline  = flth_env("FLTH_VM_DEADLINE_MINUTES", /\A[1-9][0-9]{0,5}\z/, "a positive integer of at most six digits")
 share_dir = flth_env("FLTH_SHARE_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
+repo_dir  = flth_env("FLTH_REPO_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
 
 share_guest = "/share"
 share_tag   = "flth_share"
+
+# THE CONSUMER REPOSITORY ITSELF, read-write. The share carries what a
+# run hands across; this carries the tree under test, so a suite can be
+# BUILT AND RUN IN THE GUEST (`vm.sh guest-test`) on a host that cannot
+# run it natively. Nothing here knows what "building" means: the
+# consumer's setup script installs its toolchain and its guest_command
+# says what to run.
+repo_guest = "/repo"
+repo_tag   = "flth_repo"
 
 case host
 when :macos_arm64
@@ -173,6 +183,7 @@ Vagrant.configure("2") do |config|
       # A comma is QEMU's option separator and is escaped by doubling.
       qe.extra_qemu_args = %W(
         -virtfs local,path=#{share_dir.gsub(",", ",,")},mount_tag=#{share_tag},security_model=mapped-xattr,id=#{share_tag}
+        -virtfs local,path=#{repo_dir.gsub(",", ",,")},mount_tag=#{repo_tag},security_model=mapped-xattr,id=#{repo_tag}
       )
     end
   end
@@ -184,9 +195,12 @@ Vagrant.configure("2") do |config|
   if host == :macos_arm64
     config.notify_forwarder.enable = true
     config.vm.synced_folder share_dir, share_guest, type: "virtiofs", create: true
+    config.vm.synced_folder repo_dir, repo_guest, type: "virtiofs", create: true
   else
     config.vm.provision "share", type: "shell", run: "always",
                         path: "guest/mount-share.sh", args: [share_tag, share_guest]
+    config.vm.provision "repo", type: "shell", run: "always",
+                        path: "guest/mount-share.sh", args: [repo_tag, repo_guest]
   end
 
   # A DEADLINE THE HOST CANNOT FAIL TO ENFORCE. Every other teardown is

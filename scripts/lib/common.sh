@@ -50,6 +50,26 @@ flth_load() {
 # consumer script and every `put` answer is written against it.
 FLTH_SHARE_GUEST="/share"
 
+# The guest path of the CONSUMER REPOSITORY itself, mounted read-write on
+# every boot. Fixed for the same reason as the share: a consumer's guest
+# command (`vm.sh guest-test`) names paths inside it, and a path that
+# moved with configuration would be a path every consumer has to compute.
+#
+# It is what makes a suite runnable IN the guest: the sources are there,
+# so a host that is not Linux — or has none of the tooling — still runs
+# the same tests against the same tree.
+# shellcheck disable=SC2034  # read by vm.sh
+FLTH_REPO_GUEST="/repo"
+
+# Eight hex characters of a string, for names that must be short.
+flth_hash8() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -c1-8
+    else
+        printf '%s' "$1" | shasum -a 256 | cut -c1-8
+    fi
+}
+
 # shellcheck disable=SC2034  # read by vm.sh
 # Marks the guest as deliberately kept up. On tmpfs, so it lasts exactly
 # as long as the boot it was granted on.

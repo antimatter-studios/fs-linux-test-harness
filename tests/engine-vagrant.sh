@@ -46,7 +46,7 @@ cat > "$BIN/ssh" <<'STUB'
 #!/usr/bin/env bash
 echo "ssh $*" >> "$STUBDIR/ssh-log"
 if [ -f "$STUBDIR/ssh-exit" ]; then cat > /dev/null; exit "$(cat "$STUBDIR/ssh-exit")"; fi
-bash -s
+tee "$STUBDIR/stdin" | bash -s
 STUB
 cat > "$BIN/ps" <<'STUB'
 #!/usr/bin/env bash
@@ -139,7 +139,13 @@ check_eq "$?" 6 "run returns the script's exit status"
 check_eq "$out" "quoted  spaces" "and its stdout, quoting intact"
 check_eq "$(cat "$SANDBOX/err")" "err" "and its stderr"
 check_eq "$(cat "$FLTH_MACHINE_DIR/ssh-config")" "$(cat "$STUBDIR/ssh-config")" "ssh settings are cached from vagrant ssh-config"
-check_contains "$(cat "$STUBDIR/ssh-log")" "-F $FLTH_MACHINE_DIR/ssh-config default -T sudo bash -s" "and used by plain ssh, script on stdin, as root"
+check_contains "$(cat "$STUBDIR/ssh-log")" "-F $FLTH_MACHINE_DIR/ssh-config" "ssh is plain ssh with those settings"
+check_contains "$(cat "$STUBDIR/ssh-log")" "default -T sudo bash -s" "with the script on stdin, run as root"
+check_contains "$(cat "$STUBDIR/ssh-log")" "-o ControlPath=$FLTH_STATE_DIR/ssh/" "over a shared connection, whose socket is short and outside every repository"
+check_contains "$(cat "$STUBDIR/ssh-log")" "-o ControlMaster=yes" "the master is opened deliberately"
+check_contains "$(cat "$STUBDIR/stdin")" "export FLTH_GUEST=1" "a command run in the guest is told it is in the guest"
+check_contains "$(cat "$STUBDIR/ssh-log")" "-N -f default" "detached, with no command and none of the caller's streams"
+check_lacks "$(grep 'bash -s' "$STUBDIR/ssh-log")" "ControlMaster" "and the call that carries the script is only a client of it"
 
 : > "$STUBDIR/log"; : > "$STUBDIR/ssh-log"
 engine_run 'true'
@@ -148,11 +154,11 @@ check_eq "$(grep -c ssh-config "$STUBDIR/log" | tr -d ' ')" 0 "a cached config c
 echo 255 > "$STUBDIR/ssh-exit"; : > "$STUBDIR/ssh-log"
 engine_run 'true'; rc=$?
 check_eq "$rc" 255 "a 255 with unchanged settings is returned, not retried"
-check_eq "$(grep -c . "$STUBDIR/ssh-log" | tr -d ' ')" 1 "so a script that may already have run is sent once"
+check_eq "$(grep -c 'bash -s' "$STUBDIR/ssh-log" | tr -d ' ')" 1 "so a script that may already have run is sent once"
 
 printf 'Host default\n  Port 50123\n' > "$STUBDIR/ssh-config"; : > "$STUBDIR/ssh-log"
 engine_run 'true'
-check_eq "$(grep -c . "$STUBDIR/ssh-log" | tr -d ' ')" 2 "a 255 after which the settings changed is sent again"
+check_eq "$(grep -c 'bash -s' "$STUBDIR/ssh-log" | tr -d ' ')" 2 "a 255 after which the settings changed is sent again"
 check_contains "$(cat "$FLTH_MACHINE_DIR/ssh-config")" "50123" "with the refreshed settings"
 rm -f "$STUBDIR/ssh-exit"
 

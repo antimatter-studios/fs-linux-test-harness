@@ -8,6 +8,40 @@ changes allowed in minor versions until 1.0.
 
 ### Added
 
+- **`vm.sh exec` (`chore vm:exec`)**: run a command in a guest that is
+  ALREADY up, and never boot one. The per-call path for a test process:
+  a process-table check and nothing else, so a suite can ask the guest
+  hundreds of questions without a boot appearing in the middle of a test.
+  When the VM is down it fails naming `chore vm:up`.
+- **One SSH connection, reused.** The engine opens a master deliberately
+  (`-M -N -f`, its own streams, socket under `FLTH_STATE_DIR`, closed
+  before a boot and after a stop) and every later command rides it: about
+  0.03 s per command against 0.7 s for a fresh handshake, measured on an
+  arm64 KVM host. `FLTH_SSH_PERSIST` sets how long it stays open when
+  idle.
+- **The consumer repository is mounted in the guest at `/repo`**,
+  read-write, on every boot (9p on Linux, virtiofs on macOS). A file a
+  test wrote under the checkout is already visible in the guest, so
+  nothing has to be copied to be read there.
+- **`vm.sh guest-test` (`chore vm:guest-test`) and `[test] guest_command`**:
+  run the consumer's suite INSIDE the guest, from `/repo`, streaming its
+  output and propagating its exit status, then tear down under the same
+  session rules as `vm:test`. That is how a host which cannot run a Linux
+  suite (a Mac) runs one. The harness knows nothing about what the command
+  is: the `[setup]` script installs whatever the guest needs — a compiler,
+  an interpreter, anything — and `tests/generic.sh` now guards against a
+  language or toolchain name leaking into harness code, as it already did
+  for filesystems.
+- **`FLTH_GUEST=1`** in every command the harness runs in the guest, so a
+  program can tell it is already inside the test VM rather than asking the
+  harness to put it there.
+- **README**: the "Consumer test contract" rewritten around where things
+  run — the oracle tools in the guest ALWAYS (one version, one platform,
+  no e2fsprogs on anybody's laptop), the kernel oracles in the guest, and
+  the suite itself in the guest on a host that is not Linux — plus how a
+  test process should talk to the guest (`exec`, one boot, no copying,
+  batch the questions).
+
 - **`scripts/ci-setup-linux.sh`**: sets a hosted x86_64 Linux runner up to
   boot the VM (KVM access, QEMU, Vagrant, vagrant-qemu, pinned), for the
   harness's CI and every consumer's; `--box-cache-key` (and the

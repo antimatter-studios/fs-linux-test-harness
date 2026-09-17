@@ -83,6 +83,7 @@ flth_config_key_type() {
         share.dir)           echo string ;;
         setup.script)        echo string ;;
         test.command)        echo string ;;
+        test.guest_command)  echo string ;;
     esac
 }
 
@@ -110,6 +111,8 @@ flth_config_load() {
     CFG_setup_script=""
     # shellcheck disable=SC2034  # read by vm.sh
     CFG_test_command=""
+    # shellcheck disable=SC2034  # read by vm.sh
+    CFG_test_guest_command=""
 
     while IFS= read -r line || [ -n "$line" ]; do
         lineno=$((lineno + 1))

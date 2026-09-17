@@ -13,7 +13,7 @@ make_stub_harness
 VM="$STUB_HARNESS/scripts/vm.sh"
 
 C="$SANDBOX/consumer"
-make_consumer "$C" vm-test '[test]' 'command = "./work.sh"'
+make_consumer "$C" vm-test '[test]' 'command = "./work.sh"' 'guest_command = "./in-guest.sh"'
 export SETUP_LOG="$SANDBOX/setup.log"
 MACHINE="$FLTH_CACHE_DIR/machines/vm-test"
 IDENTITY="$MACHINE/stub"
@@ -185,6 +185,23 @@ check_eq "$(vm share)" "$(cd "$C" && pwd -P)/.vm-share" "share prints the host p
 out="$(vm config)"
 check_contains "$out" "identity=$IDENTITY" "config prints the slot identity"
 check_contains "$out" "slot=$FLTH_STATE_DIR/slot.lock" "and where the slot lives"
+check_contains "$out" "repo.guest=/repo" "and where the consumer repository is mounted in the guest"
+
+# --- exec: the per-call path, which never boots -------------------------
+
+stub_state running; stub_reset_calls
+out="$(vm exec 'echo from-guest; exit 3' 2>/dev/null)"
+check_eq "$?" 3 "exec passes the guest command's exit status through"
+check_eq "$out" from-guest "and its stdout"
+check_eq "$(calls_of state)" 0 "without asking the engine for the VM's state"
+check_eq "$(calls_of up)" 0 "and without booting"
+
+stub_state stopped
+out="$(vm exec true 2>&1)"
+check_eq "$?" 1 "exec on a VM that is not running fails"
+check_contains "$out" "never boots one" "saying it will not boot one"
+check_contains "$out" "chore vm:up" "and naming the task that does"
+stub_state running
 vm down 2>/dev/null
 
 # --- test: the session rules --------------------------------------------
@@ -223,6 +240,34 @@ make_consumer "$SANDBOX/notest" no-test
 out="$(cd "$SANDBOX/notest" && "$VM" test 2>&1)"
 check_eq "$?" 1 "test without a [test] command fails"
 check_contains "$out" "has no [test] command" "and says so"
+
+# --- guest-test: the suite, run inside the guest -------------------------
+
+# The stub engine runs the guest script on the host and records it, so
+# what the guest is asked to run is checked exactly.
+guest_script() { tail -1 "$FLTH_TEST_STUB/scripts"; }
+
+stub_state absent; free_slot
+mkdir -p "$FLTH_TEST_STUB/guest-repo"
+printf '#!/usr/bin/env bash\necho "in-guest args:[$*]"\n' > "$FLTH_TEST_STUB/guest-repo/in-guest.sh"
+chmod +x "$FLTH_TEST_STUB/guest-repo/in-guest.sh"
+out="$(vm guest-test one "two words" 2>/dev/null)"
+check_eq "$?" 0 "guest-test succeeds when the guest command does"
+check_contains "$out" "in-guest args:[one two words]" "and its output reaches the caller"
+check_eq "$(guest_script)" "cd '/repo' && ./in-guest.sh 'one' 'two words'" \
+    "the guest runs the [test] guest_command from the repository mount, arguments appended"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and the VM is torn down afterwards"
+check_eq "$(slot_holder)" "" "with the slot released"
+
+stub_state absent
+vm guest-test 'a; rm -rf /' >/dev/null 2>&1
+check_eq "$(guest_script)" "cd '/repo' && ./in-guest.sh 'a; rm -rf /'" \
+    "an argument's shell characters are quoted for the guest, not run"
+vm down 2>/dev/null
+
+out="$(cd "$SANDBOX/notest" && "$VM" guest-test 2>&1)"
+check_eq "$?" 1 "guest-test without a [test] guest_command fails"
+check_contains "$out" "has no [test] guest_command" "and says so"
 
 # --- setup failure --------------------------------------------------------
 
