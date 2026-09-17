@@ -340,8 +340,14 @@ falling back.
 | Linux x86_64 | KVM | `cloud-image/debian-12` (amd64), pinned | stock `vagrant-qemu` | none (SeaBIOS) | 9p |
 
 **Why 9p on Linux:** the stock provider has no virtiofs support; 9p
-(`-virtfs ... security_model=mapped-xattr`) needs no daemon and no root,
-and root in the guest can create files the host user owns.
+needs no daemon and no root. The **share** uses
+`security_model=mapped-xattr`, so root in the guest can create files the
+host user owns. The **repository** mount uses `security_model=none`, so
+the guest sees the host's real ownership, modes and extended attributes:
+mapped-xattr synthesises the xattr namespace, and a tool that walks the
+tree reading attributes is told one exists and then that there is no data
+for it. Nothing writes ownership into the repository from the guest, so
+there is nothing to map.
 
 **Where state lives:** each consumer has its own machine (its own disk
 and its own installed tooling) under `FLTH_CACHE_DIR/machines/<project>/`,
