@@ -1,0 +1,23 @@
+version: "3"
+chore_min_version: 0.10.0
+
+vars:
+  # The harness is a sibling checkout pinned by tag, like every other
+  # sibling in the family; `chore siblings` moves it to this ref.
+  LINUX_HARNESS_REF: v0.1.0
+
+includes:
+  vm:
+    taskfile: ../fs-linux-test-harness/vm.chores.yml
+
+# The reaper: stop a VM that nothing cleaned up, on any chore invocation.
+lifecycle:
+  after_all:
+    - ../fs-linux-test-harness/scripts/vm.sh reap
+
+tasks:
+  test:
+    desc: Test suite, with the VM brought down afterwards
+    cmds:
+      - defer: ../fs-linux-test-harness/scripts/vm.sh down
+      - cargo test

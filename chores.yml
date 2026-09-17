@@ -1,0 +1,37 @@
+version: "3"
+chore_min_version: 0.10.0
+
+# THE HARNESS'S OWN TASKS. Consumers do not use this file; they include
+# vm.chores.yml (see README.md). These are what CI runs, so a green local
+# `chore check && chore smoke` is the same evidence as a green pipeline.
+
+# A smoke VM left behind by a killed `chore smoke` is stopped by the next
+# chore invocation of any kind. Fails soft, as a net should.
+lifecycle:
+  after_all:
+    - 'FLTH_CONFIG=tests/smoke-consumer/fs-linux-test-harness.toml ./scripts/vm.sh reap'
+
+tasks:
+  check:
+    desc: 'VM-free self-test: bash -n, shellcheck, and every unit test (CI job: unit)'
+    cmds: ['./tests/run.sh']
+
+  smoke:
+    desc: 'Boot a real VM and drive the whole harness through it (CI jobs: smoke-*). Needs KVM or HVF.'
+    # A hung boot or a guest that never answers must not hold the VM and
+    # the machine-wide slot for ever; the smoke script destroys its VM on
+    # every exit path, and this is the net for the one where it never
+    # exits.
+    timeout: 60m
+    on_timeout:
+      - cmd: 'FLTH_CONFIG=tests/smoke-consumer/fs-linux-test-harness.toml ./scripts/vm.sh destroy'
+      - cmd: 'for g in $TIMEOUT_PGID; do kill -TERM -"$g" 2>/dev/null || true; done'
+    cmds: ['./tests/smoke.sh']
+
+  smoke:destroy:
+    desc: Delete the smoke consumer's VM and disk
+    cmds: ['FLTH_CONFIG=tests/smoke-consumer/fs-linux-test-harness.toml ./scripts/vm.sh destroy']
+
+  host:check:
+    desc: Check this host can run the VM, and print what to install if not
+    cmds: ['./scripts/host-tools.sh']

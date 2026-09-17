@@ -1,0 +1,103 @@
+version: "3"
+chore_min_version: 0.10.0
+
+# THE CONSUMER-FACING TASKS. A filesystem driver repository includes this
+# file from its sibling checkout of the harness, under the name `vm`:
+#
+#   includes:
+#     vm:
+#       taskfile: ../fs-linux-test-harness/vm.chores.yml
+#
+# and gets `chore vm:up`, `chore vm:run -- uname -a` and the rest.
+#
+# NO `dir:` ON THE INCLUDE. Without it these tasks run in the consumer's
+# root — which is where scripts/vm.sh finds fs-linux-test-harness.toml —
+# while {{.TASKFILE_DIR}} still names the harness checkout, which is how
+# they find the scripts. The name `vm` is a convention the harness's own
+# messages assume ("run 'chore vm:down'").
+#
+# `lifecycle:` in an included file is ignored, so the reaper cannot be
+# installed from here. The consumer adds it to its own chores.yml:
+#
+#   lifecycle:
+#     after_all:
+#       - ../fs-linux-test-harness/scripts/vm.sh reap
+
+tasks:
+  up:
+    desc: Boot the VM, apply the setup script, and keep it up until vm:down
+    # `hold` marks the VM as deliberately running, so the after_all
+    # reaper leaves it alone. The mark is a file rather than a check of
+    # {{.TASK}} because it has to outlive this invocation: the VM must
+    # survive `chore build` an hour later.
+    cmds:
+      - '"{{.TASKFILE_DIR}}/scripts/vm.sh" up'
+      - '"{{.TASKFILE_DIR}}/scripts/vm.sh" hold'
+
+  down:
+    desc: Halt the VM, confirm it stopped, release the slot (keeps the disk)
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" down']
+
+  destroy:
+    desc: Delete the VM and its disk (the next boot provisions from scratch)
+    # Halting keeps the disk and a re-boot is quick; destroying reclaims
+    # the space and the next run pays a full provision. Disk against time,
+    # so two tasks rather than a flag whose default is wrong half the time.
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" destroy']
+
+  status:
+    desc: Say whether the VM is running (exit 0 when it is)
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" status']
+
+  run:
+    desc: 'Run a command as root in the VM, booting it if needed: chore vm:run -- <command>'
+    # $CLI_ARGS, NOT {{.CLI_ARGS}}. The template would be spliced into
+    # this host shell line, so `&&` or `|` in the command would run on the
+    # host. The environment variable reaches vm.sh as one argument, and
+    # the guest's shell is the one that reads it.
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" run "$CLI_ARGS"']
+
+  put:
+    desc: 'Copy a file into the shared directory and print its guest path: chore vm:put <file>'
+    args: [file]
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" put "$FILE"']
+
+  share:
+    desc: Print the host path of the shared directory
+    silent: true
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" share']
+
+  provision:
+    desc: Re-run the setup script inside the VM, even if it is unchanged
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" provision']
+
+  test:
+    desc: 'Boot, run the [test] command, tear down: chore vm:test [-- args]'
+    # Tears down afterwards, and a teardown that fails fails the task.
+    # FLTH_KEEP_VM=1 leaves the VM up for the next run.
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" test $CLI_ARGS']
+
+  hold:
+    desc: Keep the VM up — the reaper leaves it, the guest deadline is cancelled
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" hold']
+
+  reap:
+    desc: Stop a VM that nothing cleaned up, unless it is held (for lifecycle after_all)
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" reap']
+
+  config:
+    desc: Print the resolved configuration, paths and slot identity
+    silent: true
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" config']
+
+  host:check:
+    desc: Check this host can run the VM, and print what to install if not
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/host-tools.sh"']
+
+  slot:status:
+    desc: Say who holds the machine-wide VM slot, and whether their VM is alive
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm-slot.sh" status']
+
+  slot:release-force:
+    desc: Free the VM slot whoever holds it — a person's decision, for a holder that will not let go
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm-slot.sh" release --force']

@@ -1,0 +1,42 @@
+name: Install Vagrant and QEMU (x86_64 Linux runner)
+description: KVM access, QEMU, Vagrant from HashiCorp's apt repository, and the stock vagrant-qemu plugin, all pinned.
+inputs:
+  vagrant-version:
+    description: Vagrant version
+    required: true
+  vagrant-qemu-version:
+    description: vagrant-qemu plugin version
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Grant KVM access
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        ls -l /dev/kvm
+    - name: Install QEMU
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq qemu-system-x86 qemu-utils
+        qemu-system-x86_64 --version | head -1
+    - name: Install Vagrant and vagrant-qemu
+      shell: bash
+      env:
+        VAGRANT_VERSION: ${{ inputs.vagrant-version }}
+        VAGRANT_QEMU_VERSION: ${{ inputs.vagrant-qemu-version }}
+      run: |
+        set -euo pipefail
+        curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" |
+          sudo tee /etc/apt/sources.list.d/hashicorp.list
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq "vagrant=${VAGRANT_VERSION}-*"
+        vagrant --version
+        vagrant plugin install vagrant-qemu --plugin-version "$VAGRANT_QEMU_VERSION"
+        vagrant plugin list

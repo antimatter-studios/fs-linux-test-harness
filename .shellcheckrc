@@ -1,0 +1,13 @@
+# Sourced files are followed from the directory of the file sourcing them.
+external-sources=true
+source-path=SCRIPTDIR
+
+# Disabled everywhere, each for a reason that holds everywhere:
+#
+# SC2154  CFG_* are assigned by flth_config_load through `printf -v`,
+#         which shellcheck cannot see.
+# SC2317  functions called only indirectly — trap handlers, stubs, and
+#         functions a test shadows — read as unreachable.
+# SC2016  the tests write scripts whose `$` must reach the script
+#         unexpanded; single quotes are the point.
+disable=SC2154,SC2317,SC2016
