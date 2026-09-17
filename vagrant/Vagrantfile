@@ -178,12 +178,24 @@ Vagrant.configure("2") do |config|
     end
 
     if host != :macos_arm64
-      # mapped-xattr: guest ownership and modes are stored in host xattrs,
-      # so root in the guest can create files without root on the host.
+      # TWO SHARES, TWO SECURITY MODELS, and the difference matters.
+      #
+      # mapped-xattr on the SHARE: guest ownership and modes are stored in
+      # host xattrs, so root in the guest can create files without root on
+      # the host. That is what a run handing files across needs.
+      #
+      # none on the REPOSITORY: the guest sees the host's real ownership,
+      # modes and extended attributes. mapped-xattr synthesises the xattr
+      # namespace, and a tool that walks the tree reading attributes — a
+      # filesystem builder copying a source directory into an image, say —
+      # is told an attribute exists and then that there is no data for it,
+      # and stops. Nothing writes ownership into the repository from the
+      # guest, so there is nothing to map.
+      #
       # A comma is QEMU's option separator and is escaped by doubling.
       qe.extra_qemu_args = %W(
         -virtfs local,path=#{share_dir.gsub(",", ",,")},mount_tag=#{share_tag},security_model=mapped-xattr,id=#{share_tag}
-        -virtfs local,path=#{repo_dir.gsub(",", ",,")},mount_tag=#{repo_tag},security_model=mapped-xattr,id=#{repo_tag}
+        -virtfs local,path=#{repo_dir.gsub(",", ",,")},mount_tag=#{repo_tag},security_model=none,id=#{repo_tag}
       )
     end
   end

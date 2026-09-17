@@ -22,7 +22,12 @@ changes allowed in minor versions until 1.0.
 - **The consumer repository is mounted in the guest at `/repo`**,
   read-write, on every boot (9p on Linux, virtiofs on macOS). A file a
   test wrote under the checkout is already visible in the guest, so
-  nothing has to be copied to be read there.
+  nothing has to be copied to be read there. The repository mount uses
+  `security_model=none` where the share uses `mapped-xattr`: the guest
+  must see the host's real extended attributes, because a tool walking
+  the tree is otherwise told an attribute exists and then that there is
+  no data for it (POSIX ACLs on the checkout did exactly that to a
+  filesystem builder copying a directory into an image).
 - **`vm.sh guest-test` (`chore vm:guest-test`) and `[test] guest_command`**:
   run the consumer's suite INSIDE the guest, from `/repo`, streaming its
   output and propagating its exit status, then tear down under the same
