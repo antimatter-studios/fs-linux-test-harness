@@ -126,6 +126,81 @@ comes down when it exits.
 Copy-ready versions of all of this are in [`examples/minimal/`](./examples/minimal/);
 a consumer that really runs is in [`tests/smoke-consumer/`](./tests/smoke-consumer/).
 
+## Consumer test contract
+
+The harness is the environment; this is the shape of the TESTS a
+filesystem driver repository builds on it. It is what
+[rust-fs-ext4](https://github.com/christhomas/rust-fs-ext4), the first
+consumer, runs locally and in CI, written down so the other filesystem
+repositories copy one template rather than inventing four.
+
+### Where tests run
+
+**On the host.** The oracle tools — the filesystem's own `mkfs`, `fsck`,
+debugger, dump tools — are ordinary host programs on Linux (CI and
+workstations) and Homebrew formulae on macOS, and the tests call them
+directly. **The VM is for what the host cannot do**: images the kernel
+must make (loop mounts, xattrs and ACLs set through the kernel driver,
+anything that needs the in-kernel filesystem), driver interaction with the
+real kernel, and tools a macOS host lacks. There is no compiler toolchain
+in the VM, and the test binaries never run there.
+
+### Never skip
+
+A test that needs a tool or a fixture **fails** when it is missing, and the
+failure names the task that provides it. A test that printed "skip" and
+returned reads exactly like one that passed, so an oracle suite on a
+machine without its oracle reports green having checked nothing. Put the
+lookups in one place (rust-fs-ext4: `fs_ext4_test_support::fixture` and
+`oracle_tool`) so there is exactly one way to reach a fixture or a tool,
+and nowhere to put an early return.
+
+### The tasks
+
+Same names in every consumer:
+
+| Task | What it does |
+| --- | --- |
+| `chore siblings` | Check the sibling repositories out at their pinned refs, the harness included (`../fs-linux-test-harness`). Refuses to move a dirty sibling. |
+| `chore tools` | Install the host oracle tools and verify their versions. Linux: the distribution's packages (apt, with sudo when not root). macOS: print the Homebrew formulae. `--check` mode for the other tasks to fail early. |
+| `chore fixtures` | Build every fixture image. Kernel work goes through the harness (`vm.sh run`, from a script that sources `vm-session.sh` so the VM comes down however the build ends); plain `mkfs`/debugger work happens on the host. Declares `sources`/`generates` so an unchanged recipe does not reboot a VM. Pins what makes a build vary (UUIDs, hash seeds) and says what still does. |
+| `chore test:unit` | The tests that need no tool and no fixture. CI runs it on a runner with no fixtures, which is what proves the split. |
+| `chore test:oracle` | The driver writes, independent tools read back: `fsck -n` for consistency **and** the filesystem's debugger for content and metadata (dump and compare, stat, extent maps, block ownership, the journal) — including a negative case that corrupts a data byte and shows the consistency checker passing while the content check fails, because that is the gap the second tool closes. |
+| `chore test` | Everything, exactly as CI runs it: unit, a check that the tools and fixtures are present, the whole suite, the script tests. |
+| `chore vm:*` | This harness's tasks, included from the sibling (see [Quickstart](#quickstart)). |
+
+Include `vm.chores.yml` with `optional: true`: the harness is a sibling
+that `chore siblings` itself checks out, so the file must load without it.
+Guard the reaper the same way:
+
+```yaml
+includes:
+  vm:
+    taskfile: ../fs-linux-test-harness/vm.chores.yml
+    optional: true
+lifecycle:
+  after_all:
+    - '[ ! -x ../fs-linux-test-harness/scripts/vm.sh ] || ../fs-linux-test-harness/scripts/vm.sh reap'
+```
+
+### CI
+
+Every job runs the tasks above, so a green local `chore test` and a green
+pipeline are the same evidence:
+
+| Job | Runs on | Steps |
+| --- | --- | --- |
+| `unit` | `ubuntu-24.04` | `chore siblings`, `chore test:unit`, with no fixtures present. |
+| `fixtures` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `../fs-linux-test-harness/scripts/ci-setup-linux.sh` (KVM access, QEMU, Vagrant; its `box-cache-key` output keys an `actions/cache` of `~/.vagrant.d/boxes`), `chore fixtures`, upload the images as an artifact. |
+| `test` | each architecture the driver ships on, natively | `chore siblings`, `chore tools`, download the fixtures, `chore lint`, `chore test`. GitHub's arm64 runners have no KVM, so fixtures come from the x86_64 job: disk images are the same on every architecture. |
+| `ci-ok` | `ubuntu-latest`, `if: always()` | Needs every other job; fails if any failed, was cancelled **or was skipped**. |
+
+`.github-guard` declares `required = ci-ok` and nothing else, so jobs can be
+added, renamed or split without a branch-protection change. Until the
+harness has a release, a consumer pins it to a full commit SHA (fetched by
+SHA: `git init`, `git fetch --depth 1 origin <sha>`, `git checkout
+FETCH_HEAD`); once it is tagged, pin the tag like every other sibling.
+
 ## Configuration: `fs-linux-test-harness.toml`
 
 At the consumer repository's root. Found from the working directory or

@@ -8,6 +8,15 @@ changes allowed in minor versions until 1.0.
 
 ### Added
 
+- **`scripts/ci-setup-linux.sh`**: sets a hosted x86_64 Linux runner up to
+  boot the VM (KVM access, QEMU, Vagrant, vagrant-qemu, pinned), for the
+  harness's CI and every consumer's; `--box-cache-key` (and the
+  `box-cache-key` step output) keys the Vagrant box cache on the pinned box.
+  Replaces `.github/actions/install-vagrant-qemu`.
+- **README "Consumer test contract"**: the task names (`siblings`, `tools`,
+  `fixtures`, `test:unit`, `test:oracle`, `test`, `vm:*`), never-skip, the
+  host/VM split, and the CI shape with its `ci-ok` gate, as rust-fs-ext4
+  runs them.
 - **The harness.** `scripts/vm.sh` (up, run, put, share, provision, test,
   down, status, hold, reap, destroy, config), `scripts/vm-slot.sh` (the
   machine-wide slot lock), `scripts/vm-session.sh` (teardown on exit),
