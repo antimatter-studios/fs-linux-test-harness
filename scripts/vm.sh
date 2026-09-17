@@ -4,10 +4,12 @@
 #
 #   vm.sh up               boot (idempotent) and apply the consumer's setup
 #   vm.sh run <cmd...>     boot if needed, run a command as root in the guest
+#   vm.sh exec <cmd...>    run a command in a guest that is ALREADY up
 #   vm.sh put <file>       copy a file into the shared directory; print its guest path
 #   vm.sh share            print the host path of the shared directory
 #   vm.sh provision        boot if needed, re-run the setup script unconditionally
 #   vm.sh test [args...]   boot, run the consumer's [test] command, tear down
+#   vm.sh guest-test [args...]  boot, run the [test] guest_command INSIDE the guest, tear down
 #   vm.sh down             halt, confirm it stopped, release the slot
 #   vm.sh status           exit 0 when the VM is running, 1 otherwise
 #   vm.sh hold             keep the VM up: reap leaves it, the guest deadline is cancelled
@@ -34,7 +36,7 @@ BOOT_ATTEMPTS=3
 BOOT_RETRY_WAIT=5
 
 usage() {
-    sed -n '3,16p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '3,18p' "$SELF" | sed 's/^# \{0,1\}//'
 }
 
 # Say what the host is missing before trying to boot. Without this the
@@ -205,8 +207,8 @@ vm_hold() {
 }
 
 # The safety net, run from a chore `lifecycle: after_all` so ANY chore
-# invocation cleans up a VM that nothing else did — a bare `cargo test`
-# that booted it, a run killed outright.
+# invocation cleans up a VM that nothing else did — a test run that
+# booted it, a run killed outright.
 #
 # It FAILS SOFT by design: chore reports an after_all failure without
 # failing the run, and turning an unrelated `chore build` red because
@@ -265,6 +267,58 @@ vm_test() {
         ' flth-session "$FLTH_HARNESS/scripts/vm-session.sh" "$@"
 }
 
+# THE PER-CALL PATH, for a test process that asks the guest hundreds of
+# questions. `run` boots when the VM is down, which is what makes it
+# convenient for a script and wrong for a test: a boot in the middle of a
+# test binary is a minute nobody asked for, and a VM nothing will bring
+# down. `exec` never boots. It checks the process table (milliseconds),
+# runs the command, and says what to run when the VM is not there.
+#
+# It also skips the setup check: the suite's task brought the VM up, and
+# the setup script cannot change while it runs.
+vm_exec() {
+    if ! engine_alive "$(engine_identity)"; then
+        echo "vm: $CFG_project_name's VM is not running, and 'exec' never boots one." >&2
+        echo "    Bring it up for the run first ('chore vm:up', which also holds it)," >&2
+        echo "    or use 'chore vm:run -- <command>', which boots on demand." >&2
+        exit 1
+    fi
+    engine_run "$*"
+}
+
+# THE CONSUMER'S SUITE, RUN IN THE GUEST, from the repository mounted at
+# $FLTH_REPO_GUEST. For a host that cannot run the tests natively — a Mac
+# for a Linux suite — and for a CI job that proves that path still works.
+#
+# The harness knows nothing about what the command is: the consumer's
+# [setup] script prepares the guest (a compiler, an interpreter, its
+# tools) and [test] guest_command says what to run. Output streams as it
+# happens, the exit status is the command's, and anything the run should
+# leave behind goes in the shared directory, which both sides see.
+#
+# Torn down afterwards under vm-session.sh's rules, exactly like `test`.
+vm_guest_test() {
+    [ -n "$CFG_test_guest_command" ] ||
+        flth_die "$FLTH_CONFIG has no [test] guest_command"
+    local script arg
+    script="cd $(quote_for_guest "$FLTH_REPO_GUEST") && $CFG_test_guest_command"
+    for arg in "$@"; do
+        script="$script $(quote_for_guest "$arg")"
+    done
+    FLTH_VM="$SELF" FLTH_GUEST_SCRIPT="$script" \
+        exec bash -c '
+            . "$1"
+            "$FLTH_VM" up || exit
+            "$FLTH_VM" exec "$FLTH_GUEST_SCRIPT"
+        ' flth-session "$FLTH_HARNESS/scripts/vm-session.sh"
+}
+
+# One argument, as the guest's shell will read it. Single quotes so
+# nothing in it is a variable, a command or a word boundary there.
+quote_for_guest() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 vm_config() {
     cat <<EOF
 config=$FLTH_CONFIG
@@ -278,8 +332,10 @@ vm.deadline_minutes=$CFG_vm_deadline_minutes
 share.dir=$CFG_share_dir
 share.host=$FLTH_SHARE_HOST
 share.guest=$FLTH_SHARE_GUEST
+repo.guest=$FLTH_REPO_GUEST
 setup.script=$CFG_setup_script
 test.command=$CFG_test_command
+test.guest_command=$CFG_test_guest_command
 machine=$FLTH_MACHINE_DIR
 identity=$(engine_identity)
 slot=$FLTH_STATE_DIR/slot.lock
@@ -293,7 +349,7 @@ case "$command" in
         [ -n "$command" ] || exit 2
         exit 0
         ;;
-    up | run | put | share | provision | test | down | status | hold | reap | destroy | config) ;;
+    up | run | exec | put | share | provision | test | guest-test | down | status | hold | reap | destroy | config) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -314,6 +370,10 @@ case "$command" in
         # command belongs to the guest, not the host.
         engine_run "$*"
         ;;
+    exec)
+        [ $# -gt 0 ] || flth_die "usage: vm.sh exec <command...>"
+        vm_exec "$*"
+        ;;
     put)
         [ $# -eq 1 ] || flth_die "usage: vm.sh put <file>"
         [ -f "$1" ] || flth_die "no such file: $1"
@@ -322,6 +382,7 @@ case "$command" in
     share) echo "$FLTH_SHARE_HOST" ;;
     provision) vm_up; apply_setup force ;;
     test) vm_test "$@" ;;
+    guest-test) vm_guest_test "$@" ;;
     down) vm_down ;;
     status) vm_status ;;
     hold) vm_hold ;;

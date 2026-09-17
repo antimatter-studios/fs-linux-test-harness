@@ -24,7 +24,8 @@ load() {
 }
 vm_dump() {
     printf '%s|' "$CFG_project_name" "$CFG_vm_memory" "$CFG_vm_cpus" "$CFG_vm_disk" \
-        "$CFG_vm_ssh_port" "$CFG_vm_deadline_minutes" "$CFG_share_dir" "$CFG_setup_script" "$CFG_test_command"
+        "$CFG_vm_ssh_port" "$CFG_vm_deadline_minutes" "$CFG_share_dir" "$CFG_setup_script" \
+        "$CFG_test_command" "$CFG_test_guest_command"
 }
 
 MIN='[project]
@@ -36,7 +37,7 @@ script = "setup.sh"'
 
 load "$MIN"
 check_eq "$rc" 0 "a minimal config loads"
-check_eq "$out" "rust-fs-demo|4G|4|32G|50122|480|.vm-share|setup.sh||" "and every optional key takes its documented default"
+check_eq "$out" "rust-fs-demo|4G|4|32G|50122|480|.vm-share|setup.sh|||" "and every optional key takes its documented default"
 
 load '# a comment line
 [project]   # trailing comment on a header
@@ -52,9 +53,10 @@ dir = "build/share"
 [setup]
 script = "setup.sh"
 [test]
-command = "./suite.sh --fast"'
+command = "./suite.sh --fast"
+guest_command = "./suite.sh --in-guest"'
 check_eq "$rc" 0 "every key, comments, a literal string and a bare integer load"
-check_eq "$out" "lit-name|2048M|2|16G|50200|90|build/share|setup.sh|./suite.sh --fast|" "and each value lands where it should"
+check_eq "$out" "lit-name|2048M|2|16G|50200|90|build/share|setup.sh|./suite.sh --fast|./suite.sh --in-guest|" "and each value lands where it should"
 
 for example in "$REPO/examples/minimal" "$REPO/tests/smoke-consumer"; do
     err="$(flth_config_load "$example/fs-linux-test-harness.toml" 2>&1)"

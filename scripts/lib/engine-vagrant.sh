@@ -21,6 +21,7 @@ ENGINE_VAGRANT_LOCK_WAIT=2
 
 engine_prepare() {
     export VAGRANT_CWD="$ENGINE_VAGRANT_DIR"
+    export FLTH_REPO_DIR="$FLTH_ROOT"
     export VAGRANT_DOTFILE_PATH="$FLTH_MACHINE_DIR/vagrant"
     export FLTH_VM_NAME="$CFG_project_name"
     export FLTH_VM_MEMORY="$CFG_vm_memory"
@@ -29,7 +30,7 @@ engine_prepare() {
     export FLTH_VM_SSH_PORT="$CFG_vm_ssh_port"
     export FLTH_VM_DEADLINE_MINUTES="$CFG_vm_deadline_minutes"
     export FLTH_SHARE_DIR="$FLTH_SHARE_HOST"
-    mkdir -p "$FLTH_MACHINE_DIR" "$FLTH_SHARE_HOST"
+    mkdir -p "$FLTH_MACHINE_DIR" "$FLTH_SHARE_HOST" "$(dirname "$(engine_ssh_control)")"
 
     # UEFI firmware for an arm64 guest on a Linux host. The QEMU provider
     # copies `edk2-aarch64-code.fd` and `edk2-arm-vars.fd` out of its
@@ -113,6 +114,7 @@ engine_state() {
 }
 
 engine_up() {
+    engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     engine_vagrant up --provider qemu >&2 || return
     engine_ssh_config >/dev/null
@@ -124,9 +126,11 @@ engine_down() {
     else
         engine_vagrant halt >&2
     fi
+    engine_ssh_close
 }
 
 engine_destroy() {
+    engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     engine_vagrant destroy -f >&2
 }
@@ -143,6 +147,58 @@ engine_ssh_config() {
     printf '%s\n' "$cache"
 }
 
+# ONE CONNECTION, REUSED BY EVERY CALL. A fresh ssh handshake to the
+# guest costs about 0.7s; over a multiplexed connection the same command
+# costs about 0.03s, and a test process that asks the guest a few hundred
+# questions is the difference between a minute of handshakes and two
+# seconds of them. So the first call opens a master that persists, and
+# every later call rides it.
+#
+# The socket lives beside the slot rather than in the machine directory:
+# a Unix socket path is limited to about 104 bytes, and a machine
+# directory under a deep checkout can exceed that on its own. Hashed, so
+# the length is fixed whatever the project is called.
+ENGINE_SSH_PERSIST="${FLTH_SSH_PERSIST:-3600}"
+
+engine_ssh_control() {
+    # shellcheck disable=SC2153  # FLTH_STATE_DIR, set in lib/common.sh
+    printf '%s/ssh/%s\n' "$FLTH_STATE_DIR" "$(flth_hash8 "$FLTH_MACHINE_DIR")"
+}
+
+# Open the shared connection, if it is not open already.
+#
+# THE MASTER IS OPENED ON PURPOSE (-M -N -f), not as a side effect of the
+# first command (ControlMaster=auto). A master that grew out of a command
+# inherits that command's stdout and stderr and keeps them open for as
+# long as it persists — so a caller capturing the output of a one-second
+# call waits an hour for end-of-file. Opened this way it holds nothing of
+# the caller's: stdin is /dev/null and both streams go nowhere.
+#
+# A socket file that exists is trusted rather than probed (`ssh -O check`
+# is another process, on a path that has to cost milliseconds). When the
+# VM stops, whatever stops it calls engine_ssh_close; a master whose VM
+# died anyway leaves a socket ssh cannot connect to, and ssh then makes
+# an ordinary connection — slower, never wrong.
+engine_ssh_open() {
+    local cfg="$1" control="$2"
+    [ -S "$control" ] && return 0
+    mkdir -p "$(dirname "$control")"
+    ssh -F "$cfg" -o ControlMaster=yes -o "ControlPath=$control" \
+        -o "ControlPersist=$ENGINE_SSH_PERSIST" -N -f default \
+        </dev/null >/dev/null 2>&1 || true
+}
+
+# Close the master, if one is up. Called before a boot and after a stop:
+# a socket pointing at a VM that no longer exists is one ssh has to
+# discover the slow way.
+engine_ssh_close() {
+    local control
+    control="$(engine_ssh_control)"
+    [ -S "$control" ] || return 0
+    ssh -o "ControlPath=$control" -O exit default >/dev/null 2>&1 || true
+    rm -f "$control"
+}
+
 # Plain ssh with Vagrant's settings, not `vagrant ssh`: a second saved per
 # call, and no Vagrant machine lock to contend for.
 #
@@ -157,16 +213,31 @@ engine_ssh_config() {
 engine_run() {
     local script="$1" cfg before rc=0
     cfg="$(engine_ssh_config)" || return 1
-    printf '%s\n' "$script" | ssh -F "$cfg" default -T 'sudo bash -s' || rc=$?
+    engine_ssh "$cfg" "$script" || rc=$?
     if [ "$rc" -eq 255 ]; then
         before="$(cat "$cfg")"
         engine_ssh_config --refresh >/dev/null || return "$rc"
         if [ "$(cat "$cfg")" != "$before" ]; then
             rc=0
-            printf '%s\n' "$script" | ssh -F "$cfg" default -T 'sudo bash -s' || rc=$?
+            engine_ssh_close
+            engine_ssh "$cfg" "$script" || rc=$?
         fi
     fi
     return "$rc"
+}
+
+# FLTH_GUEST=1 IS PART OF THE CONTRACT. A program the harness runs in the
+# guest can be the very program that, on a host, would ask the harness to
+# run it in the guest — a test suite whose helpers shell out to `vm.sh`,
+# say. Inside, there is no VM to ask and none needed: it IS the test
+# environment. One exported variable is how it can tell, and it is set
+# for every command the harness runs there.
+engine_ssh() {
+    local cfg="$1" script="$2" control
+    control="$(engine_ssh_control)"
+    engine_ssh_open "$cfg" "$control"
+    printf 'export FLTH_GUEST=1\n%s\n' "$script" |
+        ssh -F "$cfg" -o "ControlPath=$control" default -T 'sudo bash -s'
 }
 
 # The share is a live mount in both directions (virtiofs on macOS, 9p on

@@ -57,6 +57,12 @@ tasks:
     # the guest's shell is the one that reads it.
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" run "$CLI_ARGS"']
 
+  exec:
+    desc: 'Run a command in a guest that is ALREADY up — the per-call path for a test process: chore vm:exec -- <command>'
+    # $CLI_ARGS for the same reason as `run`: the command is one argument
+    # to vm.sh, and the guest's shell is what reads its operators.
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" exec "$CLI_ARGS"']
+
   put:
     desc: 'Copy a file into the shared directory and print its guest path: chore vm:put <file>'
     args: [file]
@@ -76,6 +82,12 @@ tasks:
     # Tears down afterwards, and a teardown that fails fails the task.
     # FLTH_KEEP_VM=1 leaves the VM up for the next run.
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" test $CLI_ARGS']
+
+  guest-test:
+    desc: 'Boot, run the [test] guest_command INSIDE the guest from the mounted repository, tear down: chore vm:guest-test [-- args]'
+    # For a host that cannot run the suite natively. The consumer's
+    # [setup] script installs whatever the guest needs to run it.
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" guest-test $CLI_ARGS']
 
   hold:
     desc: Keep the VM up — the reaper leaves it, the guest deadline is cancelled

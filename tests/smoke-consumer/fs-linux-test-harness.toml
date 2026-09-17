@@ -22,3 +22,5 @@ script = "setup.sh"
 [test]
 # Runs on the host, from this directory, with the VM up.
 command = "./suite.sh"
+# Runs INSIDE the guest, from /repo — this directory, mounted there.
+guest_command = "./in-guest-suite.sh"

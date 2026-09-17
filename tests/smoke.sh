@@ -9,6 +9,10 @@
 #                 inside it, the guest deadline is armed
 #   slot          a second consumer cannot boot while this one holds it
 #   run / share   exit status and output come back; files cross both ways
+#   exec          the per-call path: never boots, and costs milliseconds
+#                 rather than a handshake (a test process makes hundreds)
+#   guest-test    the consumer's suite runs INSIDE the guest, from the
+#                 repository the harness mounts there
 #   hold / reap   a held VM survives the reaper; a leaked one does not
 #   test          a passing suite passes and tears down; a CORRUPTED one
 #                 FAILS with a non-zero exit and still tears down;
@@ -37,6 +41,8 @@ check_contains() { case "$1" in *"$2"*) ok "$3" ;; *) bad "$3 (lacked '$2' in: $
 step() { printf '\n== [%4ss] %s\n' "$(( $(date +%s) - started ))" "$1"; }
 state() { "$VM" status >/dev/null 2>&1 && echo running || echo not-running; }
 slot_holder() { "$SLOT" status | sed -n 's/^held by \([^ ]*\) for.*/\1/p'; }
+
+repo_guest="$(sed -n 's/^FLTH_REPO_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
 
 CONTENDER="$(mktemp -d)"
 cleanup() {
@@ -89,6 +95,27 @@ check_eq "$("$VM" run "cat $guest_path" 2>/dev/null)" "from host $$" "the guest 
 "$VM" run "echo from guest > /share/guest-file.txt" 2>/dev/null
 check_eq "$(cat "$("$VM" share)/guest-file.txt")" "from guest" "the host reads the guest's file"
 
+step "exec: the per-call path"
+"$VM" exec 'echo out; echo err >&2; exit 7' > "$CONTENDER/out" 2> "$CONTENDER/err"
+check_eq "$?" 7 "exec returns the guest's exit status"
+check_eq "$(cat "$CONTENDER/out")" out "and its stdout"
+check_contains "$(cat "$CONTENDER/err")" err "and its stderr"
+check_eq "$("$VM" exec "test -d $repo_guest && echo mounted" 2>/dev/null)" mounted "the consumer repository is mounted in the guest"
+check_eq "$("$VM" exec "cat $repo_guest/$(basename "$FLTH_CONFIG") | sed -n 's/^name = //p'" 2>/dev/null)" '"flth-smoke"' \
+    "and it is this consumer's own tree"
+"$VM" exec "touch $repo_guest/.smoke-wrote-this" 2>/dev/null
+check_true '[ -f "$CONSUMER/.smoke-wrote-this" ]' "the guest can write to it, so a build in there reaches the host" "the repository mount is read-only in the guest"
+rm -f "$CONSUMER/.smoke-wrote-this"
+# THE NUMBER THAT MATTERS: a suite asking the guest hundreds of questions
+# pays this per question. A fresh ssh handshake is ~0.7s; multiplexed,
+# ~0.03s.
+t0=$(date +%s%N)
+for _ in 1 2 3 4 5 6 7 8 9 10; do "$VM" exec true >/dev/null 2>&1; done
+per_call=$(( ( $(date +%s%N) - t0 ) / 10000000 ))
+echo "  (exec: ${per_call}ms per call, averaged over ten)"
+check_true "[ $per_call -lt 250 ]" "ten execs average ${per_call}ms each — the connection is reused" \
+    "exec costs ${per_call}ms per call, about what a fresh SSH handshake costs: the connection is NOT being reused"
+
 step "hold and reap"
 "$VM" hold
 check_eq "$("$VM" run 'test -e /run/fs-linux-test-harness-held && ! test -e /run/systemd/shutdown/scheduled && echo held' 2>/dev/null)" held \
@@ -100,6 +127,21 @@ rm -f "$machine/keep-running"   # a VM nothing accounted for: the leak the reape
 "$VM" reap
 check_eq "$(state)" not-running "reap stops a leaked VM"
 check_true '[ "$(slot_holder)" != flth-smoke ]' "and releases the slot" "reap left the slot held"
+
+step "guest-test: the suite runs inside the guest"
+"$VM" guest-test > "$CONTENDER/guest-test.log" 2>&1
+rc=$?
+sed 's/^/  guest-test: /' "$CONTENDER/guest-test.log" | tail -5
+check_eq "$rc" 0 "vm.sh guest-test exits 0 for a passing in-guest suite"
+check_contains "$(cat "$CONTENDER/guest-test.log")" "in-guest suite: $repo_guest as root" \
+    "the command ran in the guest, from the repository mount"
+check_eq "$(cat "$("$VM" share)/results/verdict" 2>/dev/null)" pass "and its results are on the share"
+check_eq "$(state)" not-running "the VM is torn down afterwards"
+
+"$VM" guest-test corrupt > "$CONTENDER/guest-test-corrupt.log" 2>&1
+rc=$?
+check_true '[ "$rc" -ne 0 ]' "a corrupted image fails guest-test too (exit $rc)" "a corrupted in-guest run passed"
+check_eq "$(state)" not-running "and it still tears down"
 
 step "test: a passing suite"
 "$VM" test

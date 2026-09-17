@@ -93,6 +93,7 @@ field() { printf '%s' "$json" | ruby -rjson -e 'd = JSON.parse(STDIN.read); v = 
 
 export FLTH_VM_NAME=rust-fs-demo FLTH_VM_MEMORY=2G FLTH_VM_CPUS=2 FLTH_VM_DISK=16G FLTH_VM_SSH_PORT=50122
 export FLTH_VM_DEADLINE_MINUTES=480 FLTH_SHARE_DIR="$SANDBOX/share" FLTH_QEMU_DIR="$SANDBOX/fw"
+export FLTH_REPO_DIR="$SANDBOX/repo"
 
 P=vm.provider.qemu
 
@@ -106,6 +107,8 @@ check_eq "$(field config/$P.cpu)" host "  host CPU"
 check_eq "$(field config/$P.qemu_dir)" "$SANDBOX/fw" "  firmware from FLTH_QEMU_DIR"
 check_contains "$(field config/$P.extra_qemu_args)" "security_model=mapped-xattr" "  shares over 9p"
 check_contains "$(field config/vm.provision)" "guest/mount-share.sh" "  and mounts it in the guest on every boot"
+check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_repo" "  and shares the consumer repository the same way"
+check_contains "$(field config/vm.provision)" '"repo"' "  mounting it too, on every boot"
 check_eq "$(field config/notify_forwarder.enable)" null "  no macOS-only settings"
 check_eq "$(field config/vm.hostname)" rust-fs-demo "  hostname from the project name"
 check_eq "$(field config/$P.memory)|$(field config/$P.smp)|$(field config/$P.disk_resize)" \
@@ -139,6 +142,7 @@ check_eq "$(field config/vm.box)" "christhomas/vagrant-rpi-bookworm-arm64" "  th
 check_eq "$(field config/$P.machine)" "virt,accel=hvf,highmem=on" "  HVF"
 check_eq "$(field config/notify_forwarder.enable)" true "  notify forwarder enabled (disabling it breaks boot)"
 check_contains "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  shares over virtiofs"
+check_contains "$(field config/vm.synced_folder)" '"/repo"' "  the consumer repository among them"
 check_eq "$(field config/$P.extra_qemu_args)" null "  no 9p"
 check_eq "$(field config/$P.virtiofs_guest_uid)" 1001 "  virtiofs uid matches the box's vagrant user"
 evaluate darwin23 arm64 0 vagrant-qemu
@@ -167,6 +171,7 @@ rm -rf /"
 refuse_env FLTH_VM_DEADLINE_MINUTES "0"
 refuse_env FLTH_SHARE_DIR "relative/share"
 refuse_env FLTH_SHARE_DIR "/tmp/x,readonly=off"
+refuse_env FLTH_REPO_DIR "relative/repo"
 
 unset FLTH_VM_NAME
 evaluate linux-gnu x86_64 1 vagrant-qemu

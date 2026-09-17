@@ -9,9 +9,26 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+PATHS="scripts vagrant vm.chores.yml chores.yml"
 FS_WORDS='xfs|btrfs|ext[234]|e2fs|mkfs|mke2fs|fsck|ntfs|erofs|squashfs|zfs|f2fs|exfat|vfat|debugfs|dumpe2fs|fsstress|fstests'
-hits="$(cd "$REPO" && grep -rniE "(^|[^a-z0-9])($FS_WORDS)([^a-z0-9]|$)" scripts vagrant vm.chores.yml chores.yml 2>/dev/null)"
+# shellcheck disable=SC2086  # the path list splits into words
+hits="$(cd "$REPO" && grep -rniE "(^|[^a-z0-9])($FS_WORDS)([^a-z0-9]|$)" $PATHS 2>/dev/null)"
 check_eq "$hits" "" "scripts/, vagrant/ and the chore files name no filesystem or its tooling"
+
+# A LANGUAGE IS AS SPECIFIC AS A FILESYSTEM. `guest-test` runs a
+# consumer's suite inside the guest, and the temptation is to teach the
+# harness how that consumer builds — a toolchain to install, a build
+# directory to set, a package manager to call. It knows none of it: the
+# consumer's [setup] script prepares the guest and [test] guest_command
+# says what to run.
+#
+# Ruby's own words are not on the list: Vagrant is written in it, and
+# host-tools.sh has to talk about the bundler a Vagrant-from-source
+# install uses. That is the ENGINE's language, not a consumer's.
+TOOLCHAIN_WORDS='cargo|rustup|rustc|crates\.io|npm|yarn|pnpm|node_modules|pip|pipenv|poetry|virtualenv|gradle|maven|dotnet|golang|go\.mod|composer|meson|cmake'
+# shellcheck disable=SC2086
+hits="$(cd "$REPO" && grep -rniE "(^|[^a-z0-9])($TOOLCHAIN_WORDS)([^a-z0-9]|$)" $PATHS 2>/dev/null)"
+check_eq "$hits" "" "and no language, toolchain or package manager either"
 
 hits="$(cd "$REPO" && grep -rnE 'apt-get|apt |dnf |yum |apk ' vagrant 2>/dev/null)"
 check_eq "$hits" "" "the VM definition installs no packages in the guest"
@@ -27,8 +44,12 @@ check_eq "$(grep -c "$stamp" "$REPO/tests/stubs/engine.sh" | tr -d ' ')" 1 "the 
 share_guest="$(sed -n 's/^FLTH_SHARE_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
 check_eq "$(grep -c "share_guest = \"$share_guest\"" "$REPO/vagrant/Vagrantfile" | tr -d ' ')" 1 "the Vagrantfile mounts the share where vm.sh says it is"
 
+repo_guest="$(sed -n 's/^FLTH_REPO_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
+check_eq "$(grep -c "repo_guest = \"$repo_guest\"" "$REPO/vagrant/Vagrantfile" | tr -d ' ')" 1 "and mounts the consumer repository where guest-test says it is"
+check_eq "$(grep -c "s|$repo_guest|" "$REPO/tests/stubs/engine.sh" | tr -d ' ')" 1 "and the stub engine redirects that mount too"
+
 # Every public vm.sh command has a chore task, and every task's script exists.
-commands="$(sed -n 's/^#   vm\.sh \([a-z]*\).*/\1/p' "$REPO/scripts/vm.sh")"
+commands="$(sed -n 's/^#   vm\.sh \([a-z-]*\).*/\1/p' "$REPO/scripts/vm.sh")"
 for c in $commands; do
     if grep -q "scripts/vm.sh\" $c\b" "$REPO/vm.chores.yml"; then
         ok "vm.sh $c is exposed as a chore task"

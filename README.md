@@ -136,14 +136,57 @@ repositories copy one template rather than inventing four.
 
 ### Where tests run
 
-**On the host.** The oracle tools — the filesystem's own `mkfs`, `fsck`,
-debugger, dump tools — are ordinary host programs on Linux (CI and
-workstations) and Homebrew formulae on macOS, and the tests call them
-directly. **The VM is for what the host cannot do**: images the kernel
-must make (loop mounts, xattrs and ACLs set through the kernel driver,
-anything that needs the in-kernel filesystem), driver interaction with the
-real kernel, and tools a macOS host lacks. There is no compiler toolchain
-in the VM, and the test binaries never run there.
+**Everything Linux runs in the guest.** Not "when the host lacks it" —
+always. The oracle tools (the filesystem's own `mkfs`, `fsck`, debugger
+and dump tools) on a workstation are whatever that machine happens to
+have: a keg-only Homebrew formula on a Mac, a distribution build on
+Linux, a different version per developer — and on a Mac they are not the
+platform the images are for at all. An oracle whose answer depends on
+which laptop asked is not an oracle. So the consumer's `[setup]` script
+installs them IN THE GUEST, one version for everyone, and the tests reach
+them through one helper that runs them there.
+
+That gives three kinds of work, all in the same VM:
+
+| Work | Why it is in the guest |
+| --- | --- |
+| **Tool oracles** — `fsck -n`, the debugger, the dump tools on an image | One version, one platform, the same answers on every machine. A developer's laptop installs none of them. |
+| **Kernel oracles** — the real in-kernel driver reading back what the driver under test wrote, and images only the kernel can make | A loop mount needs root and a kernel that has the filesystem. It happens here and never on the host. |
+| **The suite itself, when the host is not Linux** | We run the Linux tests on Linux. On a Linux host that is the host; on a Mac the harness mounts the repository in the guest and the suite is built and run there (`vm.sh guest-test`). |
+
+**On a Linux host the test binaries still run natively** — the host IS
+Linux — and only the tool and kernel oracles cross into the guest.
+
+### Talking to the guest from a test process
+
+A suite asks the guest a lot of small questions. Three rules keep that
+cheap and safe:
+
+1. **`vm.sh exec`, not `vm.sh run`, for a per-call path.** `run` boots the
+   VM when it is down, which is right for a script and wrong inside a test
+   binary. `exec` never boots: it checks the process table, runs the
+   command, and fails naming `chore vm:up` when there is no VM.
+2. **One boot per run.** Bring the VM up once (the first call of the
+   suite, or the task) and leave it; the harness keeps ONE multiplexed SSH
+   connection alive, so a command costs about 0.03 s instead of the 0.7 s
+   a fresh handshake costs. Let `lifecycle: after_all`'s reaper stop it at
+   the end of the invocation rather than holding it.
+3. **Nothing is copied.** The consumer repository is mounted in the guest
+   (`/repo`), so a file the test wrote under the checkout is already
+   there; the shared directory (`/share`) is for what a run hands across.
+   A test that keeps its scratch files inside the repository can pass the
+   guest the same absolute path it used on the host — rust-fs-ext4
+   symlinks the host's own path to `/repo` in the guest and passes
+   arguments through unchanged.
+
+Batch where it matters: one guest call that mounts an image, walks it,
+hashes every file and prints a report beats a hundred round trips asking
+one question each.
+
+Every command the harness runs in the guest has **`FLTH_GUEST=1`** in its
+environment. A test helper that would otherwise ask the harness to run a
+tool for it can see that it is already inside, and run the tool directly
+— the same rule (the tool runs in the guest), one less hop.
 
 ### Never skip
 
@@ -166,11 +209,13 @@ Same names in every consumer:
 | Task | What it does |
 | --- | --- |
 | `chore siblings` | Check the sibling repositories out at their pinned refs, the harness included (`../fs-linux-test-harness`). Refuses to move a dirty sibling. |
-| `chore tools` | Install the host oracle tools and verify their versions. Linux: the distribution's packages (apt, with sudo when not root). macOS: print the Homebrew formulae. `--check` mode for the other tasks to fail early. |
+| `chore tools` | Install and verify what the HOST needs — which is NOT the oracle tools: they live in the guest, installed by the `[setup]` script. Typically the VM's own requirements (`vm:host:check`) plus anything a non-oracle host test needs. `--check` mode for the other tasks to fail early. |
 | `chore fixtures` | Build every fixture image. Kernel work goes through the harness (`vm.sh run`, from a script that sources `vm-session.sh` so the VM comes down however the build ends); plain `mkfs`/debugger work happens on the host. Declares `sources`/`generates` so an unchanged recipe does not reboot a VM. Pins what makes a build vary (UUIDs, hash seeds) and says what still does. |
 | `chore test:unit` | The tests that need no tool and no fixture. CI runs it on a runner with no fixtures, which is what proves the split. |
-| `chore test:oracle` | The driver writes, independent tools read back: `fsck -n` for consistency **and** the filesystem's debugger for content and metadata (dump and compare, stat, extent maps, block ownership, the journal) — including a negative case that corrupts a data byte and shows the consistency checker passing while the content check fails, because that is the gap the second tool closes. |
-| `chore test` | Everything, exactly as CI runs it: unit, a check that the tools and fixtures are present (so a missing one fails once, not in every test), the oracles with their output shown (`--show-output`, so the log carries what was checked, not just a count), the whole suite, the script tests. |
+| `chore test:oracle` | The driver writes, independent tools read back IN THE GUEST: `fsck -n` for consistency **and** the filesystem's debugger for content and metadata (dump and compare, stat, extent maps, block ownership, the journal) — including a negative case that corrupts a data byte and shows the consistency checker passing while the content check fails, because that is the gap the second tool closes. |
+| `chore test:kernel` | The driver writes, THE REAL KERNEL reads back: the image loop-mounted in the guest, and names, sizes, modes, xattrs, ACLs and content hashes compared against what was written — plus one reverse case (the kernel writes, the driver reads) and one deliberate corruption that must fail. |
+| `chore test:vm` | The whole suite built and run INSIDE the guest (`vm.sh guest-test`), which is how a host that is not Linux runs a Linux suite at all. CI runs it on a KVM runner so the path cannot rot. |
+| `chore test` | Everything, exactly as CI runs it: unit, a check that what the host provides is present (so a missing one fails once, not in every test), the oracles with their output shown (`--show-output`, so the log carries what was checked, not just a count), the kernel oracles, the whole suite, the script tests. On a host that is not Linux it runs `test:vm` instead — the same suite, one Linux away. |
 | `chore vm:*` | This harness's tasks, included from the sibling (see [Quickstart](#quickstart)). |
 
 Include `vm.chores.yml` with `optional: true`: the harness is a sibling
@@ -196,7 +241,9 @@ pipeline are the same evidence:
 | --- | --- | --- |
 | `unit` | `ubuntu-24.04` | `chore siblings`, `chore test:unit`, with no fixtures present. |
 | `fixtures` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `../fs-linux-test-harness/scripts/ci-setup-linux.sh` (KVM access, QEMU, Vagrant; its `box-cache-key` output keys an `actions/cache` of `~/.vagrant.d/boxes`), `chore fixtures`, upload the images as an artifact. |
-| `test` | each architecture the driver ships on, natively | `chore siblings`, `chore tools`, download the fixtures, `chore lint`, `chore test`. GitHub's arm64 runners have no KVM, so fixtures come from the x86_64 job: disk images are the same on every architecture. |
+| `test` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `ci-setup-linux.sh`, download the fixtures, `chore lint`, `chore test`. Every oracle tool call and every kernel mount happens in the VM this job boots — and a step checks the tools are NOT installed on the runner, so a green run is evidence of that. |
+| `test` (other architectures) | e.g. `ubuntu-24.04-arm` | GitHub's arm64 runners have no KVM, so no VM can run there: this job runs the tiers that need none (lint, the unit tier, the fixture-reading tests). The oracles read the same images on every architecture and are covered by the x86_64 job. |
+| `suite-in-vm` | `ubuntu-24.04` (x86_64, KVM) | `chore test:vm`: the suite compiled and run inside the guest. It is the macOS path, exercised on every pull request so it cannot rot. |
 | `ci-ok` | `ubuntu-latest`, `if: always()` | Needs every other job; fails if any failed, was cancelled **or was skipped**. |
 
 `.github-guard` declares `required = ci-ok` and nothing else, so jobs can be
@@ -220,7 +267,9 @@ chose.
 | `[project] name` | string | **required** | Lowercase letters, digits and inner hyphens, at most 63. The VM's hostname, the name of its machine directory, and the name the slot shows other repositories. Two checkouts of one project share a machine; keep names unique across projects. |
 | `[setup] script` | string | **required** | Path relative to the repository. Run as root inside the VM after a boot, **only when it has changed** since it was last applied (a SHA-256 stamp in the guest), with stdin from `/dev/null` and `FLTH_PROJECT` and `FLTH_SHARE` set. A failure fails `up` and leaves the VM running for inspection. `chore vm:provision` re-runs it regardless. |
 | `[test] command` | string | none | Run by `chore vm:test` on the **host**, from the repository root, with the VM up; extra arguments are appended. It reaches the guest through `FLTH_VM` (the path of `vm.sh`) and finds the share at `FLTH_SHARE_HOST`. The VM is torn down afterwards. |
+| `[test] guest_command` | string | none | Run by `chore vm:guest-test` **inside the guest**, from `/repo` (this repository, mounted there read-write), with arguments appended and `FLTH_GUEST=1` set. Output streams as it happens and its exit status is the task's. The harness knows nothing about what it is: the `[setup]` script installs whatever the guest needs to run it — a compiler, an interpreter, a package manager's worth of tools — and anything the run should leave behind goes in the share. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
+| *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
 | `[vm] memory` | string | `4G` | Guest memory, e.g. `2G`, `2048M`. |
 | `[vm] cpus` | integer | `4` | Guest CPUs, 1–64. |
 | `[vm] disk` | string | `32G` | Guest disk size, e.g. `16G`. |
@@ -238,9 +287,11 @@ relative, and must not leave the repository.
 | --- | --- |
 | `chore vm:up` | Boot, apply setup, and **hold** it: stays up until `vm:down`, the reaper leaves it, the guest deadline is cancelled. |
 | `chore vm:run -- <command>` | Run a command as root in the guest (booting if needed). Exit status and stdout/stderr are the guest command's. Operators like `&&` and `\|` belong to the guest. |
+| `chore vm:exec -- <command>` | The same, in a VM that is ALREADY up — and it never boots one. The per-call path for a test process: no state probe beyond a process check, and one multiplexed SSH connection shared by every call (~0.03 s each). Fails naming `chore vm:up` when nothing is running. |
 | `chore vm:put <file>` | Copy a file into the shared directory; print its guest path (`/share/<name>`). |
 | `chore vm:share` | Print the host path of the shared directory. |
-| `chore vm:test [-- args]` | Boot, run the `[test] command`, tear down. A failing teardown fails the task; the test's own failure wins if both fail. `FLTH_KEEP_VM=1` keeps the VM. |
+| `chore vm:test [-- args]` | Boot, run the `[test] command` on the HOST, tear down. A failing teardown fails the task; the test's own failure wins if both fail. `FLTH_KEEP_VM=1` keeps the VM. |
+| `chore vm:guest-test [-- args]` | Boot, run the `[test] guest_command` INSIDE the guest from `/repo`, tear down — the same session rules. For a suite whose host cannot run it. |
 | `chore vm:provision` | Re-run the setup script, changed or not. |
 | `chore vm:down` | Halt, **confirm** the VM stopped, release the slot. Fails if the VM is still running or its state cannot be read. Keeps the disk. |
 | `chore vm:status` | Exit 0 when running, 1 otherwise, and say which. |
@@ -271,6 +322,8 @@ relative, and must not leave the repository.
 | `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | The slot lock. Must be the same for every repository on the machine. |
 | `FLTH_SLOT_WAIT` | `3600` | Seconds `up` waits for the slot before giving up. |
 | `FLTH_SLOT_BOOT_GRACE` | `180` | Seconds a new slot holder is trusted before a VM must be running. |
+| `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
+| `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
 | `FLTH_FIRMWARE_CODE`, `FLTH_FIRMWARE_VARS` | `/usr/share/AAVMF/AAVMF_{CODE,VARS}.fd` | UEFI firmware for arm64 guests on a Linux host. |
 
 ## The VM
@@ -315,6 +368,14 @@ The Vagrant engine answers `running` from the process table (a QEMU
 process naming this machine's disk) without calling Vagrant, and runs
 commands over plain `ssh` with Vagrant's cached ssh settings — about a
 second per `run`, against five to ten for `vagrant ssh` under bundler.
+
+**One connection, reused.** The first command opens an SSH master
+deliberately (`-M -N -f`, its own streams, socket under `FLTH_STATE_DIR`)
+and later commands ride it: about 0.03 s each instead of 0.7 s. The master
+is opened on purpose rather than grown out of the first command — a master
+that inherits a command's stdout keeps it open for as long as it persists,
+so a caller capturing the output of a one-second call would wait an hour
+for end-of-file. It is closed before a boot and after a stop.
 
 ## The slot lock
 
