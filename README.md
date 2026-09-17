@@ -48,6 +48,7 @@ one, which is how an oracle goes unnoticed running against nothing.
 | `scripts/vm-slot.sh` | The machine-wide slot lock (`acquire` / `release` / `status`). |
 | `scripts/vm-session.sh` | Sourced by a consumer script: tear the VM down when it exits. |
 | `scripts/host-tools.sh` | Checks the host and prints exactly what to install. |
+| `scripts/ci-setup-linux.sh` | Sets a hosted x86_64 Linux CI runner up to boot the VM (KVM access, QEMU, Vagrant, vagrant-qemu), for the harness's CI and every consumer's; `--box-cache-key` prints the box cache key. |
 | `scripts/lib/` | `config.sh` (the TOML reader), `engine.sh` (the engine interface), `engine-vagrant.sh` (its Vagrant implementation), `common.sh` (paths). |
 | `vagrant/` | The Vagrantfile (chooses box, accelerator, plugins and sharing by host) and the guest-side `deadline.sh` and `mount-share.sh`. |
 | `examples/minimal/` | The smallest consumer: config, setup script, `chores.yml`. |
@@ -290,7 +291,7 @@ brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd
 vagrant plugin install vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas
 ```
 
-**Linux x86_64** (as CI does it; see `.github/actions/install-vagrant-qemu`)
+**Linux x86_64** (a CI runner does all of this with `scripts/ci-setup-linux.sh`)
 
 ```sh
 sudo apt-get install qemu-system-x86 qemu-utils

@@ -49,4 +49,13 @@ while IFS= read -r line; do
 done < "$(dirname "$0")/.generic-scripts.out"
 rm -f "$(dirname "$0")/.generic-scripts.out"
 
+# The CI box cache key is derived from the Vagrantfile's pin, so a box
+# bump re-keys the cache rather than restoring the old box under a new pin.
+box_version="$(sed -n 's/^ *config\.vm\.box_version = "\([^"]*\)"$/\1/p' "$REPO/vagrant/Vagrantfile")"
+check_eq "$("$REPO/scripts/ci-setup-linux.sh" --box-cache-key)" \
+    "vagrant-box-cloud-image-debian-12-$box_version-amd64" \
+    "ci-setup-linux.sh keys the box cache on the box and version the Vagrantfile pins"
+check_eq "$(grep -c 'scripts/ci-setup-linux.sh' "$REPO/.github/workflows/ci.yml" | tr -d ' ')" 1 \
+    "the harness's own smoke job sets its runner up with the script consumers use"
+
 finish generic
