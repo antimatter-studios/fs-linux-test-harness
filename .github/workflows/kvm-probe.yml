@@ -1,11 +1,11 @@
 name: kvm-probe
 
-# Does GitHub's hosted arm64 runner expose KVM? Manual, and not a gate:
-# the answer decides whether an arm64 smoke job can exist.
+# Does a GitHub-hosted runner expose KVM? Manual, and not a gate: the
+# answer decides whether a smoke job can run there. As of 2026-09-17:
+# ubuntu-latest (x86_64) has /dev/kvm; ubuntu-24.04-arm has none, so the
+# arm64 path is proven by `chore smoke` on an arm64 host instead.
 on:
   workflow_dispatch:
-  pull_request:
-    paths: [.github/workflows/kvm-probe.yml]
 
 permissions:
   contents: read
@@ -23,8 +23,11 @@ jobs:
           uname -a
           grep -m1 -iE 'model name|CPU implementer' /proc/cpuinfo || true
           ls -l /dev/kvm 2>&1 || true
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules/99-kvm4all.rules >/dev/null
-          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm || true
+          if [ -e /dev/kvm ]; then
+            sudo mkdir -p /etc/udev/rules
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm || true
+          fi
           if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
             echo "::notice::${{ matrix.runner }}: /dev/kvm is present and usable"
           else
