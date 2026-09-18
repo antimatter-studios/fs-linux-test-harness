@@ -6,6 +6,11 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+## v0.1.0 — 2026-09-18
+
+First release. rust-fs-ext4 is the first consumer and pins this tag; the
+other filesystem repositories follow the same contract.
+
 ### Added
 
 - **`vm.sh exec` (`chore vm:exec`)**: run a command in a guest that is
