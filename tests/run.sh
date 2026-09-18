@@ -41,9 +41,23 @@ else
     ruby -c vagrant/Vagrantfile || failed=1
 fi
 
-for t in config slot vm session engine-vagrant deadline vagrantfile generic; do
-    step "tests/$t.sh"
-    bash "tests/$t.sh" || failed=1
+# EVERY test file, found rather than listed. This was a list of eight names,
+# which is the shape that quietly drops a suite: add tests/foo.sh, forget the
+# list, and it runs nowhere while the board stays green. (Two repositories in
+# this family were doing exactly that.) smoke.sh is excluded because it boots a
+# VM — `chore smoke` runs it — and lib.sh is sourced, not run.
+suites=""
+for f in tests/*.sh; do
+    case "$f" in tests/lib.sh|tests/run.sh|tests/smoke.sh) continue ;; esac
+    [ -f "$f" ] && suites="$suites $f"
+done
+if [ -z "$suites" ]; then
+    echo "FAIL  no test files matched tests/*.sh — the self-test would pass having run nothing"
+    failed=1
+fi
+for t in $suites; do
+    step "$t"
+    bash "$t" || failed=1
 done
 
 echo

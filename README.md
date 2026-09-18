@@ -202,6 +202,50 @@ installed, and rust-fs-ext4's did exactly that on every CI run while two
 violations sat in the tree. Require the tool first, and have `chore tools`
 install it.
 
+### Output: quiet by default, `--verbose` on request
+
+A task prints a **verdict**, not a transcript: a line per suite, a final
+count, and the path of the file that holds everything else. The detail is
+never thrown away — it is written to a log under the repository's own
+scratch directory and named at the end — but a passing run does not put it
+on the terminal.
+
+| | Prints |
+| --- | --- |
+| **Pass** | one line per suite, a final `N passed` (or the count of comparisons an oracle made), and the log path |
+| **Fail** | the same, plus the excerpt that failed — the failing test and its output, not the whole run |
+| **`--verbose` / `-v`, or `FLTH_VERBOSE=1`** | everything, streamed live: the VM booting, each guest command, every test name |
+| **CI** | the quiet form, with the log uploaded as an artefact |
+
+Two reasons, and the second is the one people forget. A run that prints
+three thousand lines hides the twenty that matter, so a failure costs
+minutes of scrolling. And every reader pays for that output — a person, a
+CI log viewer, and an agent working on the repository, which re-reads its
+whole transcript on each step and so pays for a verbose run many times
+over. Quiet by default is not tidiness; it is what makes a failure
+findable and a long session affordable.
+
+`scripts/output-budget.sh` does this for a task: it runs the command, writes
+everything to a log, prints one line on success, prints the tail on failure,
+and **exits 65 when a run passed but printed more than its budget** — a status
+you can tell apart from a failing suite. `--verbose` (or `FLTH_VERBOSE=1`)
+streams as well, and does not exempt a run from its budget:
+
+```sh
+../fs-linux-test-harness/scripts/output-budget.sh \
+    --log .test-logs/oracle.log --max-lines 120 --label 'test:oracle' \
+    -- cargo test --test oracle_debugfs
+```
+
+Set the budget from a measured run, and raise it deliberately when a suite
+grows — the same way the executed-test floors are set. A budget nobody can
+breach measures nothing.
+
+`--verbose` exists because watching matters sometimes: a VM that is slow to
+boot, a suite that hangs, a guest command that needs seeing as it happens.
+It is a flag on the task, not a different code path — the same run, more of
+it shown.
+
 ### The tasks
 
 Same names in every consumer:
@@ -215,7 +259,7 @@ Same names in every consumer:
 | `chore test:oracle` | The driver writes, independent tools read back IN THE GUEST: `fsck -n` for consistency **and** the filesystem's debugger for content and metadata (dump and compare, stat, extent maps, block ownership, the journal) — including a negative case that corrupts a data byte and shows the consistency checker passing while the content check fails, because that is the gap the second tool closes. |
 | `chore test:kernel` | The driver writes, THE REAL KERNEL reads back: the image loop-mounted in the guest, and names, sizes, modes, xattrs, ACLs and content hashes compared against what was written — plus one reverse case (the kernel writes, the driver reads) and one deliberate corruption that must fail. |
 | `chore test:vm` | The whole suite built and run INSIDE the guest (`vm.sh guest-test`), which is how a host that is not Linux runs a Linux suite at all. CI runs it on a KVM runner so the path cannot rot. |
-| `chore test` | Everything, exactly as CI runs it: unit, a check that what the host provides is present (so a missing one fails once, not in every test), the oracles with their output shown (`--show-output`, so the log carries what was checked, not just a count), the kernel oracles, the whole suite, the script tests. On a host that is not Linux it runs `test:vm` instead — the same suite, one Linux away. |
+| `chore test` | Everything, exactly as CI runs it: unit, a check that what the host provides is present (so a missing one fails once, not in every test), the oracles with their output captured (to the log, and echoed only under `--verbose`, so a pass is a verdict and a failure is an excerpt), the kernel oracles, the whole suite, the script tests. On a host that is not Linux it runs `test:vm` instead — the same suite, one Linux away. |
 | `chore vm:*` | This harness's tasks, included from the sibling (see [Quickstart](#quickstart)). |
 
 Include `vm.chores.yml` with `optional: true`: the harness is a sibling
