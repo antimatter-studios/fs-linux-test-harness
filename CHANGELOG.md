@@ -37,6 +37,13 @@ changes allowed in minor versions until 1.0.
   an interpreter, anything — and `tests/generic.sh` now guards against a
   language or toolchain name leaking into harness code, as it already did
   for filesystems.
+- **A guest that goes away fails the call instead of holding it.** The
+  SSH client keeps the connection alive (`ServerAliveInterval=15`,
+  `ServerAliveCountMax=8`): a VM halted by its own poweroff deadline, by
+  a `destroy` or by a host running out of memory used to leave every
+  command it was serving waiting for ever. Found the hard way — a suite
+  sat for forty-eight minutes on two calls whose VM had powered off half
+  an hour earlier.
 - **`FLTH_GUEST=1`** in every command the harness runs in the guest, so a
   program can tell it is already inside the test VM rather than asking the
   harness to put it there.

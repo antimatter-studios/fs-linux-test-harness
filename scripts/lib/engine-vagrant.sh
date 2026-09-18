@@ -160,6 +160,15 @@ engine_ssh_config() {
 # the length is fixed whatever the project is called.
 ENGINE_SSH_PERSIST="${FLTH_SSH_PERSIST:-3600}"
 
+# A GUEST THAT GOES AWAY MUST FAIL THE CALL, NOT HOLD IT. A VM that is
+# halted — by its own poweroff deadline, by a `destroy`, by the machine
+# running out of memory — leaves every command it was running with a
+# connection nothing will ever answer on. Without these, ssh waits for
+# ever: a test suite that ran for forty-eight minutes on two calls whose
+# VM had powered off half an hour earlier is how this was found. With
+# them the call fails in about two minutes and says the VM is gone.
+ENGINE_SSH_ALIVE=(-o ServerAliveInterval=15 -o ServerAliveCountMax=8)
+
 engine_ssh_control() {
     # shellcheck disable=SC2153  # FLTH_STATE_DIR, set in lib/common.sh
     printf '%s/ssh/%s\n' "$FLTH_STATE_DIR" "$(flth_hash8 "$FLTH_MACHINE_DIR")"
@@ -184,7 +193,7 @@ engine_ssh_open() {
     [ -S "$control" ] && return 0
     mkdir -p "$(dirname "$control")"
     ssh -F "$cfg" -o ControlMaster=yes -o "ControlPath=$control" \
-        -o "ControlPersist=$ENGINE_SSH_PERSIST" -N -f default \
+        -o "ControlPersist=$ENGINE_SSH_PERSIST" "${ENGINE_SSH_ALIVE[@]}" -N -f default \
         </dev/null >/dev/null 2>&1 || true
 }
 
@@ -237,7 +246,7 @@ engine_ssh() {
     control="$(engine_ssh_control)"
     engine_ssh_open "$cfg" "$control"
     printf 'export FLTH_GUEST=1\n%s\n' "$script" |
-        ssh -F "$cfg" -o "ControlPath=$control" default -T 'sudo bash -s'
+        ssh -F "$cfg" -o "ControlPath=$control" "${ENGINE_SSH_ALIVE[@]}" default -T 'sudo bash -s'
 }
 
 # The share is a live mount in both directions (virtiofs on macOS, 9p on

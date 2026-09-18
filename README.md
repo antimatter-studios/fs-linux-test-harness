@@ -383,6 +383,14 @@ that inherits a command's stdout keeps it open for as long as it persists,
 so a caller capturing the output of a one-second call would wait an hour
 for end-of-file. It is closed before a boot and after a stop.
 
+**A guest that goes away fails the call.** The client keeps the
+connection alive (`ServerAliveInterval=15`, `ServerAliveCountMax=8`), so
+a VM halted underneath a running command — by its own deadline, by a
+`destroy`, by a host out of memory — ends that command in about two
+minutes instead of leaving it waiting for ever. Set `[vm]
+deadline_minutes` longer than your suite takes: the deadline does not
+know what is using the VM.
+
 ## The slot lock
 
 One VM runs at a time **across every repository on the machine**. VMs
