@@ -225,6 +225,22 @@ whole transcript on each step and so pays for a verbose run many times
 over. Quiet by default is not tidiness; it is what makes a failure
 findable and a long session affordable.
 
+`scripts/output-budget.sh` does this for a task: it runs the command, writes
+everything to a log, prints one line on success, prints the tail on failure,
+and **exits 65 when a run passed but printed more than its budget** — a status
+you can tell apart from a failing suite. `--verbose` (or `FLTH_VERBOSE=1`)
+streams as well, and does not exempt a run from its budget:
+
+```sh
+../fs-linux-test-harness/scripts/output-budget.sh \
+    --log .test-logs/oracle.log --max-lines 120 --label 'test:oracle' \
+    -- cargo test --test oracle_debugfs
+```
+
+Set the budget from a measured run, and raise it deliberately when a suite
+grows — the same way the executed-test floors are set. A budget nobody can
+breach measures nothing.
+
 `--verbose` exists because watching matters sometimes: a VM that is slow to
 boot, a suite that hangs, a guest command that needs seeing as it happens.
 It is a flag on the task, not a different code path — the same run, more of
