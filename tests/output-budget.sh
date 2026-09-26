@@ -38,16 +38,37 @@ run c.log --max-bytes 4 --label demo -- sh -c 'echo 12345678'
 check_eq "$rc" 65 "a byte budget is enforced too"
 
 # ------------------------------------------------- a failure is not a budget
-# The command's status must escape unchanged, and the tail must be shown: a
-# failing run that printed only the budget complaint would be worse than no
-# budget at all.
+# The command's status must escape unchanged, and the failure must name the log
+# rather than complain about the budget: a failing run that printed only the
+# budget complaint would be worse than no budget at all.
 run d.log --max-lines 1 --tail 2 --label demo -- sh -c 'echo noise; echo "the real error"; exit 3'
 check_eq "$rc" 3 "a failing command exits with ITS status, not the budget's"
-check_contains "$out" "the real error" "and its tail is shown"
+check_contains "$out" "the real error" "and --tail shows it"
 case "$out" in
     *"budget"*) bad "a failure does not complain about the budget" ;;
     *) ok "a failure does not complain about the budget" ;;
 esac
+
+# -------------------------------------------------- a failure is quiet by default
+# The reader who pays most for a printed tail is an agent, which re-reads its
+# transcript on every later step and rarely needs the last forty lines anyway.
+# One line naming the log lets it fetch the part it wants, once.
+run d2.log --label demo -- sh -c 'echo noise; echo "the real error"; exit 3'
+check_eq "$rc" 3 "a failure still exits with the command's status"
+check_contains "$out" "FAILED (exit 3)" "and says it failed"
+check_contains "$out" "$work/d2.log" "and names the log"
+check_contains "$out" "2 lines in" "and says how much is in it"
+case "$out" in
+    *"the real error"*) bad "a failure prints no tail unless asked" ;;
+    *) ok "a failure prints no tail unless asked" ;;
+esac
+# Exported, not prefixed: `VAR=1 out=$(...)` is two assignments and no command,
+# so the value never reaches the script's environment.
+export FLTH_FAIL_TAIL=1
+out="$("$B" --log "$work/d3.log" --label demo -- sh -c 'echo x; echo y; exit 4' 2>&1)"; rc=$?
+unset FLTH_FAIL_TAIL
+check_eq "$rc" 4 "FLTH_FAIL_TAIL keeps the status"
+check_contains "$out" "last 1 lines" "and asks for a tail that size"
 
 # ------------------------------------------------------------------ verbose
 run e.log --label demo --verbose -- sh -c 'echo streamed'

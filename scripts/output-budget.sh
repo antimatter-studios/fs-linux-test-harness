@@ -9,7 +9,10 @@
 #   --log FILE     where the whole run is written (created; its directory too)
 #   --max-lines N  refuse a run whose output exceeds N lines   (default: none)
 #   --max-bytes N  refuse a run whose output exceeds N bytes   (default: none)
-#   --tail N       lines of the log to show when the command fails (default 40)
+#   --tail N       lines of the log to print when the command fails. DEFAULT 0:
+#                  a failure prints the verdict, the log path and the command's
+#                  own status, and nothing else. Set it (or FLTH_FAIL_TAIL) when
+#                  a person is watching and wants the assertion on screen.
 #   --label TEXT   what to call the run in the summary line (default: the command)
 #   --verbose      stream the output as it happens as well as logging it;
 #                  also set by FLTH_VERBOSE=1. Budgets are still enforced.
@@ -23,16 +26,23 @@
 # repository controls. "Keep it quiet" as a convention rots in a week; as a
 # number that fails the build it does not.
 #
-# The budget is not a gag. Everything goes to --log, the path is printed, and
-# a failure prints the tail of it, so nothing is lost by making the terminal
-# quiet.
+# The budget is not a gag. Everything goes to --log and the path is printed, so
+# nothing is lost by making the terminal quiet.
+#
+# WHY A FAILURE IS QUIET TOO, BY DEFAULT. Printing the tail is right for a
+# person at a terminal and wrong for the reader who pays most: an agent
+# re-reads its whole transcript on every later step, so forty lines of a panic
+# cost it forty lines many times over — and they are rarely the forty it needs,
+# because the assertion it wants is usually further up the log. One line naming
+# the log lets it fetch exactly the part it wants, once. `--tail N`, or
+# FLTH_FAIL_TAIL=N, brings the old behaviour back for whoever is watching.
 #
 # EXIT STATUS is the command's own, except that a breached budget exits 65
 # when the command itself succeeded — a run that passed but would not fit is
 # still a failure, and one you can tell apart from a failing suite.
 set -uo pipefail
 
-LOG=""; MAX_LINES=0; MAX_BYTES=0; TAIL=40; LABEL=""
+LOG=""; MAX_LINES=0; MAX_BYTES=0; TAIL="${FLTH_FAIL_TAIL:-0}"; LABEL=""
 VERBOSE="${FLTH_VERBOSE:-0}"
 
 while [ $# -gt 0 ]; do
@@ -40,7 +50,7 @@ while [ $# -gt 0 ]; do
         --log)       shift; LOG="${1:-}" ;;
         --max-lines) shift; MAX_LINES="${1:-0}" ;;
         --max-bytes) shift; MAX_BYTES="${1:-0}" ;;
-        --tail)      shift; TAIL="${1:-40}" ;;
+        --tail)      shift; TAIL="${1:-0}" ;;
         --label)     shift; LABEL="${1:-}" ;;
         --verbose|-v) VERBOSE=1 ;;
         --)          shift; break ;;
@@ -75,11 +85,11 @@ lines=$(wc -l < "$LOG" | tr -d ' ')
 bytes=$(wc -c < "$LOG" | tr -d ' ')
 
 if [ "$rc" -ne 0 ]; then
-    echo "$LABEL: FAILED (exit $rc)" >&2
-    if [ "$VERBOSE" != 1 ]; then
+    echo "$LABEL: FAILED (exit $rc) — $lines lines in $LOG" >&2
+    # Verbose already streamed the run, so repeating its tail says nothing new.
+    if [ "$VERBOSE" != 1 ] && [ "$TAIL" -gt 0 ]; then
         echo "--- last $TAIL lines of $LOG" >&2
         tail -n "$TAIL" "$LOG" >&2
-        echo "--- $lines lines total in $LOG" >&2
     fi
     exit "$rc"
 fi
