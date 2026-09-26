@@ -6,6 +6,34 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+### Removed
+
+- **`scripts/output-budget.sh` and `tests/output-budget.sh`.** The wrapper
+  was written here, and the whole filesystem-driver family copied it: three
+  divergent copies reached four different ways, each repository internally
+  consistent and nothing comparing them
+  (antimatter-studios/rust-fs-core#153). There is one copy now, in
+  `antimatter-studios/rust-fs-core`, and consumers resolve it at run time
+  rather than committing one of their own.
+
+  This harness never used the wrapper for any task of its own — `chore
+  check` runs `tests/run.sh` directly — so the copy here was purely a
+  service to consumers, and every consumer has moved. The fix made to it in
+  #12, where a failing tier prints the verdict and the log path instead of
+  forty lines of tail, went into core as
+  antimatter-studios/rust-fs-core#164 and shipped in `am-fs-core` v0.2.13,
+  so nothing is lost by moving off this copy.
+
+  The README still carries the policy, because the policy is the harness's
+  business: a task prints a verdict, keeps the log, and a budget nobody can
+  breach measures nothing. What it no longer carries is the script.
+
+  The variables in the canonical wrapper are `OUTPUT_BUDGET_VERBOSE` and
+  `OUTPUT_BUDGET_FAIL_TAIL`, not `FLTH_VERBOSE` and `FLTH_FAIL_TAIL`. That
+  rename fails silently — the old name is simply not read and the run stays
+  quiet — so core reports a superseded `FLTH_*` name on stderr rather than
+  ignoring it.
+
 ## v0.1.0 — 2026-09-18
 
 First release. rust-fs-ext4 is the first consumer and pins this tag; the

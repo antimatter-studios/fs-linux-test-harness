@@ -213,8 +213,8 @@ on the terminal.
 | | Prints |
 | --- | --- |
 | **Pass** | one line per suite, a final `N passed` (or the count of comparisons an oracle made), and the log path |
-| **Fail** | the verdict, the log path, the command's own status — and nothing else. `--tail N` or `FLTH_FAIL_TAIL=N` prints that many lines of the log for whoever is watching |
-| **`--verbose` / `-v`, or `FLTH_VERBOSE=1`** | everything, streamed live: the VM booting, each guest command, every test name |
+| **Fail** | the verdict, the log path, the command's own status — and nothing else. `--tail N` or `OUTPUT_BUDGET_FAIL_TAIL=N` prints that many lines of the log for whoever is watching |
+| **`--verbose` / `-v`, or `OUTPUT_BUDGET_VERBOSE=1`** | everything, streamed live: the VM booting, each guest command, every test name |
 | **CI** | the quiet form, with the log uploaded as an artefact |
 
 Two reasons, and the second is the one people forget. A run that prints
@@ -225,21 +225,37 @@ whole transcript on each step and so pays for a verbose run many times
 over. Quiet by default is not tidiness; it is what makes a failure
 findable and a long session affordable.
 
-`scripts/output-budget.sh` does this for a task: it runs the command, writes
-everything to a log, prints one line on success, prints the tail on failure,
-and **exits 65 when a run passed but printed more than its budget** — a status
-you can tell apart from a failing suite. `--verbose` (or `FLTH_VERBOSE=1`)
-streams as well, and does not exempt a run from its budget:
+**The wrapper that does this is `rust-fs-core`'s, not this repository's.**
+`scripts/output-budget.sh` in `antimatter-studios/rust-fs-core` runs the
+command, writes everything to a log, prints one line on success, prints the
+verdict and the log path on failure, and **exits 65 when a run passed but
+printed more than its budget** — a status you can tell apart from a failing
+suite. `--verbose` (or `OUTPUT_BUDGET_VERBOSE=1`) streams as well, and does
+not exempt a run from its budget.
+
+This repository used to carry a copy of it, and that is exactly how the
+family ended up with three divergent copies reached four different ways, each
+one internally consistent and nothing comparing them
+(antimatter-studios/rust-fs-core#153). There is one copy now, in core, and a
+consumer resolves it at run time:
 
 ```sh
-../fs-linux-test-harness/scripts/output-budget.sh \
+# in the consumer's scripts/tier.sh: ask where core is, verify what you
+# found, and use it. Do not commit a copy.
+core="$(cargo metadata --format-version 1 --locked \
+        | jq -r '.packages[] | select(.name == "am-fs-core") | .manifest_path')"
+budget="$(dirname "$core")/scripts/output-budget.sh"
+[ "$(bash "$budget" --version)" = 'rust-fs-core-output-budget 1' ] || exit 1
+
+bash "$budget" \
     --log .test-logs/oracle.log --max-lines 120 --label 'test:oracle' \
     -- cargo test --test oracle_debugfs
 ```
 
-Set the budget from a measured run, and raise it deliberately when a suite
-grows — the same way the executed-test floors are set. A budget nobody can
-breach measures nothing.
+The harness's job is the VM, not the wrapper. What it still asks of a
+consumer is the *policy*: set the budget from a measured run, and raise it
+deliberately when a suite grows — the same way the executed-test floors are
+set. A budget nobody can breach measures nothing.
 
 `--verbose` exists because watching matters sometimes: a VM that is slow to
 boot, a suite that hangs, a guest command that needs seeing as it happens.
