@@ -213,7 +213,7 @@ on the terminal.
 | | Prints |
 | --- | --- |
 | **Pass** | one line per suite, a final `N passed` (or the count of comparisons an oracle made), and the log path |
-| **Fail** | the same, plus the excerpt that failed — the failing test and its output, not the whole run |
+| **Fail** | the verdict, the log path, the command's own status — and nothing else. `--tail N` or `FLTH_FAIL_TAIL=N` prints that many lines of the log for whoever is watching |
 | **`--verbose` / `-v`, or `FLTH_VERBOSE=1`** | everything, streamed live: the VM booting, each guest command, every test name |
 | **CI** | the quiet form, with the log uploaded as an artefact |
 
