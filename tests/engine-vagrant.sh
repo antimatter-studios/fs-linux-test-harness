@@ -23,7 +23,7 @@ printf '#!/bin/sh\nexit 0\n' > "$BIN/sleep"
 # prints $STUBDIR/ssh-config; everything is logged.
 cat > "$BIN/vagrant" <<'STUB'
 #!/usr/bin/env bash
-echo "vagrant $* cwd=$PWD dot=$VAGRANT_DOTFILE_PATH" >> "$STUBDIR/log"
+echo "vagrant $* cwd=$PWD dot=$VAGRANT_DOTFILE_PATH tmpdir=${TMPDIR:-}" >> "$STUBDIR/log"
 n="$(cat "$STUBDIR/locked" 2>/dev/null || echo 0)"
 if [ "$n" -gt 0 ]; then
     echo $((n - 1)) > "$STUBDIR/locked"
@@ -161,6 +161,40 @@ engine_run 'true'
 check_eq "$(grep -c 'bash -s' "$STUBDIR/ssh-log" | tr -d ' ')" 2 "a 255 after which the settings changed is sent again"
 check_contains "$(cat "$FLTH_MACHINE_DIR/ssh-config")" "50123" "with the refreshed settings"
 rm -f "$STUBDIR/ssh-exit"
+
+# --- the virtiofs socket's directory ---------------------------------------
+
+# The macOS provider creates each virtiofs socket as
+# $TMPDIR/vqemu-<machine id>-virtiofs<n>.sock, and a Unix socket path is
+# limited to about 104 bytes. The caller's TMPDIR can be anything — a
+# consumer's scratch directory inside its checkout — so `vagrant up` is
+# given a short one the harness controls.
+: > "$STUBDIR/log"
+deep="$SANDBOX/a-consumer-checkout-somewhere/with/a/scratch/directory/that/is/deep/enough/to/overflow/tmp"
+mkdir -p "$deep"
+# The state directory is short here on purpose: the sandbox lives under
+# whatever TMPDIR ran this test, which is the very thing being ruled out.
+short_state="$(mktemp -d /tmp/flth.XXXXXX)"
+FLTH_STATE_DIR="$short_state" TMPDIR="$deep" engine_up 2>/dev/null
+check_eq "$?" 0 "up succeeds with a deep caller TMPDIR"
+up_tmp="$(sed -n 's/^vagrant up .* tmpdir=//p' "$STUBDIR/log")"
+check_eq "$up_tmp" "$short_state/tmp" "vagrant up is given the harness's own short TMPDIR, not the caller's"
+mode="$(stat -c %a "$up_tmp" 2>/dev/null || stat -f %Lp "$up_tmp")"
+check_eq "${mode: -3}" 700 "a directory only this user can use"
+rm -rf "$short_state"
+
+long_state="$SANDBOX/$(printf 'x%.0s' $(seq 1 80))"
+printf '#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo arm64 ;; esac\n' > "$BIN/uname"; chmod +x "$BIN/uname"
+: > "$STUBDIR/log"
+out="$(FLTH_STATE_DIR="$long_state" TMPDIR="$deep" engine_up 2>&1)"
+check_eq "$?" 1 "on macOS, up refuses when even the harness's socket directory is too long for a socket"
+check_contains "$out" "$long_state/tmp" "naming the path"
+check_contains "$out" "$(( ${#long_state} + 4 + 36 )) bytes" "and how long the socket path would be"
+check_eq "$(grep -c 'vagrant up' "$STUBDIR/log" | tr -d ' ')" 0 "without starting a boot that cannot share"
+printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n' > "$BIN/uname"
+FLTH_STATE_DIR="$long_state" TMPDIR="$deep" engine_up 2>/dev/null
+check_eq "$?" 0 "on Linux, which shares over 9p and makes no socket, the same path boots"
+rm -f "$BIN/uname"
 
 # --- engine_copy ------------------------------------------------------------
 
