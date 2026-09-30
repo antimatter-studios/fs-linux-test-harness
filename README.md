@@ -405,6 +405,16 @@ falling back.
 | Linux aarch64 | KVM | `cloud-image/debian-12` (arm64), pinned | stock `vagrant-qemu` | `FLTH_FIRMWARE_*` (Debian: AAVMF) | 9p |
 | Linux x86_64 | KVM | `cloud-image/debian-12` (amd64), pinned | stock `vagrant-qemu` | none (SeaBIOS) | 9p |
 
+**The macOS row has never been booted** (#8). The Linux x86_64 row is
+proven by CI's smoke job on every pull request, and the Linux aarch64 row
+by `chore smoke` on an arm64 host. Nobody has yet run `chore smoke` on a
+Mac, so the macOS row is carried over from the repositories this harness
+replaced, not observed: the provider's `poweroff` state name, the QEMU
+command line `engine_alive` matches, the virtiofs shares. Treat it as
+untested until that run is recorded. Its box is not in the public Vagrant
+registry; `chore vm:host:check` says so and prints the command that adds it
+from its GitHub release.
+
 **Why 9p on Linux:** the stock provider has no virtiofs support; 9p
 needs no daemon and no root. The **share** uses
 `security_model=mapped-xattr`, so root in the guest can create files the
@@ -527,6 +537,9 @@ the guest; `down` and `destroy` clear it, and a reboot re-arms the deadline.
 brew install --cask hashicorp/tap/hashicorp-vagrant
 brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd
 vagrant plugin install vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas
+# not in the public registry: added from its GitHub release
+vagrant box add christhomas/vagrant-rpi-bookworm-arm64 \
+  https://github.com/christhomas/vagrant-rpi-bookworm-arm64/releases/download/v1.0.0/rpi-arm64.box
 ```
 
 **Linux x86_64** (a CI runner does all of this with `scripts/ci-setup-linux.sh`)
@@ -580,7 +593,7 @@ pull request are cancelled.
 The arm64 path (Linux aarch64 under KVM) is proven by `chore smoke` on an
 arm64 host rather than in hosted CI: GitHub's hosted arm64 runners do not
 expose KVM (checked by the manual `kvm-probe` workflow). The macOS path
-is proven by `chore smoke` on a Mac.
+is to be proven by `chore smoke` on a Mac, and **has not been yet** (#8).
 
 ## Relation to fs-windows-test-harness
 
