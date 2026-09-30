@@ -35,6 +35,15 @@ changes allowed in minor versions until 1.0.
   and the process holding it (read from `/proc/locks` and confirmed by the
   open file), if they are still held.
 
+- **The reaper no longer stops a VM a running session is using** (#10).
+  `vm-session.sh` kept the VM up without a hold, so a forty-minute fixture
+  build's VM looked like a leak, and any other chore invocation's
+  `lifecycle: after_all` reap stopped it mid-build. A session now leaves a
+  marker (pid and process start time) under the machine directory; `reap`
+  leaves the VM running while any marker's process is alive and says which,
+  and removes markers whose process is gone. A session that ends while
+  another is using the same machine leaves the VM to it.
+
 ### Removed
 
 - **`scripts/output-budget.sh` and `tests/output-budget.sh`.** The wrapper

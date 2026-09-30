@@ -31,12 +31,22 @@
 #
 # The consumer is resolved when this is sourced, not when the trap fires:
 # the script may have changed directory by then.
+#
+# THE SESSION IS VISIBLE TO THE REAPER. Sourcing this records the script's
+# process as a session on the machine (`vm.sh session-begin`), so `vm.sh
+# reap` — which any other chore invocation runs — leaves the VM alone
+# while the script is alive, instead of taking an unheld VM for a leak.
+# Ending runs `vm.sh session-end`, which brings the VM down unless another
+# live session is still using it. A session killed outright leaves a
+# marker whose process is dead, and the reaper treats that as the leak it
+# is.
 
 _flth_session_scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/config.sh
 . "$_flth_session_scripts/lib/config.sh"
 FLTH_CONFIG="$(flth_find_config)" || return 1
 export FLTH_CONFIG
+"$_flth_session_scripts/vm.sh" session-begin "$$" || return 1
 
 flth_session_end() {
     local code=$?
@@ -48,7 +58,7 @@ flth_session_end() {
         exit "$code"
     fi
 
-    if "$_flth_session_scripts/vm.sh" down; then
+    if "$_flth_session_scripts/vm.sh" session-end "$$"; then
         exit "$code"
     fi
 

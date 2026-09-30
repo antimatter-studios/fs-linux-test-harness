@@ -279,6 +279,46 @@ out="$(cd "$SANDBOX/notest" && "$VM" test 2>&1)"
 check_eq "$?" 1 "test without a [test] command fails"
 check_contains "$out" "has no [test] command" "and says so"
 
+# --- reap leaves a VM a live session is using ---------------------------
+
+# A session (vm-session.sh: `vm:test`, `vm:guest-test`, a consumer's
+# fixture build) keeps the VM up without a hold, because a hold has to
+# outlive the invocation that set it. The reaper, run by ANY other chore
+# invocation, must not mistake that for a leak.
+stub_state absent; free_slot
+work '"$FLTH_VM" run true; "$FLTH_VM" reap 2> reap.txt; cat "$FLTH_TEST_STUB/state" > during.txt'
+vm test 2>/dev/null
+check_eq "$?" 0 "a session whose VM another invocation tried to reap still succeeds"
+check_eq "$(cat "$C/during.txt")" running "reap, run while a session is using the VM, leaves it running"
+check_contains "$(cat "$C/reap.txt")" "another invocation is using it (pid " "and names the invocation it left it for"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "the session still brings it down when it ends"
+check_eq "$(find "$MACHINE/sessions" -type f 2>/dev/null | wc -l | tr -d ' ')" 0 "and leaves no session marker behind"
+
+# A marker whose owner is dead is exactly the leak the reaper is for.
+stub_state running; mkdir -p "$MACHINE/sessions"
+bash -c 'exit 0' & dead=$!; wait "$dead"
+printf '%s\t%s\n' "$dead" "gone" > "$MACHINE/sessions/$dead"
+out="$(vm reap 2>&1)"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "a session marker whose process is dead does not protect the VM"
+check_contains "$out" "did not clean up" "and reap says why it acted"
+check_eq "$([ -e "$MACHINE/sessions/$dead" ] && echo kept || echo removed)" removed "and the stale marker is removed"
+
+# A live pid that has since been reused by another process is not the session.
+stub_state running
+printf '%s\t%s\n' "$$" "not-the-start-time-of-this-process" > "$MACHINE/sessions/$$"
+vm reap 2>/dev/null
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "a marker whose pid now belongs to another process does not protect the VM"
+rm -rf "$MACHINE/sessions"; free_slot
+
+# Two sessions on one machine (two worktrees of one project share it):
+# the first to finish leaves the VM to the one still running.
+stub_state absent
+work '"$FLTH_VM" run true; ( cd "'"$C"'" && bash -c "set -e; . \"'"$STUB_HARNESS"'/scripts/vm-session.sh\"; true" ) 2> inner.txt; cat "$FLTH_TEST_STUB/state" > during.txt'
+vm test 2>/dev/null
+check_eq "$(cat "$C/during.txt")" running "a session that ends while another is using the VM leaves it running"
+check_contains "$(cat "$C/inner.txt")" "another invocation is using it" "and says so"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and the last session out brings it down"
+
 # --- guest-test: the suite, run inside the guest -------------------------
 
 # The stub engine runs the guest script on the host and records it, so
