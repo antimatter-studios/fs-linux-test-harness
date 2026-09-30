@@ -44,6 +44,13 @@ changes allowed in minor versions until 1.0.
   and removes markers whose process is gone. A session that ends while
   another is using the same machine leaves the VM to it.
 
+- **A Mac without the box is told so before booting** (#8). The macOS box
+  `christhomas/vagrant-rpi-bookworm-arm64` is not in the public Vagrant
+  registry. `host-tools.sh` (and so `chore vm:host:check` and every boot) now
+  reports it missing, with the `vagrant box add` command for its GitHub
+  release, instead of Vagrant failing on a 404. The README says plainly that
+  the macOS path has never been booted.
+
 ### Removed
 
 - **`scripts/output-budget.sh` and `tests/output-budget.sh`.** The wrapper
