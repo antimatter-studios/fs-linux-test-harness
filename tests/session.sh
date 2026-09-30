@@ -49,6 +49,29 @@ check_eq "$(grep -c down "$LOG" | tr -d ' ')" 1 "and teardown still ran"
 check_contains "$(cat "$LOG")" "config=$(cd "$SANDBOX/consumer" && pwd -P)/fs-linux-test-harness.toml" \
     "the consumer was resolved when sourced, although the script changed directory"
 
+# KILLED BY A SIGNAL, the third way a script ends (#29). bash runs the EXIT
+# trap when TERM, INT or HUP ends it; an edit that traps one of them and
+# exits without re-raising, or execs the work, would lose that with every
+# case above still green. SIGKILL is out of scope: no trap survives it, and
+# the slot's dead-holder reclaim is what covers it.
+signal_case() {
+    # signal_case <signal> <number>
+    stub_down 0; work "sleep 30 & wait \$!"; : > "$LOG"
+    (cd "$SANDBOX/consumer" && exec ./work.sh) >/dev/null 2>&1 &
+    local pid=$! tries=0
+    until grep -q "^begin $pid\$" "$LOG" 2>/dev/null || [ "$tries" -ge 100 ]; do
+        sleep 0.1; tries=$((tries + 1))
+    done
+    kill "-$1" "$pid"
+    wait "$pid"
+    check_eq "$?" "$((128 + $2))" "killed by SIG$1: the script's status is 128+$2"
+    check_eq "$(grep -c "^down $pid config=" "$LOG" | tr -d ' ')" 1 \
+        "and teardown ran once, for that process"
+}
+signal_case TERM 15
+signal_case INT 2
+signal_case HUP 1
+
 stub_down 1; work "exit 0"; : > "$LOG"
 out="$(cd "$SANDBOX/consumer" && FLTH_KEEP_VM=1 ./work.sh 2>&1)"
 check_eq "$?" 0 "FLTH_KEEP_VM=1 leaves the status alone"
