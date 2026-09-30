@@ -2,3 +2,6 @@
 .vm-share/
 # chore's fingerprint cache.
 .chore/
+# A worktree's scratch directory: TMPDIR points here, so test sandboxes
+# stay off a shared /tmp and out of every commit.
+/tmp/
