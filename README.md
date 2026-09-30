@@ -443,6 +443,14 @@ that inherits a command's stdout keeps it open for as long as it persists,
 so a caller capturing the output of a one-second call would wait an hour
 for end-of-file. It is closed before a boot and after a stop.
 
+**Sockets live on a path the harness controls.** A Unix socket path is
+limited to about 104 bytes. The ssh control socket is under
+`FLTH_STATE_DIR/ssh/`, and on macOS `vagrant up` runs with `TMPDIR` set to
+`FLTH_STATE_DIR/tmp`, where the QEMU provider creates its virtiofs sockets
+— never the caller's `TMPDIR`, which may be a scratch directory deep inside
+a checkout. If even that path is too long, the boot is refused with the
+path and the length it would reach.
+
 **A guest that goes away fails the call.** The client keeps the
 connection alive (`ServerAliveInterval=15`, `ServerAliveCountMax=8`), so
 a VM halted underneath a running command — by its own deadline, by a

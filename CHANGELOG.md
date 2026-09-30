@@ -17,6 +17,14 @@ changes allowed in minor versions until 1.0.
   A single call longer than the deadline is still cut off: that is the hang
   it exists to catch.
 
+- **A deep `TMPDIR` no longer stops the macOS VM booting** (#14). The
+  macOS QEMU provider creates each virtiofs socket under `TMPDIR`, which was
+  inherited from the caller — a consumer's scratch directory inside its
+  checkout — and a socket path over the ~104-byte limit left the VM unable
+  to boot. `vagrant up` now runs with `TMPDIR=$FLTH_STATE_DIR/tmp` (mode
+  0700, beside the slot and the ssh control socket), and on macOS a boot is
+  refused, naming the path and its length, if even that is too long.
+
 ### Removed
 
 - **`scripts/output-budget.sh` and `tests/output-budget.sh`.** The wrapper

@@ -113,10 +113,44 @@ engine_state() {
     esac
 }
 
+# THE VIRTIOFS SOCKETS ARE THE HARNESS'S, NOT THE CALLER'S TMPDIR's.
+# The macOS provider creates each shared folder's virtiofsd socket as
+# $TMPDIR/vqemu-<machine id>-virtiofs<n>.sock, and a Unix socket path is
+# limited to 104 bytes with its terminator. Inherited, TMPDIR is whatever
+# the caller had — a consumer's scratch directory inside its checkout —
+# and a path over the limit stops the VM booting with nothing naming the
+# cause. So `vagrant up` gets a directory beside the slot, like the ssh
+# control socket, and a boot is refused, naming the path and its length,
+# if even that is too long.
+#
+# 36 is the longest socket name the provider makes here:
+# "vqemu-" + "vq_" and eleven id characters + "-virtiofs<n>.sock", with a
+# leading "/" and n a single digit (two folders are shared).
+ENGINE_VAGRANT_SOCKET_MAX=103
+ENGINE_VAGRANT_SOCKET_NAME=36
+
+# The length is only refused on macOS, the one host whose shares are
+# virtiofs sockets; Linux shares over 9p and creates none.
+engine_vagrant_tmpdir() {
+    # shellcheck disable=SC2153  # FLTH_STATE_DIR, set in lib/common.sh
+    local dir="$FLTH_STATE_DIR/tmp" longest
+    longest=$(( ${#dir} + ENGINE_VAGRANT_SOCKET_NAME ))
+    if [ "$(uname -s)" = Darwin ] && [ "$longest" -gt "$ENGINE_VAGRANT_SOCKET_MAX" ]; then
+        echo "vm: the virtiofs sockets would be created under $dir, a path of" >&2
+        echo "    $longest bytes; a Unix socket path must be at most $ENGINE_VAGRANT_SOCKET_MAX. Put FLTH_STATE_DIR" >&2
+        echo "    (or XDG_STATE_HOME) on a shorter path, for every repository alike: the slot lives there too." >&2
+        return 1
+    fi
+    mkdir -p "$dir" && chmod u=rwx,go= "$dir" || return 1
+    printf '%s\n' "$dir"
+}
+
 engine_up() {
+    local tmp
+    tmp="$(engine_vagrant_tmpdir)" || return 1
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
-    engine_vagrant up --provider qemu >&2 || return
+    TMPDIR="$tmp" engine_vagrant up --provider qemu >&2 || return
     engine_ssh_config >/dev/null
 }
 
