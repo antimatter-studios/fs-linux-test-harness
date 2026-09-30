@@ -117,6 +117,8 @@ check_eq "$(field config/$P.memory)|$(field config/$P.smp)|$(field config/$P.dis
 check_contains "$(field config/vm.provision)" '"run":"always"' "  provisioners re-run on every boot"
 check_contains "$(field config/vm.provision)" '["480"]' "  the deadline minutes are passed as an argument"
 check_eq "$(field config/vagrant.plugins)" "{}" "  the box's own plugin declaration is cleared"
+check_contains "$(field config/vm.provision)" '[[["apt-ready"],{"type":"shell","run":"always","path":"guest/apt-ready.sh"}]' \
+    "  the package manager is made ready on every boot, before anything else is provisioned"
 
 evaluate linux-gnu aarch64 0 vagrant-qemu
 check_contains "$(field error)" "KVM is required" "Linux without usable /dev/kvm is refused, not emulated"
@@ -146,6 +148,7 @@ check_contains "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  shares 
 check_contains "$(field config/vm.synced_folder)" '"/repo"' "  the consumer repository among them"
 check_eq "$(field config/$P.extra_qemu_args)" null "  no 9p"
 check_eq "$(field config/$P.virtiofs_guest_uid)" 1001 "  virtiofs uid matches the box's vagrant user"
+check_contains "$(field config/vm.provision)" '"guest/apt-ready.sh"' "  the box's first-boot dialog is disabled and the package manager made ready"
 evaluate darwin23 arm64 0 vagrant-qemu
 check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS with only the stock plugin is refused"
 
