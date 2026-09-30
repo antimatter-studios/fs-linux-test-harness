@@ -19,8 +19,8 @@ make_consumer "$SANDBOX/consumer" session-test
 LOG="$SANDBOX/down.log"
 
 stub_down() {
-    # stub_down <exit status of `vm.sh down`>
-    printf '#!/usr/bin/env bash\n[ "$1" = down ] && { echo "down config=$FLTH_CONFIG" >> "%s"; exit %s; }\nexit 0\n' "$LOG" "$1" > "$H/vm.sh"
+    # stub_down <exit status of `vm.sh session-end`, which brings the VM down>
+    printf '#!/usr/bin/env bash\n[ "$1" = session-begin ] && { echo "begin $2" >> "%s"; exit 0; }\n[ "$1" = session-end ] && { echo "down $2 config=$FLTH_CONFIG" >> "%s"; exit %s; }\nexit 0\n' "$LOG" "$LOG" "$1" > "$H/vm.sh"
     chmod +x "$H/vm.sh"
 }
 work() {
@@ -36,6 +36,9 @@ check_case() {
     check_eq "$?" "$3" "$4"
 }
 check_case 0 0 0 "work succeeds, teardown succeeds: success"
+pid="$(sed -n 's/^begin //p' "$LOG")"
+check_eq "$(grep -c "^down $pid config=" "$LOG" | tr -d ' ')" 1 "and ending it names the same process, so the marker it made is the one removed"
+check_eq "$(case "$pid" in '' | *[!0-9]*) echo bad ;; *) echo pid ;; esac)" pid "the session is named by a process id"
 check_case 0 3 3 "work fails, teardown succeeds: the work's status"
 check_case 1 0 1 "work succeeds, teardown FAILS: the script fails"
 check_case 1 3 3 "both fail: the work's status wins"

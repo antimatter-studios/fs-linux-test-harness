@@ -501,6 +501,13 @@ In order of precision:
 2. **`reap`** — from `lifecycle: after_all`, on any later chore
    invocation: stops a VM nothing accounted for (a bare `cargo test`, a
    killed run). Fails soft, so an unrelated `chore build` is not turned red.
+   It leaves alone a VM a **live session** is using: `vm-session.sh` (and so
+   `vm:test`, `vm:guest-test` and any script that sources it) records its
+   process in the machine directory, and reap says which pid it left the VM
+   for. A session whose process has died no longer counts. When a session
+   ends while another is still using the same machine — two worktrees of one
+   project share it — it leaves the VM to that one, and the last out brings
+   it down.
 3. **The guest's own deadline** — scheduled inside the guest at every boot
    (`[vm] deadline_minutes`), confirmed from logind's record, and re-armed
    by every `run` and `exec` as the call starts and as it ends (at most once

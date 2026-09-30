@@ -17,6 +17,12 @@
 #   vm.sh destroy          delete the VM and its disk, release the slot
 #   vm.sh config           print the resolved configuration
 #
+# NOT IN THE USAGE, AND NO CHORE TASK, ON PURPOSE: `session-begin <pid>`
+# and `session-end <pid>` are vm-session.sh's plumbing, the calls that make
+# a session visible to the reaper. A person has no reason to run them, so
+# they stay out of the list above, which is what tests/generic.sh reads as
+# the public commands every one of which needs a task in vm.chores.yml.
+#
 # The consumer is found from fs-linux-test-harness.toml in the working
 # directory or a parent, or from FLTH_CONFIG. See README.md.
 #
@@ -217,6 +223,7 @@ vm_hold() {
 # The probe is a process check, not an engine call: it runs on every
 # invocation, so it has to cost milliseconds.
 vm_reap() {
+    local others
     if ! engine_alive "$(engine_identity)"; then
         return 0
     fi
@@ -224,7 +231,79 @@ vm_reap() {
         echo "[vm] left running: it was held with 'chore vm:hold'. 'chore vm:down' stops it." >&2
         return 0
     fi
+    others="$(live_sessions)"
+    if [ -n "$others" ]; then
+        echo "[vm] left running: another invocation is using it (pid ${others//$'\n'/, })." >&2
+        return 0
+    fi
     echo "vm: a VM was left running by something that did not clean up — stopping it." >&2
+    vm_down
+}
+
+# SESSIONS: "IN USE" AS A STATE THE REAPER CAN SEE.
+#
+# vm-session.sh keeps the VM up for the length of the script that
+# sourced it — `vm:test`, `vm:guest-test`, a consumer's fixture build —
+# and deliberately does not `hold`, because a hold must outlive the
+# invocation that set it. Without this, a VM in use by a forty-minute
+# fixture build was indistinguishable from a leak, and the reaper, run
+# by any other chore invocation (another terminal, another agent,
+# another worktree of the same project), stopped it mid-build.
+#
+# So a session leaves a marker naming its process, and the reaper leaves
+# the VM alone while any marker's process is alive. A marker whose
+# process has died is exactly the leak the reaper exists for, so it is
+# removed and ignored. The process's start time is recorded beside its
+# pid, so a pid the system has since handed to something else does not
+# keep a VM alive.
+#
+# The same rule applies when a session ends: two sessions on one machine
+# (two worktrees of one project share it) must not have the first to
+# finish stop the VM under the second. The last one out brings it down.
+# The markers live in the machine directory, set once a consumer is
+# loaded.
+sessions_dir() { printf '%s/sessions\n' "$FLTH_MACHINE_DIR"; }
+
+process_start() {
+    ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
+}
+
+# The pids of live sessions on this machine, one per line, except $1.
+# Markers whose process is gone are removed on the way.
+live_sessions() {
+    local except="${1:-}" dir marker pid start now
+    dir="$(sessions_dir)"
+    [ -d "$dir" ] || return 0
+    for marker in "$dir"/*; do
+        [ -f "$marker" ] || continue
+        IFS=$'\t' read -r pid start < "$marker" || true
+        case "$pid" in '' | *[!0-9]*) rm -f "$marker"; continue ;; esac
+        [ "$pid" = "$except" ] && continue
+        now="$(process_start "$pid")"
+        if [ -z "$now" ] || [ "$now" != "$start" ]; then
+            rm -f "$marker"
+            continue
+        fi
+        printf '%s\n' "$pid"
+    done
+}
+
+vm_session_begin() {
+    local pid="$1" start
+    start="$(process_start "$pid")"
+    [ -n "$start" ] || flth_die "session-begin: no running process $pid"
+    mkdir -p "$(sessions_dir)"
+    printf '%s\t%s\n' "$pid" "$start" > "$(sessions_dir)/$pid"
+}
+
+vm_session_end() {
+    local pid="$1" others
+    rm -f "$(sessions_dir)/$pid"
+    others="$(live_sessions "$pid")"
+    if [ -n "$others" ]; then
+        echo "[vm] left running: another invocation is using it (pid ${others//$'\n'/, }); the last one to finish brings it down." >&2
+        return 0
+    fi
     vm_down
 }
 
@@ -388,7 +467,7 @@ case "$command" in
         [ -n "$command" ] || exit 2
         exit 0
         ;;
-    up | run | exec | put | share | provision | test | guest-test | down | status | hold | reap | destroy | config) ;;
+    up | run | exec | put | share | provision | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -428,4 +507,10 @@ case "$command" in
     reap) vm_reap ;;
     destroy) vm_destroy ;;
     config) vm_config ;;
+    session-begin | session-end)
+        if [ $# -ne 1 ] || ! [[ "$1" =~ ^[1-9][0-9]*$ ]]; then
+            flth_die "usage: vm.sh $command <pid>"
+        fi
+        "vm_${command/-/_}" "$1"
+        ;;
 esac
