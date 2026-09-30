@@ -334,7 +334,7 @@ chose.
 | `[vm] cpus` | integer | `4` | Guest CPUs, 1–64. |
 | `[vm] disk` | string | `32G` | Guest disk size, e.g. `16G`. |
 | `[vm] ssh_port` | integer | `50122` | Host port forwarded to the guest's SSH. Auto-corrected by Vagrant if taken. |
-| `[vm] deadline_minutes` | integer | `480` | The guest powers itself off this long after boot unless held. |
+| `[vm] deadline_minutes` | integer | `480` | The guest powers itself off after this long **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. |
 
 Paths may contain only letters, digits, `.`, `_`, `-` and `/`, must be
 relative, and must not leave the repository.
@@ -447,9 +447,10 @@ for end-of-file. It is closed before a boot and after a stop.
 connection alive (`ServerAliveInterval=15`, `ServerAliveCountMax=8`), so
 a VM halted underneath a running command — by its own deadline, by a
 `destroy`, by a host out of memory — ends that command in about two
-minutes instead of leaving it waiting for ever. Set `[vm]
-deadline_minutes` longer than your suite takes: the deadline does not
-know what is using the VM.
+minutes instead of leaving it waiting for ever. `[vm] deadline_minutes`
+is an idle timeout, re-armed by every call, so it has to outlast your
+longest single call — a whole `vm:guest-test` run is one call — not your
+whole suite.
 
 ## The slot lock
 
@@ -487,8 +488,10 @@ In order of precision:
    invocation: stops a VM nothing accounted for (a bare `cargo test`, a
    killed run). Fails soft, so an unrelated `chore build` is not turned red.
 3. **The guest's own deadline** — scheduled inside the guest at every boot
-   (`[vm] deadline_minutes`), confirmed from logind's record. The one net
-   that works when the host process is hung or killed.
+   (`[vm] deadline_minutes`), confirmed from logind's record, and re-armed
+   by every `run` and `exec` as the call starts and as it ends (at most once
+   a minute), so it measures idleness rather than the boot's lifetime. The
+   one net that works when the host process is hung or killed.
 
 `hold` (and `chore vm:up`) opts out of 2 and 3 for a person working in
 the guest; `down` and `destroy` clear it, and a reboot re-arms the deadline.

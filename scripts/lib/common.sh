@@ -74,3 +74,8 @@ flth_hash8() {
 # Marks the guest as deliberately kept up. On tmpfs, so it lasts exactly
 # as long as the boot it was granted on.
 FLTH_GUEST_HOLD_MARKER="/run/fs-linux-test-harness-held"
+
+# shellcheck disable=SC2034  # read by vm.sh
+# When a call last re-armed the guest's poweroff deadline, in epoch
+# seconds. On tmpfs with the hold marker, for the same reason.
+FLTH_GUEST_REARM_STAMP="/run/fs-linux-test-harness-rearmed"
