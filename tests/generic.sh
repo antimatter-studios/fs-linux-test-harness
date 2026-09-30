@@ -79,4 +79,16 @@ check_eq "$("$REPO/scripts/ci-setup-linux.sh" --box-cache-key)" \
 check_eq "$(grep -c 'scripts/ci-setup-linux.sh' "$REPO/.github/workflows/ci.yml" | tr -d ' ')" 1 \
     "the harness's own smoke job sets its runner up with the script consumers use"
 
+# A WORKTREE'S tmp/ IS SCRATCH, NEVER SOURCE. Each worktree points TMPDIR at
+# its own tmp/, so the sandboxes these tests make stay off a shared /tmp;
+# unignored, one `git add -A` commits them. Asked of git itself, so a
+# pattern that looks right but does not match fails here.
+for p in tmp/sandbox tmp/logs/unit.log; do
+    if git -C "$REPO" check-ignore -q "$p"; then
+        ok "git ignores $p"
+    else
+        bad "git does not ignore $p (add tmp/ to .gitignore)"
+    fi
+done
+
 finish generic
