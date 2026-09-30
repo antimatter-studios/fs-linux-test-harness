@@ -267,8 +267,11 @@ prints `PASS  <name> (N checks)` and sets the exit status.
 Consumers pin a tag, so a fix reaches them only once it is released.
 
 1. A pull request moves `## [Unreleased]` into `## vX.Y.Z — <date>` in
-   `CHANGELOG.md`, without editing the entries, and fixes anything in the
-   README that still names the previous version.
+   `CHANGELOG.md`, without editing the entries, and moves the README to the
+   new version: the `Release:` badge under the title and the quickstart's
+   `LINUX_HARNESS_REF`. `tests/readme-version.sh` refuses a README whose
+   badge, or any harness version it names, is not the newest `## vX.Y.Z`
+   heading in `CHANGELOG.md` — so a release PR that forgets it is red.
 2. Once it is merged and `ci-ok` is green on `main`, tag the merge commit
    `vX.Y.Z` and push the tag. There is no release workflow and no build
    artifact: the tag is the release. The pre-push guard refuses a version tag

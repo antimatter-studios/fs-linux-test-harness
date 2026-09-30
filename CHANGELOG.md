@@ -6,6 +6,15 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The README names the release it describes** (#27). Its badge said
+  "status: unreleased" through v0.1.0 and v0.2.0, and named no version, so
+  the release step that fixes the README's old version had nothing to find.
+  The badge now reads `release: v0.2.0`, and `tests/readme-version.sh` fails
+  unless the badge and every harness version the README names match the
+  newest `## vX.Y.Z` heading here.
+
 ## v0.2.0 — 2026-09-30
 
 ### Fixed
