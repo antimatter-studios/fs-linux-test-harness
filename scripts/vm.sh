@@ -16,7 +16,12 @@
 #   vm.sh reap             stop a VM nothing cleaned up (the safety net)
 #   vm.sh destroy          delete the VM and its disk, release the slot
 #   vm.sh config           print the resolved configuration
-#   vm.sh session-begin|session-end <pid>   used by vm-session.sh
+#
+# NOT IN THE USAGE, AND NO CHORE TASK, ON PURPOSE: `session-begin <pid>`
+# and `session-end <pid>` are vm-session.sh's plumbing, the calls that make
+# a session visible to the reaper. A person has no reason to run them, so
+# they stay out of the list above, which is what tests/generic.sh reads as
+# the public commands every one of which needs a task in vm.chores.yml.
 #
 # The consumer is found from fs-linux-test-harness.toml in the working
 # directory or a parent, or from FLTH_CONFIG. See README.md.
@@ -37,7 +42,7 @@ BOOT_ATTEMPTS=3
 BOOT_RETRY_WAIT=5
 
 usage() {
-    sed -n '3,19p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '3,18p' "$SELF" | sed 's/^# \{0,1\}//'
 }
 
 # Say what the host is missing before trying to boot. Without this the

@@ -34,6 +34,7 @@ free_slot() { rm -rf "$FLTH_STATE_DIR/slot.lock"; }
 
 out="$("$VM" 2>&1)"; check_eq "$?" 2 "no command prints usage and exits 2"
 check_contains "$out" "vm.sh run <cmd...>" "and the usage lists the commands"
+check_lacks "$out" "session-" "but not vm-session.sh's internal plumbing, which has no chore task on purpose"
 out="$("$VM" frobnicate 2>&1)"; check_eq "$?" 2 "an unknown command exits 2"
 out="$(cd "$SANDBOX" && "$VM" status 2>&1)"; check_eq "$?" 1 "a command with no consumer config fails"
 check_contains "$out" "no fs-linux-test-harness.toml" "saying which file it wanted"
