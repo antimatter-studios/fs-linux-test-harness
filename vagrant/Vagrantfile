@@ -204,6 +204,15 @@ Vagrant.configure("2") do |config|
   # credentials and breaks a non-interactive `up`.
   config.vm.synced_folder ".", "/vagrant", disabled: true
 
+  # NOTHING MAY HOLD THE PACKAGE MANAGER when the consumer's setup script
+  # runs: it installs its tooling with apt, which fails at once on a held
+  # lock. The macOS box's first-boot dialog (userconfig.service) waits for
+  # a keyboard and holds the dpkg lock for ever; this disables it, then
+  # waits out anything else and fails, naming the holder, if it will not
+  # let go. First, so it precedes everything that follows a boot.
+  config.vm.provision "apt-ready", type: "shell", run: "always",
+                      path: "guest/apt-ready.sh"
+
   if host == :macos_arm64
     config.notify_forwarder.enable = true
     config.vm.synced_folder share_dir, share_guest, type: "virtiofs", create: true

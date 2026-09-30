@@ -25,6 +25,16 @@ changes allowed in minor versions until 1.0.
   0700, beside the slot and the ssh control socket), and on macOS a boot is
   refused, naming the path and its length, if even that is too long.
 
+- **A setup script can install packages on the macOS box** (#15). The box
+  `christhomas/vagrant-rpi-bookworm-arm64` runs Raspberry Pi OS's first-boot
+  dialog, `userconfig.service`, which waits for a keyboard and holds the dpkg
+  lock, so a consumer's `apt-get` failed. A new provisioner,
+  `vagrant/guest/apt-ready.sh`, runs first on every boot on every host: it
+  disables, stops and masks that service where it exists, then waits up to
+  300 s for the package manager's locks and fails the boot, naming the lock
+  and the process holding it (read from `/proc/locks` and confirmed by the
+  open file), if they are still held.
+
 ### Removed
 
 - **`scripts/output-budget.sh` and `tests/output-budget.sh`.** The wrapper

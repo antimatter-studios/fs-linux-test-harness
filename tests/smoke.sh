@@ -7,6 +7,7 @@
 #
 #   up / setup    the VM boots, the consumer's setup installs its tooling
 #                 inside it, the guest deadline is armed
+#   apt-ready     a held dpkg lock is found and named, as dpkg sees it
 #   slot          a second consumer cannot boot while this one holds it
 #   run / share   exit status and output come back; files cross both ways
 #   exec          the per-call path: never boots, and costs milliseconds
@@ -97,6 +98,24 @@ check_eq "$guest_path" /share/host-file.txt "put answers the guest path"
 check_eq "$("$VM" run "cat $guest_path" 2>/dev/null)" "from host $$" "the guest reads the host's file"
 "$VM" run "echo from guest > /share/guest-file.txt" 2>/dev/null
 check_eq "$(cat "$("$VM" share)/guest-file.txt")" "from guest" "the host reads the guest's file"
+
+step "apt-ready: the package manager's lock, as the guest's own dpkg sees it"
+# The boot ran vagrant/guest/apt-ready.sh; the consumer's setup then
+# installed packages, which is the proof it left the lock free. Here the
+# same script meets a REAL dpkg-style (POSIX fcntl) lock in a real guest
+# kernel, and dpkg itself is the oracle for whether the lock is held.
+"$VM" put "$REPO/vagrant/guest/apt-ready.sh" >/dev/null
+"$VM" run 'setsid python3 -c "import fcntl, time; f = open(\"/var/lib/dpkg/lock-frontend\", \"w\"); fcntl.lockf(f, fcntl.LOCK_EX); time.sleep(120)" </dev/null >/dev/null 2>&1 & echo $! > /run/flth-smoke-locker; sleep 2' 2>/dev/null
+locker="$("$VM" run 'cat /run/flth-smoke-locker' 2>/dev/null)"
+out="$("$VM" run 'dpkg --configure -a' 2>&1)"
+check_contains "$out" "lock" "the oracle: the guest's dpkg refuses to run while the lock is held"
+out="$("$VM" run 'bash /share/apt-ready.sh 2' 2>&1)"
+rc=$?
+check_true '[ "$rc" -ne 0 ]' "apt-ready fails on a lock held past its wait" "apt-ready passed with the dpkg lock held (exit $rc)"
+check_contains "$out" "held by pid $locker" "and names the process holding it"
+"$VM" run "kill $locker" 2>/dev/null
+check_eq "$("$VM" run 'bash /share/apt-ready.sh 10 >/dev/null && dpkg --configure -a && echo free' 2>/dev/null)" free \
+    "once released, apt-ready passes and the guest's dpkg agrees"
 
 step "exec: the per-call path"
 "$VM" exec 'echo out; echo err >&2; exit 7' > "$CONTENDER/out" 2> "$CONTENDER/err"
