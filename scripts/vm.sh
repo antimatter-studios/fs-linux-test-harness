@@ -267,6 +267,45 @@ vm_test() {
         ' flth-session "$FLTH_HARNESS/scripts/vm-session.sh" "$@"
 }
 
+# THE GUEST DEADLINE MEASURES IDLENESS, NOT LIFETIME. deadline.sh arms
+# the guest's poweroff once, at boot; left at that, `deadline_minutes` is
+# a cap on the whole boot, and a suite longer than it loses its VM
+# mid-run. So every call into the guest re-arms it, when the call starts
+# and again when it ends: the guest powers off after `deadline_minutes`
+# with nothing asking anything of it, and a suite of many calls is never
+# interrupted however long it runs. What is still bounded is a SINGLE
+# call, which is the hang the deadline exists to catch.
+#
+# `shutdown` replaces a scheduled shutdown rather than adding a second,
+# so re-arming cannot stack timers. It is rate-limited by a stamp in the
+# guest's /run, so a test process asking hundreds of questions a minute
+# makes one logind call a minute, not hundreds; the price is that the
+# deadline can fall up to a minute early. A held guest (`vm.sh hold`) is
+# never re-armed. --no-wall, because a person in the guest does not need
+# a broadcast a minute.
+#
+# It never fails the call: a guest whose timer could not be re-armed
+# keeps the one it had, which is the behaviour before this existed.
+REARM_WINDOW_SECS=60
+guest_call() {
+    cat <<EOF
+flth_rearm() {
+    local now last=0
+    [ -f $FLTH_GUEST_HOLD_MARKER ] && return 0
+    printf -v now '%(%s)T' -1
+    { read -r last < $FLTH_GUEST_REARM_STAMP; } 2>/dev/null || true
+    case "\$last" in '' | *[!0-9]*) last=0 ;; esac
+    [ \$((now - last)) -ge $REARM_WINDOW_SECS ] || return 0
+    printf '%s\n' "\$now" > $FLTH_GUEST_REARM_STAMP
+    shutdown --no-wall -h +$CFG_vm_deadline_minutes >/dev/null 2>&1 ||
+        echo "vm: could not re-arm the guest's poweroff deadline; the previous one stands" >&2
+}
+flth_rearm
+trap flth_rearm EXIT
+$1
+EOF
+}
+
 # THE PER-CALL PATH, for a test process that asks the guest hundreds of
 # questions. `run` boots when the VM is down, which is what makes it
 # convenient for a script and wrong for a test: a boot in the middle of a
@@ -283,7 +322,7 @@ vm_exec() {
         echo "    or use 'chore vm:run -- <command>', which boots on demand." >&2
         exit 1
     fi
-    engine_run "$*"
+    engine_run "$(guest_call "$*")"
 }
 
 # THE CONSUMER'S SUITE, RUN IN THE GUEST, from the repository mounted at
@@ -368,7 +407,7 @@ case "$command" in
         vm_up
         # Joined, and run by the guest's shell: a pipeline or `&&` in the
         # command belongs to the guest, not the host.
-        engine_run "$*"
+        engine_run "$(guest_call "$*")"
         ;;
     exec)
         [ $# -gt 0 ] || flth_die "usage: vm.sh exec <command...>"

@@ -204,6 +204,44 @@ check_contains "$out" "chore vm:up" "and naming the task that does"
 stub_state running
 vm down 2>/dev/null
 
+# --- the guest deadline measures idleness, not lifetime -------------------
+
+# Every call into a running guest re-arms its poweroff, so the deadline is
+# "this long with nothing asking anything of the guest" rather than a cap
+# on the whole boot. Re-arming is rate-limited by a stamp in the guest's
+# /run, so a suite of a few hundred calls does not make a few hundred
+# logind calls; an aged stamp stands in for a minute passing.
+rearms() { grep -c '^shutdown --no-wall -h +480$' "$FLTH_TEST_STUB/calls" | tr -d ' '; }
+age_stamp() { echo 1 > "$FLTH_TEST_STUB/guest-rearmed"; }
+
+stub_state running; rm -f "$FLTH_TEST_STUB/guest-rearmed" "$FLTH_TEST_STUB/guest-held"; stub_reset_calls
+out="$(vm exec 'echo from-guest; exit 3' 2>/dev/null)"
+check_eq "$?" 3 "a re-arming exec still passes the command's exit status through"
+check_eq "$out" from-guest "and only the command's stdout"
+check_eq "$(rearms)" 1 "an exec re-arms the guest's poweroff for the configured minutes"
+
+stub_reset_calls
+vm exec true 2>/dev/null
+check_eq "$(rearms)" 0 "a second call inside the same minute does not call logind again"
+
+age_stamp; stub_reset_calls
+vm exec true 2>/dev/null
+check_eq "$(rearms)" 1 "a call after the window re-arms once, replacing the timer rather than stacking one"
+
+age_stamp; stub_reset_calls
+vm exec 'echo 1 > "'"$FLTH_TEST_STUB"'/guest-rearmed"' 2>/dev/null
+check_eq "$(rearms)" 2 "a call re-arms when it ends as well as when it starts, so a long call is not idleness"
+
+age_stamp; stub_reset_calls
+vm run true 2>/dev/null
+check_eq "$(rearms)" 1 "run re-arms too"
+
+age_stamp; : > "$FLTH_TEST_STUB/guest-held"; stub_reset_calls
+vm exec true 2>/dev/null
+check_eq "$(rearms)" 0 "a held guest is never re-armed: the hold still wins"
+rm -f "$FLTH_TEST_STUB/guest-held"
+vm down 2>/dev/null
+
 # --- test: the session rules --------------------------------------------
 
 work() { printf '#!/usr/bin/env bash\n%s\n' "$1" > "$C/work.sh"; chmod +x "$C/work.sh"; }

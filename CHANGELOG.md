@@ -6,6 +6,17 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The guest deadline measures idleness, not lifetime** (#7). It was armed
+  once, at boot, so `deadline_minutes` capped the whole boot and a suite
+  longer than it lost its VM mid-run; consumers raised it to a guess at
+  their longest run, which left a leaked VM alive for hours. Every `vm.sh
+  run` and `vm.sh exec` now re-arms the guest's poweroff as the call starts
+  and as it ends, at most once a minute, and never while the guest is held.
+  A single call longer than the deadline is still cut off: that is the hang
+  it exists to catch.
+
 ### Removed
 
 - **`scripts/output-budget.sh` and `tests/output-budget.sh`.** The wrapper

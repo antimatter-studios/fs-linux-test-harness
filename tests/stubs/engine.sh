@@ -60,6 +60,7 @@ engine_run() {
     printf '%s\n' "$1" |
         sed -e "s|/var/lib/fs-linux-test-harness|$STUB/guest-lib|g" \
             -e "s|/run/fs-linux-test-harness-held|$STUB/guest-held|g" \
+            -e "s|/run/fs-linux-test-harness-rearmed|$STUB/guest-rearmed|g" \
             -e "s|/repo|$STUB/guest-repo|g" |
         bash -s
 }

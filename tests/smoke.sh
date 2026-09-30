@@ -70,6 +70,9 @@ check_eq "$("$VM" run hostname 2>/dev/null)" flth-smoke "the guest's hostname is
 check_contains "$("$VM" run 'uname -a' 2>/dev/null)" "Linux flth-smoke" "uname -a runs in the guest"
 check_contains "$("$VM" run 'mkfs.ext4 -V 2>&1 | head -1' 2>/dev/null)" "mke2fs" "the consumer's setup installed its tooling inside the VM"
 check_eq "$("$VM" run 'test -r /run/systemd/shutdown/scheduled && echo armed' 2>/dev/null)" armed "the guest's own poweroff deadline is armed"
+"$VM" run 'shutdown -c; rm -f /run/fs-linux-test-harness-rearmed' 2>/dev/null
+check_eq "$("$VM" run 'test -r /run/systemd/shutdown/scheduled && echo armed' 2>/dev/null)" armed \
+    "a call re-arms the deadline as it ends, on the guest's real logind (cancelled, then re-armed by the same call)"
 "$VM" run 'uname -a; cat /etc/debian_version; nproc; free -m | sed -n 2p; df -h / | tail -1' 2>/dev/null | sed 's/^/  guest: /'
 
 step "slot: a second consumer cannot boot"
