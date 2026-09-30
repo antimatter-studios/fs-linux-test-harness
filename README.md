@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/antimatter-studios/fs-linux-test-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/antimatter-studios/fs-linux-test-harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Status: unreleased](https://img.shields.io/badge/status-unreleased-yellow.svg)](./CHANGELOG.md)
+[![Release: v0.2.0](https://img.shields.io/badge/release-v0.2.0-blue.svg)](./CHANGELOG.md)
 
 ## What is this
 
