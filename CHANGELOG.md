@@ -6,6 +6,8 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+## v0.2.0 — 2026-09-30
+
 ### Fixed
 
 - **The guest deadline measures idleness, not lifetime** (#7). It was armed

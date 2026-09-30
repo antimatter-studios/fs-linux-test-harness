@@ -66,7 +66,7 @@ consumer's `siblings` task.
 ```yaml
 # chores.yml
 vars:
-  LINUX_HARNESS_REF: v0.1.0
+  LINUX_HARNESS_REF: v0.2.0
 # ... and add to the siblings task's list:
 #   fs-linux-test-harness https://github.com/antimatter-studios/fs-linux-test-harness.git '{{.LINUX_HARNESS_REF}}'
 ```
