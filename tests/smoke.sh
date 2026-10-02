@@ -10,6 +10,8 @@
 #   apt-ready     a held dpkg lock is found and named, as dpkg sees it
 #   slot          a second consumer cannot boot while this one holds it
 #   run / share   exit status and output come back; files cross both ways
+#   direct I/O    a file on either share opens with O_DIRECT, as an image
+#                 tool opens it (#26)
 #   exec          the per-call path: never boots, and costs milliseconds
 #                 rather than a handshake (a test process makes hundreds)
 #   guest-test    the consumer's suite runs INSIDE the guest, from the
@@ -98,6 +100,25 @@ check_eq "$guest_path" /share/host-file.txt "put answers the guest path"
 check_eq "$("$VM" run "cat $guest_path" 2>/dev/null)" "from host $$" "the guest reads the host's file"
 "$VM" run "echo from guest > /share/guest-file.txt" 2>/dev/null
 check_eq "$(cat "$("$VM" share)/guest-file.txt")" "from guest" "the host reads the guest's file"
+
+step "direct I/O: a file on either share opens with O_DIRECT (#26)"
+# Some image tools open their image with O_DIRECT (xfs_repair among them,
+# and a loop device with direct I/O), and on the macOS engine that open
+# fails with ENOTDIR on both shares: the host's virtiofsd decodes an
+# arm64 guest's open flags with x86_64 values, where arm64's O_DIRECT is
+# O_DIRECTORY (christhomas/virtiofsd#3). This is the end-to-end check: it
+# fails on a Mac until the tap ships a fixed daemon, and must stay
+# green on 9p. A consumer meanwhile works on a guest-local copy (README,
+# "Where a tool works on an image"); tests/guest-scratch.sh holds the
+# smoke consumer to that.
+for dir in /share "$repo_guest"; do
+    out="$("$VM" run "f=$dir/.smoke-direct-io; rm -f \$f; dd if=/dev/zero of=\$f bs=4096 count=16 oflag=direct status=none && dd if=\$f of=/dev/null bs=4096 count=16 iflag=direct status=none && echo direct; rm -f \$f" 2>"$CONTENDER/direct-io.err")"
+    if [ "$out" = direct ]; then
+        ok "a file on $dir opens with O_DIRECT, to write and to read"
+    else
+        bad "a file on $dir does not open with O_DIRECT: $(tail -n 3 "$CONTENDER/direct-io.err" | tr '\n' ' ')"
+    fi
+done
 
 step "apt-ready: the package manager's lock, as the guest's own dpkg sees it"
 # The boot ran vagrant/guest/apt-ready.sh; the consumer's setup then
