@@ -186,11 +186,47 @@ cheap and safe:
    A test that keeps its scratch files inside the repository can pass the
    guest the same absolute path it used on the host — rust-fs-ext4
    symlinks the host's own path to `/repo` in the guest and passes
-   arguments through unchanged.
+   arguments through unchanged. That is for reading what the test wrote:
+   a tool that works on an IMAGE may need the guest's own disk instead
+   (next section).
 
 Batch where it matters: one guest call that mounts an image, walks it,
 hashes every file and prints a report beats a hundred round trips asking
 one question each.
+
+### Where a tool works on an image
+
+**The shares are not a disk.** `/share` and `/repo` are host directories
+behind a server — virtiofsd on macOS, QEMU's 9p on Linux — and each one
+refuses something a filesystem tool does to an image file:
+
+| On | What fails | How it shows |
+| --- | --- | --- |
+| macOS (virtiofs) | any `O_DIRECT` open of a shared file — `xfs_repair`, `xfs_db`, `losetup --direct-io=on`, `dd iflag=direct` (#26) | `ENOTDIR` ("Not a directory"), whatever the image holds |
+| Linux (9p) | `mmap` of a shared file is unreliable | a tool killed by `SIGSEGV`, exit 139 (seen on CI's x86_64 guest) |
+| Linux (9p), `/repo` | setting ownership (`chown`, a tool restoring recorded uids): `security_model=none` cannot | `Operation not permitted` |
+
+The macOS row is a defect in the host's virtiofsd, not in the guest: it
+decodes an arm64 guest's open flags with x86_64 values, and arm64's
+`O_DIRECT` is x86_64's `O_DIRECTORY`, so the host opens the image as a
+directory (christhomas/virtiofsd#3). Until the tap
+(`antimatter-studios/tap/virtiofsd`) ships a fixed daemon, the open fails
+on every Mac. CI never sees it: CI's guest is x86_64 and shares
+over 9p.
+
+Each of these reads as a verdict on the image rather than on where it
+was kept. So **a tool that works on an image works on the guest's own disk**:
+copy the image (or the source tree) to `/var/tmp`, run the tool there, and
+copy only the finished artefact back to `/share`. `/var/tmp`, not `/tmp`:
+a tmpfs `/tmp` is sized from the guest's RAM. A tool that only reads its
+image with buffered I/O works on the shares, but a suite that copies does
+not have to know which of its tools those are.
+
+The smoke consumer does exactly this (`tests/smoke-consumer/guest-suite.sh`),
+and `tests/guest-scratch.sh` fails the build if any of its guest-side
+scripts points an image tool at the share or the repository mount.
+`chore smoke` opens a file on each share with `O_DIRECT`, so the defect
+fails the smoke run on a Mac until it is fixed.
 
 Every command the harness runs in the guest has **`FLTH_GUEST=1`** in its
 environment. A test helper that would otherwise ask the harness to run a
@@ -414,7 +450,9 @@ by `chore smoke` on an arm64 host. Nobody has yet run `chore smoke` on a
 Mac, so the macOS row is carried over from the repositories this harness
 replaced, not observed: the provider's `poweroff` state name, the QEMU
 command line `engine_alive` matches, the virtiofs shares. Treat it as
-untested until that run is recorded. Its box is not in the public Vagrant
+untested until that run is recorded. One defect on it is known: a file on
+either virtiofs share cannot be opened with `O_DIRECT` (#26; see "Where a
+tool works on an image"). Its box is not in the public Vagrant
 registry; `chore vm:host:check` says so and prints the command that adds it
 from its GitHub release.
 

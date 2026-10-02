@@ -29,6 +29,21 @@ changes allowed in minor versions until 1.0.
   setup script. A transaction dpkg cannot finish fails the boot, naming the
   command and showing dpkg's output. Consumers can drop their own copies.
 
+- **The smoke consumer no longer points its image tools at the share**
+  (#26). It built, read and checked its image in `/share/results`, and
+  it is the fixture a consumer copies. On the macOS engine an `O_DIRECT`
+  open of a file on either virtiofs share fails with `ENOTDIR` — the host's
+  virtiofsd decodes an arm64 guest's open flags with x86_64 values
+  (christhomas/virtiofsd#3) — so a consumer modelled on it passed CI and
+  failed on a Mac, with a failure that read as a verdict on the image. It
+  now works in a guest-local `/var/tmp` scratch directory and copies only
+  the finished artefacts back; `tests/guest-scratch.sh` fails the build if
+  any of its guest-side scripts points an image tool at a shared path. The
+  README's new "Where a tool works on an image" states the rule, and
+  `chore smoke` opens a file on each share with `O_DIRECT`, so it fails on
+  a Mac until the tap ships a fixed virtiofsd. **The `O_DIRECT` failure itself
+  is not fixed here**; it is in the host's virtiofsd.
+
 - **The README names the release it describes** (#27). Its badge said
   "status: unreleased" through v0.1.0 and v0.2.0, and named no version, so
   the release step that fixes the README's old version had nothing to find.
