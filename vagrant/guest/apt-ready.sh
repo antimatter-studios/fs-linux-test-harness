@@ -15,6 +15,10 @@
 # naming the lock and the process holding it, instead of the setup script
 # failing later on a lock nothing explains.
 #
+# Once the locks are free it finishes any dpkg transaction an earlier
+# boot was stopped in the middle of (see the last section), so a consumer
+# never meets "dpkg was interrupted" and never carries its own recovery.
+#
 # Who holds a lock is read from /proc/locks, the kernel's own list: dpkg
 # takes POSIX (fcntl) locks, which `flock` cannot see, and this needs no
 # tool beyond coreutils and awk to find them.
@@ -95,3 +99,22 @@ while :; do
     tries=$((tries - 1))
 done
 [ -z "$said" ] || echo "apt-ready: the package manager's locks are free"
+
+# --- a transaction an earlier boot left half done ---------------------------
+
+# THE VM OUTLIVES `vm.sh down`, and so does the state of its package
+# database. A setup script stopped part way through an install — by the
+# reaper, a deadline, a cancelled CI job, a closed laptop — leaves dpkg in
+# the middle of a transaction, and from then on every install refuses with
+# "dpkg was interrupted, you must manually run 'dpkg --configure -a'", on
+# every boot, because nothing in the guest ever finishes it. Finishing it
+# here, once the locks are free and before the setup script runs, is the
+# one place that covers every consumer; it costs nothing when there is
+# nothing to finish. Noninteractive, because a headless guest has nobody
+# to answer a configuration prompt.
+if ! out="$(DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 </dev/null)"; then
+    echo "apt-ready: dpkg --configure -a could not finish the transaction an earlier boot left half done:" >&2
+    printf '%s\n' "$out" | sed 's/^/    /' >&2
+    exit 1
+fi
+[ -z "$out" ] || echo "apt-ready: finished the dpkg transaction an earlier boot left half done"

@@ -48,6 +48,10 @@ STUB
     printf '#!/bin/sh\necho sleep >> "%s/sleeps"\nn=$(wc -l < "%s/sleeps")\n[ -f "%s/release-at" ] && [ "$n" -ge "$(cat "%s/release-at")" ] && : > "%s/proc/locks"\nexit 0\n' \
         "$box" "$box" "$box" "$box" "$box" > "$box/bin/sleep"
     printf '#!/bin/sh\n[ "$2" = 4242 ] && echo "/usr/bin/python3 /usr/bin/unattended-upgrade" && exit 0\nexit 1\n' > "$box/bin/ps"
+    # dpkg: log the call, the frontend it was given, and whether a lock was
+    # still held when it ran; answer with $box/dpkg-rc (default 0).
+    printf '#!/bin/sh\necho "dpkg $* frontend=$DEBIAN_FRONTEND" >> "%s/calls"\n[ -s "%s/proc/locks" ] && echo "dpkg ran while a lock was held" >> "%s/calls"\nrc=$(cat "%s/dpkg-rc" 2>/dev/null || echo 0)\n[ "$rc" = 0 ] || echo "dpkg: error processing package half-done (--configure)" >&2\nexit "$rc"\n' \
+        "$box" "$box" "$box" "$box" > "$box/bin/dpkg"
     chmod +x "$box/bin/"*
 }
 run_ready() {
@@ -121,5 +125,37 @@ for evil in "" 0 abc "10; reboot" -1; do
     run_ready "$evil"
     check_eq "$rc" 1 "the guest refuses a wait of $(printf '%q' "$evil")"
 done
+
+# --- a transaction an earlier boot left half done -------------------------
+
+# The VM outlives `vm down`, so a provision stopped part way through an
+# install leaves dpkg mid-transaction, and every later install refuses
+# with "dpkg was interrupted". The boot finishes it, once the locks are
+# free, before the consumer's setup script needs the package manager.
+new_box
+run_ready 10
+check_eq "$rc" 0 "free locks: the boot finishes any interrupted dpkg transaction"
+check_contains "$(calls)" "dpkg --configure -a" "by running dpkg --configure -a"
+check_contains "$(calls)" "frontend=noninteractive" "with no prompt a headless guest could wait on"
+check_lacks "$(calls)" "while a lock was held" "and only once the locks are free"
+
+new_box
+printf '1: POSIX  ADVISORY  WRITE 4242 08:03:101 0 EOF\n' > "$box/proc/locks"
+echo 2 > "$box/release-at"
+run_ready 10
+check_eq "$rc" 0 "a holder that is waited out"
+check_contains "$(calls)" "dpkg --configure -a" "is followed by finishing the transaction"
+check_lacks "$(calls)" "while a lock was held" "after the lock is released, not before"
+
+new_box
+printf '1: POSIX  ADVISORY  WRITE 4242 08:03:101 0 EOF\n' > "$box/proc/locks"
+run_ready 10
+check_lacks "$(calls)" "dpkg" "a lock held throughout fails the boot without running dpkg"
+
+new_box; echo 1 > "$box/dpkg-rc"
+run_ready 10
+check_eq "$rc" 1 "a transaction dpkg cannot finish fails the boot"
+check_contains "$out" "dpkg --configure -a" "naming the command"
+check_contains "$out" "error processing package half-done" "and showing what dpkg said"
 
 finish apt-ready
