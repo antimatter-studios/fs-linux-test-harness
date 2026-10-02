@@ -155,14 +155,28 @@ Vagrant.configure("2") do |config|
       qe.machine = "virt,accel=hvf,highmem=on"
       qe.cpu = "host"
       qe.net_device = "virtio-net-device"
-      custom_virtiofsd = "/opt/homebrew/bin/virtiofsd-1.13.8-rc1"
-      qe.virtiofsd_bin = custom_virtiofsd if File.executable?(custom_virtiofsd)
+      # virtiofsd is the provider's default: `virtiofsd` on PATH, which is
+      # the build `brew install antimatter-studios/tap/virtiofsd` installs
+      # (the macOS port, christhomas/virtiofsd). A preferred
+      # `virtiofsd-1.13.8-rc1` was carried here with no reason recorded;
+      # that port publishes no rc1 (its tags are v1.13.7 and v1.13.8, the
+      # latter released 2026-06-22), so it named a binary that existed on
+      # one Mac and was ignored everywhere else.
+      #
       # virtiofsd presents host files under this uid/gid; it must match
       # the box's vagrant user (1001 on this box) or the share is
       # read-only to it.
       qe.virtiofs_guest_uid = 1001
       qe.virtiofs_guest_gid = 1001
-      # Extended attributes must survive the share.
+      # --xattr: extended attributes must survive the share.
+      #
+      # --thread-pool-size=1: ONE REQUEST AT A TIME, because the macOS
+      # port switches to the guest's credentials with seteuid/setegid,
+      # which are process-wide on macOS (src/oslib.rs says so; on Linux it
+      # uses setresuid/setresgid, which act on one thread). With two
+      # threads, one request can run under the credentials another request
+      # has just set. Drop it only once the port switches credentials per
+      # thread.
       qe.extra_virtiofsd_args = ["--thread-pool-size=1", "--xattr"]
     when :linux_arm64
       qe.arch = "aarch64"
