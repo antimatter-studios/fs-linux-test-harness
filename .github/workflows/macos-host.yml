@@ -21,7 +21,9 @@ name: macos-host
 #              tier only evaluates it under a stand-in for Vagrant's DSL.
 #   hvf        whether this runner can start an HVF guest, recorded. A
 #              warning, not a failure, if it ever can: the boot can then
-#              be attempted here.
+#              be attempted here. Measured 2026-10-02 on image
+#              macos-15-arm64 20260907.0337: QEMU 10.2.2 aborts with
+#              "Error: ret = HV_UNSUPPORTED" (run 37069283106).
 #
 # Not part of ci-ok and not required: it runs only when a file it covers
 # changes, and a required check that does not report blocks every PR.
@@ -101,7 +103,6 @@ jobs:
       - name: Can this runner start an HVF guest?
         run: |
           set +e -uo pipefail  # the step shell has -e; these read a status
-          echo "kern.hv_support=$(sysctl -n kern.hv_support 2>&1)"
           # A guest with no firmware runs until it is killed: alive after
           # the alarm (status 142, SIGALRM) means HVF started it.
           perl -e 'alarm 15; exec @ARGV' qemu-system-aarch64 \
