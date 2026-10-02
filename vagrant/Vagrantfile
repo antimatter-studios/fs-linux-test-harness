@@ -77,6 +77,7 @@ ssh_port  = flth_env("FLTH_VM_SSH_PORT", /\A[1-9][0-9]{3,4}\z/, "a port number")
 deadline  = flth_env("FLTH_VM_DEADLINE_MINUTES", /\A[1-9][0-9]{0,5}\z/, "a positive integer of at most six digits")
 share_dir = flth_env("FLTH_SHARE_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
 repo_dir  = flth_env("FLTH_REPO_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
+disposable = flth_env("FLTH_VM_DISPOSABLE", /\A[01]\z/, "1 (a disposable boot) or 0 (a provisioning boot)") == "1"
 
 share_guest = "/share"
 share_tag   = "flth_share"
@@ -148,6 +149,16 @@ Vagrant.configure("2") do |config|
     qe.ssh_port = Integer(ssh_port)
     qe.ssh_auto_correct = true
     qe.disk_resize = disk
+
+    # A DISPOSABLE BOOT NEVER WRITES THE MACHINE'S DISK. With snapshot=on
+    # QEMU opens the disk read-only and sends every write to a temporary
+    # overlay, created under TMPDIR (engine_up gives `vagrant up` the
+    # harness's own) and unlinked as soon as it is open — so it is gone
+    # when QEMU exits, however it exits, and a mount, a loop device or a
+    # half-finished install a run leaves behind is gone with it. Only the
+    # provisioning boot, which applies the consumer's setup script, runs
+    # without it (scripts/vm.sh, provision_disk).
+    qe.extra_drive_args = "snapshot=on" if disposable
 
     case host
     when :macos_arm64

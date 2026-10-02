@@ -396,7 +396,7 @@ chose.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `[project] name` | string | **required** | Lowercase letters, digits and inner hyphens, at most 63. The VM's hostname, the name of its machine directory, and the name the slot shows other repositories. Two checkouts of one project share a machine; keep names unique across projects. |
-| `[setup] script` | string | **required** | Path relative to the repository. Run as root inside the VM after a boot, **only when it has changed** since it was last applied (a SHA-256 stamp in the guest), with stdin from `/dev/null` and `FLTH_PROJECT` and `FLTH_SHARE` set. A failure fails `up` and leaves the VM running for inspection. `chore vm:provision` re-runs it regardless. |
+| `[setup] script` | string | **required** | Path relative to the repository. Run as root inside the VM, **only when it has changed** since it was last applied (a SHA-256 stamp in the guest), with stdin from `/dev/null` and `FLTH_PROJECT` and `FLTH_SHARE` set. It is the only thing that reaches the machine's disk: it runs on a provisioning boot, which is stopped before anything else boots (see "Every run starts from the same disk"). A failure fails `up` and leaves that boot running for inspection; nothing else runs on it until `chore vm:down`. `chore vm:provision` re-runs it regardless. |
 | `[test] command` | string | none | Run by `chore vm:test` on the **host**, from the repository root, with the VM up; extra arguments are appended. It reaches the guest through `FLTH_VM` (the path of `vm.sh`) and finds the share at `FLTH_SHARE_HOST`. The VM is torn down afterwards. |
 | `[test] guest_command` | string | none | Run by `chore vm:guest-test` **inside the guest**, from `/repo` (this repository, mounted there read-write), with arguments appended and `FLTH_GUEST=1` set. Output streams as it happens and its exit status is the task's. The harness knows nothing about what it is: the `[setup]` script installs whatever the guest needs to run it — a compiler, an interpreter, a package manager's worth of tools — and anything the run should leave behind goes in the share. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
@@ -424,8 +424,8 @@ relative, and must not leave the repository.
 | `chore vm:test [-- args]` | Boot, run the `[test] command` on the HOST, tear down. A failing teardown fails the task; the test's own failure wins if both fail. `FLTH_KEEP_VM=1` keeps the VM. |
 | `chore vm:guest-test [-- args]` | Boot, run the `[test] guest_command` INSIDE the guest from `/repo`, tear down — the same session rules. For a suite whose host cannot run it. |
 | `chore vm:session -- <command>` | Run a command on the HOST inside a session: the VM it boots comes down, and the slot is released, when it ends — passed, failed or killed. A held VM is left up. What a consumer's test runner calls as `vm.sh session <command...>`; see [rule 2](#talking-to-the-guest-from-a-test-process). |
-| `chore vm:provision` | Re-run the setup script, changed or not. |
-| `chore vm:down` | Halt, **confirm** the VM stopped, release the slot. Fails if the VM is still running or its state cannot be read. Keeps the disk. |
+| `chore vm:provision` | Re-run the setup script, changed or not, on a provisioning boot. Stops a running VM first, and refuses while another invocation is using it. |
+| `chore vm:down` | Halt, **confirm** the VM stopped, release the slot. Fails if the VM is still running or its state cannot be read. Keeps the disk, which holds what setup installed and nothing a run wrote. |
 | `chore vm:status` | Exit 0 when running, 1 otherwise, and say which. |
 | `chore vm:hold` | Mark the VM as deliberately running (reaper and guest deadline stand down). |
 | `chore vm:reap` | Stop a VM nothing cleaned up, unless held. Meant for `lifecycle: after_all`. |
@@ -511,6 +511,32 @@ trade-off: each consumer pays its own first boot and its own disk,
 in exchange for setups that cannot interfere, a `destroy` that affects
 only its owner, and a harness checkout that stays clean for the
 `siblings` task. Boxes are shared in Vagrant's own box store.
+
+**Every run starts from the same disk.** The machine's disk carries what
+the consumer's setup script installed and nothing else. Every boot that
+runs anything is **disposable**: QEMU opens the disk read-only
+(`snapshot=on`) and sends every write to a temporary overlay under
+`FLTH_STATE_DIR/tmp`, unlinked as soon as it is open, so it is gone when
+the VM stops however it stops. A mount, a loop device, a half-finished
+install or a full `/var/tmp` that one run leaves behind cannot be seen
+by the next. Teardown inside a suite is a courtesy, not the guarantee:
+it does not run when a test crashes halfway, which is when the state it
+would have cleaned up is worst.
+
+Only a **provisioning boot** writes the disk. When the setup script has
+changed since the disk last took it (the record is
+`machines/<project>/base.sha256`, `disk.setup=` in `chore vm:config`),
+`up` applies it on a boot whose writes are kept, stops that boot,
+**confirms** it stopped, and only then boots the disposable machine that
+runs things. That costs one extra boot each time the setup script
+changes. Nothing is run on a provisioning boot: one left up by a failed
+setup refuses `run` and `exec` until `chore vm:down`.
+
+So **anything a suite keeps in the guest between runs is gone**: a build
+directory or package cache on the guest's own disk is rebuilt on every
+boot. Install what every run needs in the setup script; put what should
+outlive a run on the share or in the repository mount, both of which
+live on the host.
 
 ### The engine interface
 
@@ -666,7 +692,7 @@ Every pull request and every push to `main` runs
 | Job | Runs on | What a green run proves |
 | --- | --- | --- |
 | `unit (VM-free)` | `ubuntu-latest` | `chore check`: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the slot lock's guarantees (no age-alone break, generation-bound deletes, half-written records, unreadable process tables, contention between two consumers); the orchestration against a stub engine (boot retries, never releasing on an unread state, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
-| `smoke (real VM, x86_64 KVM)` | `ubuntu-latest` with KVM | `chore smoke`: a real Debian VM boots through the harness under KVM; the smoke consumer's setup installs `e2fsprogs` inside it; a second consumer is refused the slot; exit status, output and files cross host↔guest; hold survives the reaper and a leaked VM does not; a realistic suite (build an ext4 image from host files, read back with `debugfs`, compare, `e2fsck -fn`, collect results on the host) **passes**; the same suite with one byte of file data corrupted **fails with a non-zero exit**; `FLTH_KEEP_VM=1`, `down` and `destroy` behave. |
+| `smoke (real VM, x86_64 KVM)` | `ubuntu-latest` with KVM | `chore smoke`: a real Debian VM boots through the harness under KVM; the smoke consumer's setup installs `e2fsprogs` inside it; a run that leaves a file, a loop device and a mount behind changes no byte of the machine's disk, and the next boot sees none of it; a second consumer is refused the slot; exit status, output and files cross host↔guest; hold survives the reaper and a leaked VM does not; a realistic suite (build an ext4 image from host files, read back with `debugfs`, compare, `e2fsck -fn`, collect results on the host) **passes**; the same suite with one byte of file data corrupted **fails with a non-zero exit**; `FLTH_KEEP_VM=1`, `down` and `destroy` behave. |
 | `ci-ok` | `ubuntu-latest` | Green only if every job above ran and succeeded (a failed, cancelled **or skipped** job fails it). |
 
 **The required status check is `ci-ok`.** Branch protection and

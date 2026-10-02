@@ -22,8 +22,13 @@
 #                              `unknown` is never treated as stopped:
 #                              a slot released on an unread state is how
 #                              two VMs end up running at once.
-#   engine_up                  boot (creating if needed); non-zero on
+#   engine_up [--persist]      boot (creating if needed); non-zero on
 #                              failure. Engine chatter goes to stderr.
+#                              The boot is DISPOSABLE: everything it
+#                              writes to the machine's disk is thrown
+#                              away when it stops, however it stops.
+#                              With --persist the writes are kept; that
+#                              is for applying the setup script only.
 #   engine_down [--force]      ask the VM to stop. Its exit status is
 #                              NOT trusted; callers confirm with
 #                              engine_state.

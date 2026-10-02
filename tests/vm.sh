@@ -82,17 +82,24 @@ free_slot
 
 # --- boot retries ---------------------------------------------------------
 
+# An absent VM's first boot is its provisioning boot (tests/disposable.sh).
 stub_state absent; echo 2 > "$FLTH_TEST_STUB/up_failures"; stub_reset_calls
 vm up 2>/dev/null
 check_eq "$?" 0 "a boot that fails twice and then succeeds is an up"
-check_eq "$(calls_of up)" 3 "after three attempts"
+check_eq "$(calls_of 'up --persist')" 3 "after three attempts"
 check_eq "$(calls_of 'down --force')" 2 "forcing the half-started VM down between attempts"
+
+vm down 2>/dev/null; stub_reset_calls
+echo 2 > "$FLTH_TEST_STUB/up_failures"
+vm up 2>/dev/null
+check_eq "$?" 0 "a disposable boot is retried the same way"
+check_eq "$(calls_of up)" 3 "three attempts"
 
 vm down 2>/dev/null
 stub_state absent; echo 3 > "$FLTH_TEST_STUB/up_failures"; stub_reset_calls
 out="$(vm up 2>&1)"
 check_eq "$?" 1 "three failed boots fail up"
-check_eq "$(calls_of up)" 3 "and it stops trying at three"
+check_eq "$(calls_of 'up --persist')" 3 "and it stops trying at three"
 check_eq "$(slot_holder)" "" "a failed boot confirmed stopped gives the slot back"
 
 stub_state absent; echo 3 > "$FLTH_TEST_STUB/up_failures"; echo unknown > "$FLTH_TEST_STUB/after_failed_up"

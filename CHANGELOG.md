@@ -53,6 +53,23 @@ changes allowed in minor versions until 1.0.
   `brew upgrade antimatter-studios/tap/virtiofsd`. A Mac with an older
   build must upgrade before it boots the guest.
 
+- **A run's writes are gone when its boot stops** (#32). The machine's
+  disk was long-lived and took every write, so a mount, a loop device or a
+  half-finished install one run left behind surfaced as the next run's
+  failure (#31 is one instance). Every boot that runs anything is now
+  disposable: QEMU opens the disk read-only (`snapshot=on`) and writes to
+  an overlay it discards when the VM stops, however it stops. Only a
+  provisioning boot writes the disk — `up` applies a setup script the disk
+  does not carry yet on a boot whose writes are kept, stops it, confirms
+  the stop, and then boots the disposable machine that runs things.
+  `chore vm:provision` does the same on demand, and refuses while another
+  invocation is using the VM. **Consumers who keep a build directory or a
+  package cache on the guest's own disk lose it at every boot**: what
+  every run needs belongs in the setup script, and what should outlive a
+  run on the share or in the repository mount. A changed setup script
+  costs one extra boot. An existing machine takes one provisioning boot
+  the first time this version boots it.
+
 ### Fixed
 
 - **The macOS share's two unexplained virtiofsd settings are explained or

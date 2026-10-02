@@ -11,6 +11,14 @@
 #   after_down     state after engine_down (default stopped)
 #   after_destroy  state after engine_destroy (default absent)
 #   ps_unreadable  present: engine_alive answers 2
+#
+# THE DISK. The guest's setup-stamp directory is $STUB/guest-lib
+# for the length of a boot, and $STUB/disk is what the machine's disk
+# keeps. Every boot starts from a copy of the disk; a boot from `absent`
+# starts from an empty one. When a boot made with `--persist` stops, what
+# it wrote is kept; when any other boot stops, it is thrown away. That is
+# the engine's promise (lib/engine.sh, engine_up), modelled so the
+# orchestration can be held to using it.
 
 STUB="${FLTH_TEST_STUB:?the stub engine needs FLTH_TEST_STUB}"
 
@@ -30,25 +38,42 @@ engine_state() {
 }
 
 engine_up() {
-    local n
+    local n persist=0
+    [ "${1:-}" = --persist ] && persist=1
     n="$(stub_read up_failures 0)"
-    stub_log up
+    stub_log "up${1:+ $1}"
     if [ "$n" -gt 0 ]; then
         echo $((n - 1)) > "$STUB/up_failures"
         stub_read after_failed_up stopped > "$STUB/state"
         return 1
     fi
+    [ "$(cat "$STUB/state")" = absent ] && rm -rf "$STUB/disk"
+    mkdir -p "$STUB/disk"
+    rm -rf "$STUB/guest-lib"
+    cp -R "$STUB/disk" "$STUB/guest-lib"
+    echo "$persist" > "$STUB/boot-persist"
     stub_read after_up running > "$STUB/state"
+}
+
+# The boot has ended: keep what it wrote only if it was a --persist boot.
+stub_boot_ended() {
+    if [ "$(stub_read boot-persist 0)" = 1 ]; then
+        rm -rf "$STUB/disk"
+        cp -R "$STUB/guest-lib" "$STUB/disk"
+    fi
+    rm -rf "$STUB/boot-persist" "$STUB/guest-lib"
 }
 
 engine_down() {
     stub_log "down${1:+ $1}"
     stub_read after_down stopped > "$STUB/state"
+    case "$(cat "$STUB/state")" in stopped | absent) stub_boot_ended ;; esac
 }
 
 engine_destroy() {
     stub_log destroy
     stub_read after_destroy absent > "$STUB/state"
+    rm -rf "$STUB/disk" "$STUB/guest-lib" "$STUB/boot-persist"
 }
 
 # Runs the script HERE, with the guest's fixed paths — the setup stamp,

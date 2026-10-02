@@ -23,7 +23,7 @@ printf '#!/bin/sh\nexit 0\n' > "$BIN/sleep"
 # prints $STUBDIR/ssh-config; everything is logged.
 cat > "$BIN/vagrant" <<'STUB'
 #!/usr/bin/env bash
-echo "vagrant $* cwd=$PWD dot=$VAGRANT_DOTFILE_PATH tmpdir=${TMPDIR:-}" >> "$STUBDIR/log"
+echo "vagrant $* cwd=$PWD dot=$VAGRANT_DOTFILE_PATH disposable=${FLTH_VM_DISPOSABLE:-unset} tmpdir=${TMPDIR:-}" >> "$STUBDIR/log"
 n="$(cat "$STUBDIR/locked" 2>/dev/null || echo 0)"
 if [ "$n" -gt 0 ]; then
     echo $((n - 1)) > "$STUBDIR/locked"
@@ -195,6 +195,19 @@ printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n' > "
 FLTH_STATE_DIR="$long_state" TMPDIR="$deep" engine_up 2>/dev/null
 check_eq "$?" 0 "on Linux, which shares over 9p and makes no socket, the same path boots"
 rm -f "$BIN/uname"
+
+# --- disposable and provisioning boots ---------------------------------------
+
+# The Vagrantfile is evaluated by every vagrant command, `status` and
+# `halt` included, so the flag is always exported; only `up` reads it.
+check_eq "${FLTH_VM_DISPOSABLE:-unset}" 1 "every Vagrant call sees a disposable machine unless told otherwise"
+: > "$STUBDIR/log"
+engine_up 2>/dev/null
+check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=1" "a plain up boots disposable: the run's writes are discarded"
+: > "$STUBDIR/log"
+engine_up --persist 2>/dev/null
+check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=0" "up --persist boots a machine whose writes reach its disk"
+check_eq "${FLTH_VM_DISPOSABLE:-unset}" 1 "and only that boot: the next Vagrant call is back to disposable"
 
 # --- engine_copy ------------------------------------------------------------
 

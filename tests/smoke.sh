@@ -7,6 +7,9 @@
 #
 #   up / setup    the VM boots, the consumer's setup installs its tooling
 #                 inside it, the guest deadline is armed
+#   disposable    a run that leaves a file, a loop device and a mount
+#                 behind changes not one byte of the machine's disk, and
+#                 the next boot sees none of it
 #   apt-ready     a held dpkg lock is found and named, as dpkg sees it
 #   slot          a second consumer cannot boot while this one holds it
 #   run / share   exit status and output come back; files cross both ways
@@ -77,6 +80,41 @@ check_eq "$("$VM" run 'test -r /run/systemd/shutdown/scheduled && echo armed' 2>
 check_eq "$("$VM" run 'test -r /run/systemd/shutdown/scheduled && echo armed' 2>/dev/null)" armed \
     "a call re-arms the deadline as it ends, on the guest's real logind (cancelled, then re-armed by the same call)"
 "$VM" run 'uname -a; cat /etc/debian_version; nproc; free -m | sed -n 2p; df -h / | tail -1' 2>/dev/null | sed 's/^/  guest: /'
+
+step "disposable: what a run leaves behind goes with its boot"
+# The oracles are the guest's own losetup and findmnt, and the disk's
+# bytes: QEMU opens it read-only on a disposable boot, so a checksum taken
+# while the VM runs must still hold once the run has written and stopped.
+machine="$("$VM" config | sed -n 's/^machine=//p')"
+disk="$(find "$machine" -name 'linked-box.img' 2>/dev/null | head -1)"
+check_true '[ -f "$disk" ]' "the machine's disk is at $disk" "no linked-box.img under $machine"
+sum() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | awk '{print $1}'; }
+before="$(sum "$disk")"
+check_eq "$("$VM" config | sed -n 's/^disk.setup=//p')" "$(sum "$CONSUMER/setup.sh")" "the disk is recorded as carrying this setup"
+"$VM" run 'set -e
+    echo left > /var/lib/flth-smoke-left-this
+    truncate -s 16M /var/tmp/flth-smoke.img
+    mkfs.ext4 -q -F /var/tmp/flth-smoke.img
+    dev="$(losetup -f --show /var/tmp/flth-smoke.img)"
+    mkdir -p /mnt/flth-smoke
+    mount "$dev" /mnt/flth-smoke
+    echo inside > /mnt/flth-smoke/file
+    sync' 2>/dev/null
+check_eq "$?" 0 "a run leaves a file, a loop device and a mount behind"
+check_contains "$("$VM" run 'losetup -a' 2>/dev/null)" "/var/tmp/flth-smoke.img" "the guest's losetup lists the loop device"
+check_contains "$("$VM" run 'findmnt -n -o SOURCE /mnt/flth-smoke' 2>/dev/null)" "/dev/loop" "and findmnt the mount"
+"$VM" down
+check_eq "$?" 0 "the VM stops"
+check_eq "$(sum "$disk")" "$before" "the machine's disk is byte for byte what it was before the run"
+t0=$(date +%s)
+"$VM" up
+check_eq "$?" 0 "the next boot comes up"
+echo "  (a cold boot of a provisioned machine took $(( $(date +%s) - t0 ))s)"
+check_eq "$("$VM" run 'test -e /var/lib/flth-smoke-left-this && echo left || echo gone' 2>/dev/null)" gone "the file the run left is gone"
+check_eq "$("$VM" run 'losetup -a | grep -c flth-smoke' 2>/dev/null)" 0 "and so is its loop device"
+check_eq "$("$VM" run 'findmnt -n /mnt/flth-smoke >/dev/null && echo mounted || echo unmounted' 2>/dev/null)" unmounted "and its mount"
+check_eq "$("$VM" run 'test -e /var/tmp/flth-smoke.img && echo kept || echo gone' 2>/dev/null)" gone "and the image behind them"
+check_contains "$("$VM" run 'mkfs.ext4 -V 2>&1 | sed -n 1p' 2>/dev/null)" "mke2fs" "while what setup installed is still there"
 
 step "slot: a second consumer cannot boot"
 printf '[project]\nname = "flth-smoke-contender"\n[setup]\nscript = "setup.sh"\n' > "$CONTENDER/fs-linux-test-harness.toml"
