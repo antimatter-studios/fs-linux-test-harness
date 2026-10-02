@@ -6,6 +6,8 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+## v0.3.0 — 2026-10-02
+
 ### Added
 
 - **`vm.sh session <command...>` runs a command inside a session** (#37).
