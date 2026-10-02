@@ -10,6 +10,7 @@
 #   vm.sh provision        boot if needed, re-run the setup script unconditionally
 #   vm.sh test [args...]   boot, run the consumer's [test] command, tear down
 #   vm.sh guest-test [args...]  boot, run the [test] guest_command INSIDE the guest, tear down
+#   vm.sh session <cmd...> run a command on the host inside a session: the VM comes down when it ends
 #   vm.sh down             halt, confirm it stopped, release the slot
 #   vm.sh status           exit 0 when the VM is running, 1 otherwise
 #   vm.sh hold             keep the VM up: reap leaves it, the guest deadline is cancelled
@@ -28,8 +29,9 @@
 #
 # The VM is kept running between invocations on purpose: booting is the
 # slow part, and an iterate-and-check loop should pay it once. What stops
-# it is, in order: `down` (a chore `defer:` or vm-session.sh), `reap` (a
-# chore `after_all`), and the guest's own poweroff deadline.
+# it is, in order: `down` (a chore `defer:`, or a vm-session.sh session
+# ending, which leaves a held VM up), `reap` (a chore `after_all`), and
+# the guest's own poweroff deadline.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
@@ -42,7 +44,7 @@ BOOT_ATTEMPTS=3
 BOOT_RETRY_WAIT=5
 
 usage() {
-    sed -n '3,18p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '3,19p' "$SELF" | sed 's/^# \{0,1\}//'
 }
 
 # Say what the host is missing before trying to boot. Without this the
@@ -243,8 +245,8 @@ vm_reap() {
 # SESSIONS: "IN USE" AS A STATE THE REAPER CAN SEE.
 #
 # vm-session.sh keeps the VM up for the length of the script that
-# sourced it — `vm:test`, `vm:guest-test`, a consumer's fixture build —
-# and deliberately does not `hold`, because a hold must outlive the
+# sourced it, or the command it runs — `vm:test`, `vm:guest-test`, a
+# consumer's fixture build, a consumer's test runner — and deliberately does not `hold`, because a hold must outlive the
 # invocation that set it. Without this, a VM in use by a forty-minute
 # fixture build was indistinguishable from a leak, and the reaper, run
 # by any other chore invocation (another terminal, another agent,
@@ -296,12 +298,34 @@ vm_session_begin() {
     printf '%s\t%s\n' "$pid" "$start" > "$(sessions_dir)/$pid"
 }
 
+#
+# A HELD VM IS NOT THE SESSION'S TO STOP (#36). `chore vm:up` holds the VM
+# so it outlives the invocation that booted it, and the reaper respects
+# that; a session's end did not, so a test run started beside a VM a
+# person was working in took it down. A session ends exactly as reap
+# would treat it: a held VM stays up, and keeps its slot.
 vm_session_end() {
     local pid="$1" others
     rm -f "$(sessions_dir)/$pid"
+    if [ -f "$FLTH_HOLD" ]; then
+        echo "[vm] left running: it was held with 'chore vm:hold'. 'chore vm:down' stops it." >&2
+        return 0
+    fi
     others="$(live_sessions "$pid")"
     if [ -n "$others" ]; then
         echo "[vm] left running: another invocation is using it (pid ${others//$'\n'/, }); the last one to finish brings it down." >&2
+        return 0
+    fi
+    # NOTHING TO HALT when no VM process is running: a test run whose
+    # tests never needed the VM ends here, at the cost of a process check,
+    # instead of the engine's slowest answer. The slot is still given back
+    # if this machine holds it — on the same evidence the slot's waiters
+    # use to call a holder dead. A process table that cannot be read (2)
+    # is not that evidence, and takes the full `down`.
+    local alive=0
+    engine_alive "$(engine_identity)" || alive=$?
+    if [ "$alive" -eq 1 ]; then
+        "$SLOT" release
         return 0
     fi
     vm_down
@@ -466,6 +490,13 @@ case "$command" in
         usage
         [ -n "$command" ] || exit 2
         exit 0
+        ;;
+    session)
+        # Before any consumer is loaded: where no VM can run (in the guest,
+        # on a host without the tools) the command runs with no engine
+        # call at all, and vm-session.sh is what decides that.
+        shift
+        exec "$(dirname "$SELF")/vm-session.sh" "$@"
         ;;
     up | run | exec | put | share | provision | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end) ;;
     *)

@@ -89,6 +89,14 @@ tasks:
     # [setup] script installs whatever the guest needs to run it.
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" guest-test $CLI_ARGS']
 
+  session:
+    desc: 'Run a command on the HOST inside a VM session — the VM it boots comes down, and the slot is released, when it ends: chore vm:session -- <command>'
+    # What a consumer's test runner calls as `vm.sh session <command...>`,
+    # so that a run made outside chore gives the slot back too. The task
+    # is for a command run by hand; $CLI_ARGS is split into words, as for
+    # `test`.
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" session $CLI_ARGS']
+
   hold:
     desc: Keep the VM up — the reaper leaves it, the guest deadline is cancelled
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" hold']

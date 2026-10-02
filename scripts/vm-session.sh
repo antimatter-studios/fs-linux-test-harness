@@ -1,16 +1,52 @@
+#!/usr/bin/env bash
 # shellcheck shell=bash
 #
-# vm-session.sh — bring the VM down when the script that sourced this one
-# finishes, however it finishes.
+# vm-session.sh — keep the VM for the length of some work, and bring it
+# down when the work finishes, however it finishes. Two ways in:
 #
-#   . ../fs-linux-test-harness/scripts/vm-session.sh
+#   vm.sh session <command> [args...]      run a command inside a session
+#   . ../fs-linux-test-harness/scripts/vm-session.sh   make the sourcing script one
+#
+# RUN A COMMAND INSIDE A SESSION. For a consumer's test runner, whose test
+# processes boot the VM themselves from their first guest call:
+#
+#   exec ../fs-linux-test-harness/scripts/vm.sh session <test command> "$@"
+#
+# `vm.sh session` execs this file with the command; that is the public
+# spelling, because a harness checkout older than it answers `vm.sh
+# session` with "unknown command" — where executing an older copy of this
+# file would end a session at once and never run the command at all.
+#
+# The VM is ONE SLOT FOR THE WHOLE MACHINE. A run that boots it and leaves
+# the cleanup to chore's `after_all` reaper holds that slot whenever it was
+# started some other way (the consumer's own script, a command by hand),
+# and every other repository queues behind it until the guest's idle
+# deadline. Run through this, the VM comes down and the slot is released
+# when the command ends: passed, failed or killed.
+#
+# The command is the session's child, not exec'd: the trap that brings
+# the VM down belongs to this shell, which has to outlive the command. A
+# TERM, INT or HUP sent to this shell is passed on to the command, and the
+# VM is brought down only once the command has finished with it — bash
+# would otherwise run its exit trap at once, under a test process that
+# would boot the VM again outside any session. Its status is the
+# command's; killed by a signal, 128 plus the signal's number.
+#
+# NO SESSION WHERE NO VM CAN RUN. With FLTH_GUEST=1 the command is already
+# inside the guest, and on a host that fails `host-tools.sh --quiet` (a CI
+# runner without KVM) no VM can ever start: either way the command is
+# exec'd as it is, and the engine is asked nothing. A test that needs the
+# VM there fails on its own, naming what it needed.
+#
+# SOURCED, it makes the script that sourced it the session: an EXIT trap
+# brings the VM down when that script finishes, so teardown also happens
+# on failure, on a `set -e` abort and on Ctrl-C. That is how `vm.sh test`,
+# `vm.sh guest-test` and a consumer's fixture build use it.
 #
 # `vm.sh run` and `put` boot the VM when it is not up, which is what makes
 # wrappers convenient. Nothing brought it back down: every wrapper left a
 # QEMU process holding gigabytes until somebody noticed, and "somebody
-# noticed" was the teardown mechanism. Sourcing this installs an EXIT
-# trap, so teardown also happens on failure, on a `set -e` abort and on
-# Ctrl-C.
+# noticed" was the teardown mechanism.
 #
 # A FAILING TEARDOWN FAILS THE SCRIPT, even when the work succeeded. A VM
 # that would not stop is the condition this exists to prevent, and
@@ -27,26 +63,50 @@
 #
 # for several runs back to back, where booting each time is the slow
 # part. It says so on the way out, so a VM left running is always one
-# somebody asked for.
+# somebody asked for. A VM held with `chore vm:up` (or `vm:hold`) is left
+# running too: a session's end is not `vm:down`.
 #
-# The consumer is resolved when this is sourced, not when the trap fires:
-# the script may have changed directory by then.
+# The consumer is resolved when the session begins, not when the trap
+# fires: the script may have changed directory by then.
 #
-# THE SESSION IS VISIBLE TO THE REAPER. Sourcing this records the script's
-# process as a session on the machine (`vm.sh session-begin`), so `vm.sh
+# THE SESSION IS VISIBLE TO THE REAPER. Beginning one records the
+# session's process on the machine (`vm.sh session-begin`), so `vm.sh
 # reap` — which any other chore invocation runs — leaves the VM alone
-# while the script is alive, instead of taking an unheld VM for a leak.
-# Ending runs `vm.sh session-end`, which brings the VM down unless another
-# live session is still using it. A session killed outright leaves a
-# marker whose process is dead, and the reaper treats that as the leak it
-# is.
+# while it is alive, instead of taking an unheld VM for a leak. Ending
+# runs `vm.sh session-end`, which brings the VM down unless it is held or
+# another live session is still using it. A session killed outright
+# leaves a marker whose process is dead, and the reaper treats that as
+# the leak it is.
 
 _flth_session_scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+_flth_session_run=0
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    _flth_session_run=1
+    [ "${1:-}" = "--" ] && shift
+    case "${1:-}" in
+        '' | -h | --help)
+            echo "usage: vm.sh session <command> [args...]   run a command inside a VM session" >&2
+            echo "       . vm-session.sh                      make the sourcing script a session" >&2
+            [ -n "${1:-}" ] && exit 0
+            exit 2
+            ;;
+    esac
+    if [ "${FLTH_GUEST:-}" = 1 ] ||
+        ! "$_flth_session_scripts/host-tools.sh" --quiet >/dev/null 2>&1; then
+        exec "$@"
+    fi
+fi
+
 # shellcheck source=lib/config.sh
 . "$_flth_session_scripts/lib/config.sh"
-FLTH_CONFIG="$(flth_find_config)" || return 1
-export FLTH_CONFIG
-"$_flth_session_scripts/vm.sh" session-begin "$$" || return 1
+# `exit` when run, `return` when sourced: a `return` outside a function
+# or a sourced file is an error bash reports and then carries on past.
+if ! { FLTH_CONFIG="$(flth_find_config)" && export FLTH_CONFIG &&
+    "$_flth_session_scripts/vm.sh" session-begin "$$"; }; then
+    [ "$_flth_session_run" = 1 ] && exit 1
+    return 1
+fi
 
 flth_session_end() {
     local code=$?
@@ -73,3 +133,36 @@ flth_session_end() {
 }
 
 trap flth_session_end EXIT
+
+if [ "$_flth_session_run" = 1 ]; then
+    _flth_session_child=
+    _flth_session_signalled=0
+    _flth_session_forward() {
+        # _flth_session_forward <status to report> <signal>
+        _flth_session_signalled="$1"
+        [ -z "$_flth_session_child" ] || kill -"$2" "$_flth_session_child" 2>/dev/null || true
+    }
+    trap '_flth_session_forward 129 HUP' HUP
+    trap '_flth_session_forward 130 INT' INT
+    trap '_flth_session_forward 143 TERM' TERM
+
+    # A background job is the only way to keep receiving signals while the
+    # command runs. Without job control bash starts one with INT and QUIT
+    # ignored and stdin from /dev/null; the reset and the explicit
+    # redirection give the command what it would have had in the foreground.
+    (
+        trap - INT QUIT
+        exec "$@"
+    ) 0<&0 &
+    _flth_session_child=$!
+
+    # `wait` returns early when a trapped signal arrives; the command is
+    # still running then (or not yet reaped), so wait again until it is gone.
+    while :; do
+        wait "$_flth_session_child"
+        _flth_session_status=$?
+        kill -0 "$_flth_session_child" 2>/dev/null || break
+    done
+    [ "$_flth_session_signalled" = 0 ] || _flth_session_status="$_flth_session_signalled"
+    exit "$_flth_session_status"
+fi
