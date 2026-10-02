@@ -107,7 +107,12 @@ engine_state() {
         # answer.
         running) [ "$rc" -eq 1 ] && echo unknown || echo running ;;
         not_created) echo absent ;;
-        # The stock provider says `stopped`; the macOS fork `poweroff`.
+        # Both providers say `stopped`: the macOS fork's driver, in every
+        # published version (0.5.0 to 0.6.0), has only running, stopped
+        # and not_created, the stock provider's states. `poweroff` was
+        # carried over from older copies of this code and never observed;
+        # it stays mapped because the cost of dropping it, if some build
+        # does say it, is a halted VM read as `unknown` holding the slot.
         stopped | poweroff | shutoff) echo stopped ;;
         *) echo unknown ;;
     esac

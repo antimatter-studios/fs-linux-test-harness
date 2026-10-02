@@ -352,10 +352,9 @@ pipeline are the same evidence:
 | `ci-ok` | `ubuntu-latest`, `if: always()` | Needs every other job; fails if any failed, was cancelled **or was skipped**. |
 
 `.github-guard` declares `required = ci-ok` and nothing else, so jobs can be
-added, renamed or split without a branch-protection change. Until the
-harness has a release, a consumer pins it to a full commit SHA (fetched by
-SHA: `git init`, `git fetch --depth 1 origin <sha>`, `git checkout
-FETCH_HEAD`); once it is tagged, pin the tag like every other sibling.
+added, renamed or split without a branch-protection change. A consumer pins
+the harness by tag, like every other sibling: `LINUX_HARNESS_REF` in its
+`chores.yml`.
 
 ## Configuration: `fs-linux-test-harness.toml`
 
@@ -448,13 +447,22 @@ falling back.
 proven by CI's smoke job on every pull request, and the Linux aarch64 row
 by `chore smoke` on an arm64 host. Nobody has yet run `chore smoke` on a
 Mac, so the macOS row is carried over from the repositories this harness
-replaced, not observed: the provider's `poweroff` state name, the QEMU
-command line `engine_alive` matches, the virtiofs shares. Treat it as
-untested until that run is recorded. One defect on it is known: a file on
-either virtiofs share cannot be opened with `O_DIRECT` (#26; see "Where a
-tool works on an image"). Its box is not in the public Vagrant
-registry; `chore vm:host:check` says so and prints the command that adds it
-from its GitHub release.
+replaced, not observed. What is known without a boot: the published
+`vagrant-qemu-christhomas` reports `running`, `stopped` and `not_created`,
+the stock provider's states, and launches `qemu-system-aarch64` with the
+machine's disk under `VAGRANT_DOTFILE_PATH`, which is what `engine_alive`
+matches. That is read from the gem's source, not seen on a Mac. The
+`macos-host` workflow installs the host setup below on a real Apple Silicon
+runner and validates the Vagrantfile under the real forked provider, but
+cannot boot: GitHub's macOS runners have no nested virtualisation, so no
+HVF. Treat the row as untested until `chore smoke` on a Mac is recorded.
+One defect on it is known: a file on either virtiofs share cannot be
+opened with `O_DIRECT` (#26; see "Where a tool works on an image").
+
+**The box is not published.** It is not in the public Vagrant registry,
+and its GitHub release is in a private repository, whose download URL
+answers 404 to Vagrant. `chore vm:host:check` says so and prints the
+command that adds a copy of the `.box` file by hand.
 
 **Why 9p on Linux:** the stock provider has no virtiofs support; 9p
 needs no daemon and no root. The **share** uses
@@ -578,9 +586,9 @@ the guest; `down` and `destroy` clear it, and a reboot re-arms the deadline.
 brew install --cask hashicorp/tap/hashicorp-vagrant
 brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd
 vagrant plugin install vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas
-# not in the public registry: added from its GitHub release
-vagrant box add christhomas/vagrant-rpi-bookworm-arm64 \
-  https://github.com/christhomas/vagrant-rpi-bookworm-arm64/releases/download/v1.0.0/rpi-arm64.box
+# not published anywhere public (#8): add a copy of its .box file
+vagrant box add --name christhomas/vagrant-rpi-bookworm-arm64 --architecture arm64 \
+  path/to/rpi-arm64.box
 ```
 
 **Linux x86_64** (a CI runner does all of this with `scripts/ci-setup-linux.sh`)
@@ -635,6 +643,17 @@ The arm64 path (Linux aarch64 under KVM) is proven by `chore smoke` on an
 arm64 host rather than in hosted CI: GitHub's hosted arm64 runners do not
 expose KVM (checked by the manual `kvm-probe` workflow). The macOS path
 is to be proven by `chore smoke` on a Mac, and **has not been yet** (#8).
+
+GitHub's hosted macOS runners cannot boot it either: they are M1 virtual
+machines with no nested virtualisation, so HVF is unavailable. The
+[`macos-host`](./.github/workflows/macos-host.yml) workflow takes it as far
+as a hosted runner can, on `macos-15` (arm64), whenever the Vagrantfile,
+`host-tools.sh` or the Vagrant engine changes: the macOS host setup
+installs, QEMU has the `vhost-user-fs` device, `host:check` names the
+unpublished box and nothing else, and `vagrant validate` accepts the
+Vagrantfile under real Vagrant and the forked provider. It records whether
+the runner can start an HVF guest, and warns if one ever can. It is not
+part of `ci-ok`.
 
 ## Relation to fs-windows-test-harness
 

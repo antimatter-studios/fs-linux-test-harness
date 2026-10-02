@@ -200,7 +200,11 @@ CI (`.github/workflows/ci.yml`):
 
 The Linux aarch64 path is proven by `chore smoke` on an arm64 host by hand
 (hosted arm64 runners expose no KVM). **The macOS path has never been
-booted** (#8). Do not describe it as working.
+booted** (#8). Do not describe it as working. Hosted macOS runners cannot
+boot it (no nested virtualisation, so no HVF); `macos-host.yml`, outside
+`ci-ok` and run only when the Vagrantfile, `host-tools.sh` or the Vagrant
+engine changes, proves the host setup installs and the Vagrantfile
+validates under the real forked provider on `macos-15`, and nothing more.
 
 **Do not boot VMs from an agent on a shared host** unless you were asked to.
 A VM takes gigabytes and the global slot, and it queues every other

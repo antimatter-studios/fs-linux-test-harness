@@ -36,7 +36,6 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # The macOS guest's box. The name must match vagrant/Vagrantfile's, which
 # tests/host-tools.sh checks.
 MACOS_BOX=christhomas/vagrant-rpi-bookworm-arm64
-MACOS_BOX_URL=https://github.com/christhomas/vagrant-rpi-bookworm-arm64/releases/download/v1.0.0/rpi-arm64.box
 
 check_vagrant() {
     local install="$1" version
@@ -74,12 +73,16 @@ check_macos() {
             printf '%s\n' "$plugins" | grep -q "^$p " ||
                 need "$p" "the macOS QEMU provider and its required companion" "vagrant plugin install $p"
         done
-        # THE BOX IS NOT IN THE PUBLIC REGISTRY, so a Mac that has not
-        # added it by hand fails inside Vagrant with a 404 on a name that
-        # looks like a typo. Its release is on GitHub instead.
+        # THE BOX IS NOT PUBLISHED, so a Mac that has not added it by
+        # hand fails inside Vagrant with a 404 on a name that looks like a
+        # typo. It is not in the public Vagrant registry, and its GitHub
+        # release is in a private repository, whose download URL answers
+        # 404 to Vagrant as well. So no URL is printed: there is none that
+        # works. The name and architecture are the ones the Vagrantfile
+        # asks for.
         vagrant box list 2>/dev/null | grep -q "^$MACOS_BOX " ||
-            need "the box $MACOS_BOX" "the macOS guest; it is not in the public Vagrant registry, so it is added from its GitHub release" \
-                "vagrant box add $MACOS_BOX $MACOS_BOX_URL"
+            need "the box $MACOS_BOX" "the macOS guest; it is not published (neither the Vagrant registry nor a public download has it), so a copy of its .box file is added by hand" \
+                "vagrant box add --name $MACOS_BOX --architecture arm64 <path to rpi-arm64.box>"
     fi
 }
 
