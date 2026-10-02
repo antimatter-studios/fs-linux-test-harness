@@ -6,7 +6,50 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`vm.sh session <command...>` runs a command inside a session** (#37).
+  A consumer's test process boots the VM itself from its first guest call,
+  and the README told consumers to leave stopping it to chore's `after_all`
+  reaper. The reaper runs only inside a chore invocation of that consumer,
+  but the slot is one for the whole machine, so a tier run any other way
+  (the consumer's `scripts/test.sh`, `cargo test` by hand) exited with the
+  VM idle and the slot held, and every other repository's VM work queued
+  behind it until the guest's idle deadline. Run through `vm.sh session`
+  (or `chore vm:session -- <command>`), the VM comes down and the slot is
+  released when the command ends, passed, failed or killed. A TERM, INT or HUP sent to the runner is passed on to the
+  command, and the VM is brought down only once the command has finished
+  with it. In the guest (`FLTH_GUEST=1`) and on a host that fails
+  `host-tools.sh --quiet`, the command runs as it is and the engine is asked
+  nothing. `vm-session.sh` is where it lives; `vm.sh session` is the public
+  spelling because a harness older than this answers it with "unknown
+  command" rather than running nothing. Each consumer's runner becomes a
+  one-line change, and the copy rust-fs-btrfs carried can go.
+
+### Changed
+
+- **The test runner owns the VM its tests boot** (#37). README rule 2 of
+  "Talking to the guest from a test process", and the quickstart's and
+  `examples/minimal`'s `test` task, now run the suite through
+  `vm.sh session <command...>`; the reaper is the net, not the plan.
+
 ### Fixed
+
+- **A session's end leaves a held VM running** (#36). `vm.sh session-end`,
+  run when every session ends, brought the VM down whenever no other
+  session was using it, and cleared the hold on the way: a person who ran
+  `chore vm:up` to keep the VM up across runs lost it as soon as any
+  session on the machine ended, though the reaper had left it alone. A held
+  VM now stays up when a session ends, with its slot, saying so as `reap`
+  does; `vm:down` and `vm:destroy` still stop it.
+
+- **A session whose work never booted the VM ends on a process check.**
+  `vm.sh session-end` ran a full `down` whenever no other session was
+  using the machine, so a test tier that needed no VM paid a `vagrant
+  halt` and `vagrant status` on a machine that was not running. With no VM
+  process running it now releases the slot if this machine holds it and
+  asks the engine nothing else; an unreadable process table still takes
+  the full `down`.
 
 - **A setup interrupted mid-install no longer breaks every later boot**
   (#31). The VM outlives `vm.sh down`, so a setup script stopped part way

@@ -17,7 +17,10 @@ lifecycle:
 
 tasks:
   test:
-    desc: Test suite, with the VM brought down afterwards
+    desc: Test suite, inside a VM session
+    # `vm.sh session` runs the command inside a session: the VM the tests
+    # boot comes down, and the machine-wide slot is released, when it ends
+    # however it ends. A real consumer puts this in the script every tier
+    # runs (scripts/test.sh), so a run made outside chore gets it too.
     cmds:
-      - defer: ../fs-linux-test-harness/scripts/vm.sh down
-      - cargo test
+      - ../fs-linux-test-harness/scripts/vm.sh session cargo test
