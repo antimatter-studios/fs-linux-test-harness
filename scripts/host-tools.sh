@@ -37,6 +37,27 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # tests/host-tools.sh checks.
 MACOS_BOX=christhomas/vagrant-rpi-bookworm-arm64
 
+# The oldest virtiofsd the macOS path works with. Before it, the macOS
+# port read an arm64 guest's open flags with x86_64's values: the guest's
+# O_DIRECT became O_DIRECTORY, so every direct-I/O open of a shared file
+# failed with ENOTDIR (christhomas/virtiofsd#3, released in v1.14.0).
+VIRTIOFSD_MIN=1.14.0
+
+version_at_least() {
+    # version_at_least <have> <want>: numeric, component by component, so
+    # 1.14.0.1 is newer than 1.14.0 and 1.9 is older than 1.14.
+    awk -v have="$1" -v want="$2" 'BEGIN {
+        nh = split(have, h, "."); nw = split(want, w, ".")
+        n = nh > nw ? nh : nw
+        for (i = 1; i <= n; i++) {
+            if (h[i] !~ /^[0-9]*$/ || w[i] !~ /^[0-9]*$/) exit 1
+            if (h[i] + 0 > w[i] + 0) exit 0
+            if (h[i] + 0 < w[i] + 0) exit 1
+        }
+        exit 0
+    }'
+}
+
 check_vagrant() {
     local install="$1" version
     if ! have vagrant; then
@@ -66,6 +87,17 @@ check_macos() {
         brew list --formula "$f" >/dev/null 2>&1 ||
             need "$f (antimatter-studios tap)" "the macOS VM needs the tap's build" "brew install antimatter-studios/tap/$f"
     done
+    if brew list --formula virtiofsd >/dev/null 2>&1; then
+        # The last field: with several versions kept, brew lists the newest
+        # last. A formula revision (`_1`) is the tap's, not the release's.
+        local v
+        v="$(brew list --versions virtiofsd 2>/dev/null | awk 'NF > 1 { sub(/_[0-9]+$/, "", $NF); print $NF }')"
+        if [ -z "$v" ] || ! version_at_least "$v" "$VIRTIOFSD_MIN"; then
+            need "virtiofsd $VIRTIOFSD_MIN or newer (found '${v:-unreadable}')" \
+                "older builds read an arm64 guest's O_DIRECT as O_DIRECTORY, so a direct-I/O open of a shared file fails with ENOTDIR" \
+                "brew upgrade antimatter-studios/tap/virtiofsd"
+        fi
+    fi
     if have vagrant; then
         local p plugins
         plugins="$(vagrant plugin list 2>/dev/null || true)"
