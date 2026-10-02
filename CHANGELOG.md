@@ -8,6 +8,17 @@ changes allowed in minor versions until 1.0.
 
 ### Fixed
 
+- **The macOS share's two unexplained virtiofsd settings are explained or
+  gone** (#32). The Vagrantfile preferred `/opt/homebrew/bin/virtiofsd-1.13.8-rc1`
+  when it existed, with no reason recorded. The macOS port of virtiofsd publishes
+  no rc1, and v1.13.8 was released on 2026-06-22, so that path
+  named a binary found on one Mac and ignored everywhere else. The
+  preference is removed, and every Mac uses the tap's released
+  `virtiofsd`. `--thread-pool-size=1` stays, and now says why: the port
+  switches to the guest's credentials with `seteuid`/`setegid`, which are
+  process-wide on macOS, so with two threads one request can run under
+  the credentials another has just set.
+
 - **A setup interrupted mid-install no longer breaks every later boot**
   (#31). The VM outlives `vm.sh down`, so a setup script stopped part way
   through an install left dpkg mid-transaction, and every later install in

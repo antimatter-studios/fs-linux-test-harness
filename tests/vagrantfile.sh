@@ -41,6 +41,13 @@ class File
         orig.bind(self).call(path)
       end
     end
+    # Every virtiofsd binary a Mac could have lying about exists here, so
+    # the Vagrantfile is seen choosing between them.
+    orig_exec = instance_method(:executable?)
+    define_method(:executable?) do |path|
+      return true if File.basename(path.to_s).start_with?("virtiofsd")
+      orig_exec.bind(self).call(path)
+    end
   end
 end
 
@@ -148,6 +155,11 @@ check_contains "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  shares 
 check_contains "$(field config/vm.synced_folder)" '"/repo"' "  the consumer repository among them"
 check_eq "$(field config/$P.extra_qemu_args)" null "  no 9p"
 check_eq "$(field config/$P.virtiofs_guest_uid)" 1001 "  virtiofs uid matches the box's vagrant user"
+check_eq "$(field config/$P.virtiofsd_bin)" null \
+    "  virtiofsd is the provider's default, the tap's released build, never a hand-placed pre-release binary"
+check_contains "$(field config/$P.extra_virtiofsd_args)" '"--thread-pool-size=1"' \
+    "  one virtiofsd thread: the macOS port switches credentials process-wide"
+check_contains "$(field config/$P.extra_virtiofsd_args)" '"--xattr"' "  extended attributes survive the share"
 check_contains "$(field config/vm.provision)" '"guest/apt-ready.sh"' "  the box's first-boot dialog is disabled and the package manager made ready"
 evaluate darwin23 arm64 0 vagrant-qemu
 check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS with only the stock plugin is refused"
