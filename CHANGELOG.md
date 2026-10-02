@@ -6,6 +6,18 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **A `macos-host` workflow runs the macOS host setup on a real Apple
+  Silicon runner** (#8). On `macos-15` it installs Vagrant, the tap's QEMU
+  and virtiofsd and the two forked plugins as the README says, checks QEMU
+  has `vhost-user-fs`, checks `host:check` names the unpublished box and
+  nothing else, and runs `vagrant validate` on the Vagrantfile under the
+  real forked provider. It cannot boot: hosted macOS runners have no nested
+  virtualisation, so no HVF. It records whether the runner can start an HVF
+  guest. It runs when the Vagrantfile, `host-tools.sh` or the Vagrant
+  engine changes, and is not part of `ci-ok`.
+
 ### Fixed
 
 - **The macOS share's two unexplained virtiofsd settings are explained or
@@ -43,6 +55,12 @@ changes allowed in minor versions until 1.0.
   `chore smoke` opens a file on each share with `O_DIRECT`, so it fails on
   a Mac until the tap ships a fixed virtiofsd. **The `O_DIRECT` failure itself
   is not fixed here**; it is in the host's virtiofsd.
+
+- **`host:check` no longer prints a box URL that answers 404** (#8). It
+  told a Mac without the box to `vagrant box add` it from its GitHub
+  release, but that release is in a private repository and the URL answers
+  404 to Vagrant. It now says the box is not published and prints the
+  command that adds a copy by hand, with `--architecture arm64`.
 
 - **The README names the release it describes** (#27). Its badge said
   "status: unreleased" through v0.1.0 and v0.2.0, and named no version, so

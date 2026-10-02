@@ -1,0 +1,116 @@
+name: macos-host
+
+# THE macOS ARM64 HOST, AS FAR AS A HOSTED RUNNER CAN TAKE IT. NOT A BOOT.
+#
+# GitHub's arm64 macOS runners are M1 virtual machines under Apple's
+# Virtualization framework, and GitHub documents that nested
+# virtualisation is not supported there. HVF needs it, the harness
+# refuses software emulation, and the macOS box is not publicly
+# downloadable (#8). So `chore smoke` cannot run here, and this job does
+# not pretend to: what it proves is everything short of the boot.
+#
+#   setup      the README's macOS host setup installs on a real Apple
+#              Silicon Mac: Vagrant, the tap's QEMU and virtiofsd, the two
+#              forked plugins.
+#   qemu       that QEMU has the vhost-user-fs device virtiofs needs, and
+#              virtiofsd runs.
+#   host:check scripts/host-tools.sh on real macOS names the box, and
+#              nothing else, as missing.
+#   validate   vagrant/Vagrantfile loads under real Vagrant with the real
+#              forked provider and passes its config validation. The unit
+#              tier only evaluates it under a stand-in for Vagrant's DSL.
+#   hvf        whether this runner can start an HVF guest, recorded. A
+#              warning, not a failure, if it ever can: the boot can then
+#              be attempted here.
+#
+# Not part of ci-ok and not required: it runs only when a file it covers
+# changes, and a required check that does not report blocks every PR.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - vagrant/**
+      - scripts/host-tools.sh
+      - scripts/lib/engine-vagrant.sh
+      - .github/workflows/macos-host.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host:
+    name: macOS arm64 host (no boot, no HVF on hosted runners)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The README's macOS host setup
+        run: |
+          set -euo pipefail
+          uname -sm
+          sw_vers
+          brew install --cask hashicorp/tap/hashicorp-vagrant
+          brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd
+          vagrant plugin install vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas
+          vagrant --version
+          vagrant plugin list
+
+      - name: QEMU can serve a virtiofs share
+        run: |
+          set -euo pipefail
+          qemu-system-aarch64 --version | head -1
+          qemu-system-aarch64 -device help | grep -F vhost-user-fs ||
+            { echo "::error::this QEMU has no vhost-user-fs device; the macOS shares need it"; exit 1; }
+          virtiofsd --version
+
+      - name: host:check names the box, and only the box
+        run: |
+          set +e -uo pipefail  # the step shell has -e; these read a status
+          out="$(bash scripts/host-tools.sh 2>&1)"; rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 1 ] ||
+             ! grep -qF '1 requirement(s) missing on Darwin arm64' <<<"$out" ||
+             ! grep -qF 'missing: the box christhomas/vagrant-rpi-bookworm-arm64' <<<"$out"; then
+            echo "::error::expected exactly one missing requirement, the unpublished box (exit $rc)"
+            exit 1
+          fi
+
+      - name: The Vagrantfile validates under real Vagrant and the forked provider
+        env:
+          VAGRANT_DEFAULT_PROVIDER: qemu
+          FLTH_VM_NAME: macos-host
+          FLTH_VM_MEMORY: 2G
+          FLTH_VM_CPUS: "2"
+          FLTH_VM_DISK: 16G
+          FLTH_VM_SSH_PORT: "50222"
+          FLTH_VM_DEADLINE_MINUTES: "30"
+        run: |
+          set -euo pipefail
+          export VAGRANT_DOTFILE_PATH="$RUNNER_TEMP/machine/vagrant"
+          export FLTH_SHARE_DIR="$RUNNER_TEMP/share"
+          export FLTH_REPO_DIR="$GITHUB_WORKSPACE"
+          mkdir -p "$VAGRANT_DOTFILE_PATH" "$FLTH_SHARE_DIR"
+          cd vagrant
+          vagrant validate
+
+      - name: Can this runner start an HVF guest?
+        run: |
+          set +e -uo pipefail  # the step shell has -e; these read a status
+          echo "kern.hv_support=$(sysctl -n kern.hv_support 2>&1)"
+          # A guest with no firmware runs until it is killed: alive after
+          # the alarm (status 142, SIGALRM) means HVF started it.
+          perl -e 'alarm 15; exec @ARGV' qemu-system-aarch64 \
+            -machine virt,accel=hvf -cpu host -m 128 \
+            -display none -nodefaults -no-reboot >"$RUNNER_TEMP/hvf.log" 2>&1
+          rc=$?
+          cat "$RUNNER_TEMP/hvf.log"
+          if [ "$rc" -eq 142 ]; then
+            echo "::warning::HVF started a guest on this runner: the macOS boot (#8) can now be attempted here"
+          else
+            echo "::notice::no HVF guest on this runner (qemu exited $rc): the macOS boot cannot run on hosted CI"
+          fi

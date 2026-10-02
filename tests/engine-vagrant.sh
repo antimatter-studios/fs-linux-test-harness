@@ -112,8 +112,8 @@ printf 'init\n' > "$STUBDIR/ps"
 
 state_for() { rm -f "$STUBDIR/status"; [ -n "$1" ] && echo "$1" > "$STUBDIR/status"; engine_state 2>/dev/null; }
 check_eq "$(state_for not_created)" absent "not_created is absent"
-check_eq "$(state_for stopped)" stopped "stopped (stock provider) is stopped"
-check_eq "$(state_for poweroff)" stopped "poweroff (macOS provider) is stopped"
+check_eq "$(state_for stopped)" stopped "stopped (the stock provider and the macOS fork) is stopped"
+check_eq "$(state_for poweroff)" stopped "poweroff is stopped"
 check_eq "$(state_for paused)" unknown "a state it does not know is unknown"
 check_eq "$(state_for '')" unknown "a status Vagrant could not give is unknown"
 check_eq "$(state_for running)" unknown "Vagrant's 'running' with no VM process is a disagreement: unknown"
