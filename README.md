@@ -111,7 +111,10 @@ Nothing holds the package manager when it runs: every boot first runs
 `vagrant/guest/apt-ready.sh`, which disables the macOS box's first-boot
 dialog (`userconfig.service`, which waits for a keyboard and holds the dpkg
 lock), then waits up to five minutes for anything else holding the lock and
-fails the boot, naming the lock and the process, if it is still held.
+fails the boot, naming the lock and the process, if it is still held. Once
+the locks are free it runs `dpkg --configure -a`, finishing any transaction
+an earlier boot was stopped in the middle of, so a setup script never meets
+"dpkg was interrupted" and needs no recovery of its own.
 
 **4. Use it.**
 

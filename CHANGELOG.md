@@ -8,6 +8,16 @@ changes allowed in minor versions until 1.0.
 
 ### Fixed
 
+- **A setup interrupted mid-install no longer breaks every later boot**
+  (#31). The VM outlives `vm.sh down`, so a setup script stopped part way
+  through an install left dpkg mid-transaction, and every later install in
+  the guest refused with "dpkg was interrupted" until someone fixed it by
+  hand; one consumer carried its own recovery and the others had none.
+  `vagrant/guest/apt-ready.sh` now runs `dpkg --configure -a`,
+  noninteractive, once the package manager's locks are free and before the
+  setup script. A transaction dpkg cannot finish fails the boot, naming the
+  command and showing dpkg's output. Consumers can drop their own copies.
+
 - **The README names the release it describes** (#27). Its badge said
   "status: unreleased" through v0.1.0 and v0.2.0, and named no version, so
   the release step that fixes the README's old version had nothing to find.

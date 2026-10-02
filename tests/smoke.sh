@@ -117,6 +117,24 @@ check_contains "$out" "held by pid $locker" "and names the process holding it"
 check_eq "$("$VM" run 'bash /share/apt-ready.sh 10 >/dev/null && dpkg --configure -a && echo free' 2>/dev/null)" free \
     "once released, apt-ready passes and the guest's dpkg agrees"
 
+step "apt-ready: a dpkg transaction an earlier boot left half done"
+# dpkg journals a transaction in /var/lib/dpkg/updates/ and empties it when
+# the transaction completes; a numbered entry left there is what an
+# install stopped part way through leaves behind, and it is exactly what
+# apt reads as "dpkg was interrupted". The guest's own apt is the oracle,
+# before and after.
+"$VM" run 'touch /var/lib/dpkg/updates/0000' 2>/dev/null
+out="$("$VM" run 'apt-get check' 2>&1)"
+check_contains "$out" "dpkg was interrupted" "the oracle: the guest's apt refuses an interrupted dpkg"
+out="$("$VM" run 'bash /share/apt-ready.sh 10' 2>&1)"
+rc=$?
+check_eq "$rc" 0 "apt-ready finishes the transaction"
+check_eq "$("$VM" run 'ls -A /var/lib/dpkg/updates/' 2>/dev/null)" "" "and dpkg's journal is empty after it"
+out="$("$VM" run 'apt-get check' 2>&1)"
+rc=$?
+check_eq "$rc" 0 "and the guest's apt agrees the package manager is usable"
+check_lacks "$out" "interrupted" "with no interruption reported"
+
 step "exec: the per-call path"
 "$VM" exec 'echo out; echo err >&2; exit 7' > "$CONTENDER/out" 2> "$CONTENDER/err"
 check_eq "$?" 7 "exec returns the guest's exit status"
