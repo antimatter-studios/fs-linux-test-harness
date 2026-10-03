@@ -35,7 +35,7 @@ tasks:
       - '"{{.TASKFILE_DIR}}/scripts/vm.sh" hold'
 
   down:
-    desc: Halt the VM, confirm it stopped, release the slot (keeps the disk)
+    desc: Halt the VM, confirm it stopped, release the slot (keeps the disk; a run's writes go with the boot)
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" down']
 
   destroy:
@@ -74,7 +74,7 @@ tasks:
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" share']
 
   provision:
-    desc: Re-run the setup script inside the VM, even if it is unchanged
+    desc: Re-apply the setup script to the VM's disk on a provisioning boot, even if it is unchanged
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" provision']
 
   test:

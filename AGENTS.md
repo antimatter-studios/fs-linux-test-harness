@@ -254,6 +254,13 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   machine directory is keyed by `[project] name`. Two worktrees running
   sessions at once share one guest: the reaper leaves it alone while any
   session's process is alive, and the last session out brings it down.
+- **A run's writes are gone when its boot stops.** Every boot is
+  disposable (QEMU `snapshot=on`) except the provisioning boot that
+  applies a changed setup script, which is stopped and confirmed stopped
+  before anything runs. A test that wants the guest to remember something
+  between boots is asking for the state bleed this exists to prevent;
+  `tests/disposable.sh` holds the orchestration to it, `tests/smoke.sh`
+  proves it on a real disk.
 - **`deadline_minutes` is an idle timeout.** Every `run` and `exec` re-arms it
   as the call starts and ends, so a single call longer than it (a whole
   `guest-test` run is one call) is still cut off.

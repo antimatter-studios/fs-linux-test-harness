@@ -100,7 +100,7 @@ field() { printf '%s' "$json" | ruby -rjson -e 'd = JSON.parse(STDIN.read); v = 
 
 export FLTH_VM_NAME=rust-fs-demo FLTH_VM_MEMORY=2G FLTH_VM_CPUS=2 FLTH_VM_DISK=16G FLTH_VM_SSH_PORT=50122
 export FLTH_VM_DEADLINE_MINUTES=480 FLTH_SHARE_DIR="$SANDBOX/share" FLTH_QEMU_DIR="$SANDBOX/fw"
-export FLTH_REPO_DIR="$SANDBOX/repo"
+export FLTH_REPO_DIR="$SANDBOX/repo" FLTH_VM_DISPOSABLE=1
 
 P=vm.provider.qemu
 
@@ -126,6 +126,10 @@ check_contains "$(field config/vm.provision)" '["480"]' "  the deadline minutes 
 check_eq "$(field config/vagrant.plugins)" "{}" "  the box's own plugin declaration is cleared"
 check_contains "$(field config/vm.provision)" '[[["apt-ready"],{"type":"shell","run":"always","path":"guest/apt-ready.sh"}]' \
     "  the package manager is made ready on every boot, before anything else is provisioned"
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" \
+    "  a disposable boot writes to an overlay QEMU discards, never to the machine's disk"
+FLTH_VM_DISPOSABLE=0 evaluate linux-gnu aarch64 1 vagrant-qemu
+check_eq "$(field config/$P.extra_drive_args)" null "  a provisioning boot writes the disk itself"
 
 evaluate linux-gnu aarch64 0 vagrant-qemu
 check_contains "$(field error)" "KVM is required" "Linux without usable /dev/kvm is refused, not emulated"
@@ -144,6 +148,7 @@ check_eq "$(field config/$P.machine)" "q35,accel=kvm" "  KVM, q35 machine"
 check_eq "$(field config/$P.net_device)" "virtio-net-pci" "  PCI network device"
 check_eq "$(field config/$P.qemu_dir)" null "  no UEFI firmware directory"
 check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_share" "  shares over 9p"
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boot's writes are discarded"
 
 # --- macOS arm64 ------------------------------------------------------------
 evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
@@ -161,6 +166,7 @@ check_contains "$(field config/$P.extra_virtiofsd_args)" '"--thread-pool-size=1"
     "  one virtiofsd thread: the macOS port switches credentials process-wide"
 check_contains "$(field config/$P.extra_virtiofsd_args)" '"--xattr"' "  extended attributes survive the share"
 check_contains "$(field config/vm.provision)" '"guest/apt-ready.sh"' "  the box's first-boot dialog is disabled and the package manager made ready"
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boot's writes are discarded"
 evaluate darwin23 arm64 0 vagrant-qemu
 check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS with only the stock plugin is refused"
 
@@ -188,9 +194,32 @@ refuse_env FLTH_VM_DEADLINE_MINUTES "0"
 refuse_env FLTH_SHARE_DIR "relative/share"
 refuse_env FLTH_SHARE_DIR "/tmp/x,readonly=off"
 refuse_env FLTH_REPO_DIR "relative/repo"
+refuse_env FLTH_VM_DISPOSABLE "yes"
+refuse_env FLTH_VM_DISPOSABLE "1,file=/etc/shadow"
 
 unset FLTH_VM_NAME
 evaluate linux-gnu x86_64 1 vagrant-qemu
 check_contains "$(field error)" "not by running vagrant directly" "vagrant run by hand stops at the first missing value, and says why"
+
+# --- the macOS workflow's `vagrant validate` --------------------------------
+# That step runs real Vagrant on the Vagrantfile, which refuses to load
+# without every value it requires. A value added here and not there fails
+# only on the macOS runner, after a Homebrew install; this finds it first.
+# FLTH_QEMU_DIR is required only on a Mac without Homebrew's QEMU firmware.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+validate_step="$(awk '/validates under real Vagrant/,/vagrant validate$/' \
+    "$here/.github/workflows/macos-host.yml")"
+if [ -z "$validate_step" ]; then
+    bad "macos-host.yml has a step that runs vagrant validate"
+else
+    while read -r var; do
+        if grep -qE "(^|[[:space:]])(export )?${var}[:=]" <<<"$validate_step"; then
+            ok "macos-host.yml's vagrant validate step sets $var"
+        else
+            bad "macos-host.yml's vagrant validate step sets $var, which the Vagrantfile requires"
+        fi
+    done < <(grep -oE 'flth_env\("FLTH_[A-Z_]+"' "$here/vagrant/Vagrantfile" \
+        | grep -oE 'FLTH_[A-Z_]+' | grep -vx FLTH_QEMU_DIR | sort -u)
+fi
 
 finish vagrantfile

@@ -32,6 +32,12 @@
 # it is, in order: `down` (a chore `defer:`, or a vm-session.sh session
 # ending, which leaves a held VM up), `reap` (a chore `after_all`), and
 # the guest's own poweroff deadline.
+#
+# WHAT A BOOT WRITES IS GONE WHEN IT STOPS. The machine's disk carries the
+# consumer's setup and nothing else: every boot that runs anything is
+# disposable (lib/engine.sh, engine_up), and only a provisioning boot —
+# one that applies a setup script the disk does not carry yet, and is
+# stopped before anything runs — writes it. See provision_disk.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
@@ -56,6 +62,22 @@ require_host_tools() {
         exit 1
     fi
 }
+
+# What a boot of the machine's disk starts from: the hash of the setup
+# script the disk carries, recorded when a provisioning boot stopped
+# cleanly. Absent when the disk carries none, or nobody knows.
+base_record() { printf '%s/base.sha256\n' "$FLTH_MACHINE_DIR"; }
+
+# Present while the VM is up on a provisioning boot, whose writes are
+# kept. Nothing is run there: see refuse_provisioning_boot.
+provisioning_marker() { printf '%s/provisioning\n' "$FLTH_MACHINE_DIR"; }
+
+# `boot` provisions only when the disk does not carry the script; `force`
+# (`vm.sh provision`) re-applies it regardless.
+PROVISION_MODE=boot
+
+# Set by apply_setup when the setup script actually ran in the guest.
+SETUP_APPLIED=0
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -82,7 +104,7 @@ sha256_of() {
 # /dev/null so an `apt-get` inside cannot swallow what follows. Its output
 # goes to stderr, so the stdout of `vm.sh run` is only the command's.
 apply_setup() {
-    local mode="$1" script hash host_stamp guest force=0 payload
+    local mode="$1" script hash host_stamp guest force=0 payload out
     script="$FLTH_ROOT/$CFG_setup_script"
     hash="$(sha256_of "$script")"
     host_stamp="$FLTH_MACHINE_DIR/setup.sha256"
@@ -92,6 +114,7 @@ apply_setup() {
     fi
     [ "$mode" = force ] && force=1
     payload="$(base64 < "$script")"
+    SETUP_APPLIED=0
 
     guest="set -euo pipefail
 stamp=/var/lib/fs-linux-test-harness/setup.sha256
@@ -104,25 +127,30 @@ printf '%s\n' '$payload' | base64 -d > \"\$tmp\"
 FLTH_PROJECT='$CFG_project_name' FLTH_SHARE='$FLTH_SHARE_GUEST' bash \"\$tmp\" </dev/null >&2
 rm -f \"\$tmp\"
 mkdir -p \"\$(dirname \"\$stamp\")\"
-printf '%s\n' '$hash' > \"\$stamp\""
+printf '%s\n' '$hash' > \"\$stamp\"
+echo applied"
 
-    if ! engine_run "$guest"; then
+    if ! out="$(engine_run "$guest")"; then
         rm -f "$host_stamp"
         echo "vm: the setup script ($CFG_setup_script) failed inside the VM." >&2
         echo "    The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
         exit 1
     fi
     printf '%s\n' "$hash" > "$host_stamp"
+    [ "$out" = applied ] && SETUP_APPLIED=1
+    return 0
 }
 
 vm_up() {
-    local state attempt
+    local state
     state="$(engine_state)"
     case "$state" in
         running)
             # No host-tool check on this path: `run` comes through here on
             # every call, and a VM that is up needs nothing installed.
+            refuse_provisioning_boot
             apply_setup auto
+            forget_disk_if_setup_ran
             return 0
             ;;
         unknown)
@@ -134,6 +162,10 @@ vm_up() {
             echo "vm: could not read the VM's state; not booting until it can be read." >&2
             exit 1
             ;;
+        absent)
+            # A machine that does not exist has no disk to carry anything.
+            rm -f "$(base_record)"
+            ;;
     esac
     require_host_tools
 
@@ -144,15 +176,29 @@ vm_up() {
         echo "vm: could not get the VM slot; not booting a second VM." >&2
         exit 1
     }
+    # Not running, so not on a provisioning boot, whatever a marker says.
+    rm -f "$(provisioning_marker)"
 
     echo "[vm] booting $CFG_project_name (a first boot downloads the box and provisions)..." >&2
-    # RETRIED, because the forwarded SSH port is not always free the
-    # instant a previous machine stops (`Could not set up host forwarding
-    # rule`). Waiting for the port to look free does not work — `lsof`
-    # reports it free while QEMU still cannot bind it — so the retry is
-    # where the failure happens, and covers causes nobody has guessed.
-    attempt=1
-    while ! engine_up; do
+    if [ "$PROVISION_MODE" = force ] ||
+        [ "$(cat "$(base_record)" 2>/dev/null || true)" != "$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" ]; then
+        provision_disk
+    fi
+    boot_engine
+    apply_setup boot
+    forget_disk_if_setup_ran
+}
+
+# Boot, retrying.
+#
+# RETRIED, because the forwarded SSH port is not always free the instant
+# a previous machine stops (`Could not set up host forwarding rule`).
+# Waiting for the port to look free does not work — `lsof` reports it
+# free while QEMU still cannot bind it — so the retry is where the
+# failure happens, and covers causes nobody has guessed.
+boot_engine() {
+    local attempt=1
+    while ! engine_up "$@"; do
         if [ "$attempt" -ge "$BOOT_ATTEMPTS" ]; then
             echo "vm: the VM would not boot after $BOOT_ATTEMPTS attempts." >&2
             release_if_confirmed_stopped || true
@@ -164,8 +210,52 @@ vm_up() {
         engine_down --force >/dev/null 2>&1 || true
         attempt=$((attempt + 1))
     done
+}
 
-    apply_setup boot
+# THE ONLY BOOT WHOSE WRITES REACH THE DISK. Applies the setup script on
+# a --persist boot, then stops it and CONFIRMS the stop before anything
+# else boots: a disposable boot started over a disk still being written
+# would read a half-written one. Called with the slot held.
+#
+# A setup script that fails leaves this boot up to be inspected, as
+# before; while it is up nothing is run on it (refuse_provisioning_boot),
+# because whatever a run wrote would be kept.
+provision_disk() {
+    local hash
+    hash="$(sha256_of "$FLTH_ROOT/$CFG_setup_script")"
+    echo "[vm] provisioning boot: applying $CFG_setup_script to the machine's disk..." >&2
+    : > "$(provisioning_marker)"
+    boot_engine --persist
+    apply_setup "$PROVISION_MODE"
+    # Graceful halt flushes the guest's caches; this makes sure of it.
+    engine_run sync >/dev/null 2>&1 || true
+    engine_down || true
+    if [ "$(engine_state)" != stopped ]; then
+        echo "vm: the provisioning boot could not be confirmed stopped, so its writes are not known to be" >&2
+        echo "    on the disk; nothing is booted over it. 'chore vm:status', then 'chore vm:down' or 'chore vm:destroy'." >&2
+        exit 1
+    fi
+    rm -f "$(provisioning_marker)"
+    printf '%s\n' "$hash" > "$(base_record)"
+}
+
+# A provisioning boot's writes are kept, so a run there would reach the
+# disk every later boot starts from.
+refuse_provisioning_boot() {
+    [ -f "$(provisioning_marker)" ] || return 0
+    echo "vm: $CFG_project_name is up on its provisioning boot, whose writes are kept on its disk," >&2
+    echo "    so nothing is run there. Another 'up' may be provisioning it: try again when that is done." >&2
+    echo "    If its setup failed and it was left up to be inspected, 'chore vm:down' stops it," >&2
+    echo "    and the next boot provisions again." >&2
+    exit 1
+}
+
+# The setup script ran on a disposable boot, so the disk does not carry
+# it, whatever the record said: drop the record, and the next cold boot
+# provisions.
+forget_disk_if_setup_ran() {
+    [ "$SETUP_APPLIED" = 1 ] && rm -f "$(base_record)"
+    return 0
 }
 
 # Release the slot ON THE STRENGTH OF A CONFIRMED STOP, never of an
@@ -177,6 +267,7 @@ release_if_confirmed_stopped() {
     state="$(engine_state)"
     case "$state" in
         stopped | absent)
+            rm -f "$(provisioning_marker)"
             "$SLOT" release
             return 0
             ;;
@@ -331,8 +422,31 @@ vm_session_end() {
     vm_down
 }
 
+# Re-apply the setup script to the disk, even when unchanged. That takes a
+# provisioning boot, so a running VM is stopped first — unless another
+# invocation is using it, which is refused rather than pulled from under
+# it. A held VM is held again afterwards.
+vm_provision() {
+    local held=0 others
+    if [ "$(engine_state)" = running ]; then
+        others="$(live_sessions)"
+        if [ -n "$others" ]; then
+            echo "vm: not provisioning: another invocation is using the VM (pid ${others//$'\n'/, })," >&2
+            echo "    and a provisioning boot needs it stopped. Run it again once that has finished." >&2
+            exit 1
+        fi
+        [ -f "$FLTH_HOLD" ] && held=1
+        vm_down
+    fi
+    PROVISION_MODE=force
+    vm_up
+    if [ "$held" = 1 ]; then
+        vm_hold
+    fi
+}
+
 vm_destroy() {
-    rm -f "$FLTH_HOLD" "$FLTH_MACHINE_DIR/setup.sha256"
+    rm -f "$FLTH_HOLD" "$FLTH_MACHINE_DIR/setup.sha256" "$(base_record)"
     engine_destroy || true
     if ! release_if_confirmed_stopped; then
         echo "vm: destroy did not leave the VM confirmed gone." >&2
@@ -425,6 +539,7 @@ vm_exec() {
         echo "    or use 'chore vm:run -- <command>', which boots on demand." >&2
         exit 1
     fi
+    refuse_provisioning_boot
     engine_run "$(guest_call "$*")"
 }
 
@@ -479,6 +594,7 @@ setup.script=$CFG_setup_script
 test.command=$CFG_test_command
 test.guest_command=$CFG_test_guest_command
 machine=$FLTH_MACHINE_DIR
+disk.setup=$(cat "$(base_record)" 2>/dev/null || echo none)
 identity=$(engine_identity)
 slot=$FLTH_STATE_DIR/slot.lock
 EOF
@@ -529,7 +645,7 @@ case "$command" in
         engine_copy "$1"
         ;;
     share) echo "$FLTH_SHARE_HOST" ;;
-    provision) vm_up; apply_setup force ;;
+    provision) vm_provision ;;
     test) vm_test "$@" ;;
     guest-test) vm_guest_test "$@" ;;
     down) vm_down ;;

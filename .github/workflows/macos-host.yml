@@ -91,6 +91,7 @@ jobs:
           FLTH_VM_DISK: 16G
           FLTH_VM_SSH_PORT: "50222"
           FLTH_VM_DEADLINE_MINUTES: "30"
+          FLTH_VM_DISPOSABLE: "1"
         run: |
           set -euo pipefail
           export VAGRANT_DOTFILE_PATH="$RUNNER_TEMP/machine/vagrant"

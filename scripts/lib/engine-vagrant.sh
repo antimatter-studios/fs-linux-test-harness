@@ -7,7 +7,8 @@
 # only FLTH_* variables, which engine_prepare exports. Machine state goes
 # to VAGRANT_DOTFILE_PATH under the consumer's machine directory, so the
 # harness checkout is never written to and each consumer has its own
-# disk.
+# disk. A boot writes that disk only when engine_up is given --persist;
+# every other boot runs on a throwaway overlay (vagrant/Vagrantfile).
 
 ENGINE_VAGRANT_DIR="$FLTH_HARNESS/vagrant"
 
@@ -30,6 +31,9 @@ engine_prepare() {
     export FLTH_VM_SSH_PORT="$CFG_vm_ssh_port"
     export FLTH_VM_DEADLINE_MINUTES="$CFG_vm_deadline_minutes"
     export FLTH_SHARE_DIR="$FLTH_SHARE_HOST"
+    # Every Vagrant command evaluates the Vagrantfile, which requires it;
+    # only `up` acts on it, and engine_up --persist overrides it there.
+    export FLTH_VM_DISPOSABLE=1
     mkdir -p "$FLTH_MACHINE_DIR" "$FLTH_SHARE_HOST" "$(dirname "$(engine_ssh_control)")"
 
     # UEFI firmware for an arm64 guest on a Linux host. The QEMU provider
@@ -150,12 +154,16 @@ engine_vagrant_tmpdir() {
     printf '%s\n' "$dir"
 }
 
+# The disposable overlay is created under the TMPDIR QEMU inherits, which
+# is this directory too: on disk beside the slot, never a RAM-backed /tmp
+# that a long run's writes could fill.
 engine_up() {
-    local tmp
+    local tmp disposable=1
+    [ "${1:-}" = --persist ] && disposable=0
     tmp="$(engine_vagrant_tmpdir)" || return 1
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
-    TMPDIR="$tmp" engine_vagrant up --provider qemu >&2 || return
+    FLTH_VM_DISPOSABLE="$disposable" TMPDIR="$tmp" engine_vagrant up --provider qemu >&2 || return
     engine_ssh_config >/dev/null
 }
 
