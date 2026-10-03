@@ -208,7 +208,7 @@ check_eq "$("$VM" run 'ls -A /var/lib/dpkg/updates/' 2>/dev/null)" "" "and dpkg'
 out="$("$VM" run 'apt-get check' 2>&1)"
 rc=$?
 check_eq "$rc" 0 "and the guest's apt agrees the package manager is usable"
-check_lacks "$out" "interrupted" "with no interruption reported"
+check_true 'case "$out" in *interrupted*) false ;; esac' "with no interruption reported" "apt still reports an interruption: $out"
 
 step "exec: the per-call path"
 "$VM" exec 'echo out; echo err >&2; exit 7' > "$CONTENDER/out" 2> "$CONTENDER/err"
