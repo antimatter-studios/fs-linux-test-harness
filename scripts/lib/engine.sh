@@ -29,10 +29,14 @@
 #                              away when it stops, however it stops.
 #                              With --persist the writes are kept; that
 #                              is for applying the setup script only.
+#                              A consumer that declares a cache
+#                              ([cache] size) has it at
+#                              FLTH_CACHE_GUEST on EVERY boot, and what
+#                              is written there is kept either way.
 #   engine_down [--force]      ask the VM to stop. Its exit status is
 #                              NOT trusted; callers confirm with
 #                              engine_state.
-#   engine_destroy             delete the VM and its disk
+#   engine_destroy             delete the VM, its disk and its cache
 #   engine_run <script>        run a bash script as root in the guest;
 #                              exit with the script's status. stdout is
 #                              the script's stdout.

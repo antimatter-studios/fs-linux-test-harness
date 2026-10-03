@@ -100,7 +100,7 @@ field() { printf '%s' "$json" | ruby -rjson -e 'd = JSON.parse(STDIN.read); v = 
 
 export FLTH_VM_NAME=rust-fs-demo FLTH_VM_MEMORY=2G FLTH_VM_CPUS=2 FLTH_VM_DISK=16G FLTH_VM_SSH_PORT=50122
 export FLTH_VM_DEADLINE_MINUTES=480 FLTH_SHARE_DIR="$SANDBOX/share" FLTH_QEMU_DIR="$SANDBOX/fw"
-export FLTH_REPO_DIR="$SANDBOX/repo" FLTH_VM_DISPOSABLE=1
+export FLTH_REPO_DIR="$SANDBOX/repo" FLTH_VM_DISPOSABLE=1 FLTH_VM_CACHE_DISK=""
 
 P=vm.provider.qemu
 
@@ -170,6 +170,33 @@ check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boo
 evaluate darwin23 arm64 0 vagrant-qemu
 check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS with only the stock plugin is refused"
 
+# --- the declared cache (#39) -----------------------------------------------
+# A disk of its own, attached through extra_qemu_args and NOT through the
+# provider's drive list: extra_drive_args (snapshot=on on a disposable
+# boot) is applied to every drive the provider attaches, and a cache it
+# reached would be discarded with the run it exists to outlive.
+cache_disk="$SANDBOX/machine/cache.img"
+FLTH_VM_CACHE_DISK="$cache_disk" evaluate linux-gnu x86_64 1 vagrant-qemu
+check_eq "$(field ok)" true "a declared cache evaluates on Linux"
+args="$(field config/$P.extra_qemu_args)"
+check_contains "$args" "if=none,id=flth_cache,file=$cache_disk,format=raw" "  the cache is a drive of its own"
+check_contains "$args" "virtio-blk-pci,drive=flth_cache,serial=flth-cache" \
+    "  with a serial the guest finds it by"
+check_lacks "$args" "id=flth_cache,file=$cache_disk,format=raw,snapshot" "  and its writes are never sent to the overlay"
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  while the machine's own disk stays disposable"
+check_contains "$args" "mount_tag=flth_share" "  and the shares are still there"
+check_contains "$(field config/vm.provision)" '"path":"guest/mount-cache.sh","args":["flth-cache","/cache"]' \
+    "  it is mounted at /cache on every boot"
+FLTH_VM_CACHE_DISK="$cache_disk" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_eq "$(field ok)" true "a declared cache evaluates on macOS"
+check_contains "$(field config/$P.extra_qemu_args)" "if=none,id=flth_cache,file=$cache_disk,format=raw" "  the same drive"
+check_contains "$(field config/vm.provision)" '"guest/mount-cache.sh"' "  mounted the same way"
+FLTH_VM_CACHE_DISK="" evaluate linux-gnu x86_64 1 vagrant-qemu
+check_lacks "$(field config/$P.extra_qemu_args)" "flth_cache" "no cache declared: no cache drive"
+check_lacks "$(field config/vm.provision)" "mount-cache" "  and nothing mounted at /cache"
+FLTH_VM_CACHE_DISK="" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_eq "$(field config/$P.extra_qemu_args)" null "  on macOS either"
+
 evaluate darwin23 x86_64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
 check_contains "$(field error)" "supports macOS arm64, Linux aarch64 and Linux x86_64" "an Intel Mac is refused by name"
 
@@ -196,6 +223,8 @@ refuse_env FLTH_SHARE_DIR "/tmp/x,readonly=off"
 refuse_env FLTH_REPO_DIR "relative/repo"
 refuse_env FLTH_VM_DISPOSABLE "yes"
 refuse_env FLTH_VM_DISPOSABLE "1,file=/etc/shadow"
+refuse_env FLTH_VM_CACHE_DISK "relative/cache.img"
+refuse_env FLTH_VM_CACHE_DISK "/tmp/cache.img,snapshot=on"
 
 unset FLTH_VM_NAME
 evaluate linux-gnu x86_64 1 vagrant-qemu

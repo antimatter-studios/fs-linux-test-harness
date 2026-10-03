@@ -6,6 +6,24 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **A consumer can declare a cache that outlives every boot** (#39).
+  Since v0.3.0 every boot that runs anything is disposable, which also
+  threw away the in-guest build directories and toolchain homes consumers
+  keep on the guest's own disk, so every local in-guest run rebuilt from
+  nothing. A `[cache] size = "16G"` section now gives the guest a disk of
+  its own at `/cache`, kept across `vm:down` and every disposable boot.
+  It is a sparse raw image in the machine directory, attached through
+  `extra_qemu_args` rather than as a provider disk, because the provider
+  applies `snapshot=on` to every disk it attaches. The guest finds it by
+  serial and gives it its root's filesystem on first boot, through
+  `systemd-makefs`, which leaves a disk that already has one alone. A
+  changed size replaces it with an empty one, and `vm:destroy` deletes
+  it. Nothing outside `/cache` survives a run, and a consumer with no
+  `[cache]` section has no `/cache`. `tests/smoke.sh` proves both on a
+  real VM.
+
 ## v0.3.0 — 2026-10-03
 
 ### Added

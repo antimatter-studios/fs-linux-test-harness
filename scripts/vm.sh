@@ -37,7 +37,9 @@
 # consumer's setup and nothing else: every boot that runs anything is
 # disposable (lib/engine.sh, engine_up), and only a provisioning boot —
 # one that applies a setup script the disk does not carry yet, and is
-# stopped before anything runs — writes it. See provision_disk.
+# stopped before anything runs — writes it. See provision_disk. The one
+# thing a run writes that is kept is what it puts in a cache the consumer
+# declared ([cache] size), which is a disk of its own at FLTH_CACHE_GUEST.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
@@ -593,6 +595,8 @@ repo.guest=$FLTH_REPO_GUEST
 setup.script=$CFG_setup_script
 test.command=$CFG_test_command
 test.guest_command=$CFG_test_guest_command
+cache.size=${CFG_cache_size:-none}
+cache.guest=$([ -n "$CFG_cache_size" ] && echo "$FLTH_CACHE_GUEST" || echo none)
 machine=$FLTH_MACHINE_DIR
 disk.setup=$(cat "$(base_record)" 2>/dev/null || echo none)
 identity=$(engine_identity)

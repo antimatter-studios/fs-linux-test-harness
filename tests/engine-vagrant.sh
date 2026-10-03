@@ -215,4 +215,37 @@ echo data > "$SANDBOX/img.bin"
 check_eq "$(engine_copy "$SANDBOX/img.bin")" "/share/img.bin" "copy prints the guest path"
 check_eq "$(cat "$FLTH_SHARE_HOST/img.bin")" data "and the file is in the share"
 
+# --- the declared cache (#39) -----------------------------------------------
+
+# A consumer with no [cache] gets no cache disk, and the Vagrantfile is
+# told so in as many words: the variable is set, and empty.
+check_eq "${FLTH_VM_CACHE_DISK-unset}" "" "no [cache]: the Vagrantfile is told there is no cache disk"
+engine_up 2>/dev/null
+check_eq "$(test -e "$FLTH_MACHINE_DIR/cache.img" && echo made || echo none)" none "and a boot makes none"
+
+make_consumer "$SANDBOX/cached" cache-test '[cache]' 'size = "1G"'
+export FLTH_CONFIG="$SANDBOX/cached/fs-linux-test-harness.toml"
+flth_load
+engine_prepare
+disk="$FLTH_MACHINE_DIR/cache.img"
+size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
+check_eq "$FLTH_VM_CACHE_DISK" "$disk" "a declared cache is a disk in the machine directory, named to the Vagrantfile"
+check_eq "$(test -e "$disk" && echo made || echo none)" none "made by a boot, not by every command that evaluates the Vagrantfile"
+engine_up 2>/dev/null
+check_eq "$(size_of "$disk")" $((1024 * 1024 * 1024)) "a boot makes it, the size [cache] declares"
+check_eq "$(( $(du -k "$disk" | awk '{print $1}') < 1024 ))" 1 "sparse: it takes no space until the guest writes"
+printf 'built once' | dd of="$disk" conv=notrunc bs=1 seek=4096 status=none 2>/dev/null ||
+    printf 'built once' | dd of="$disk" conv=notrunc bs=1 seek=4096 2>/dev/null
+engine_up 2>/dev/null
+check_eq "$(dd if="$disk" bs=1 skip=4096 count=10 2>/dev/null)" "built once" "the next boot finds what the last one wrote there"
+make_consumer "$SANDBOX/cached" cache-test '[cache]' 'size = "2G"'
+flth_load
+engine_prepare
+out="$(engine_up 2>&1)"
+check_eq "$(size_of "$disk")" $((2 * 1024 * 1024 * 1024)) "a changed size gets a disk of the new size"
+check_eq "$(dd if="$disk" bs=1 skip=4096 count=10 2>/dev/null | tr -d '\0')" "" "an empty one: a cache is rebuilt, never resized under a filesystem"
+check_contains "$out" "cache" "and says the cache was replaced"
+engine_destroy 2>/dev/null
+check_eq "$(test -e "$disk" && echo kept || echo gone)" gone "destroy deletes the cache with the machine"
+
 finish engine-vagrant

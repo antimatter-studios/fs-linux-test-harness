@@ -50,7 +50,7 @@ one, which is how an oracle goes unnoticed running against nothing.
 | `scripts/host-tools.sh` | Checks the host and prints exactly what to install. |
 | `scripts/ci-setup-linux.sh` | Sets a hosted x86_64 Linux CI runner up to boot the VM (KVM access, QEMU, Vagrant, vagrant-qemu), for the harness's CI and every consumer's; `--box-cache-key` prints the box cache key. |
 | `scripts/lib/` | `config.sh` (the TOML reader), `engine.sh` (the engine interface), `engine-vagrant.sh` (its Vagrant implementation), `common.sh` (paths). |
-| `vagrant/` | The Vagrantfile (chooses box, accelerator, plugins and sharing by host) and the guest-side `apt-ready.sh`, `deadline.sh` and `mount-share.sh`. |
+| `vagrant/` | The Vagrantfile (chooses box, accelerator, plugins and sharing by host) and the guest-side `apt-ready.sh`, `deadline.sh`, `mount-share.sh` and `mount-cache.sh`. |
 | `examples/minimal/` | The smallest consumer: config, setup script, `chores.yml`. |
 | `tests/` | VM-free unit tests, `smoke.sh` (the real-VM end-to-end test), and `smoke-consumer/`, a realistic consumer CI boots on every pull request. |
 
@@ -399,6 +399,7 @@ chose.
 | `[setup] script` | string | **required** | Path relative to the repository. Run as root inside the VM, **only when it has changed** since it was last applied (a SHA-256 stamp in the guest), with stdin from `/dev/null` and `FLTH_PROJECT` and `FLTH_SHARE` set. It is the only thing that reaches the machine's disk: it runs on a provisioning boot, which is stopped before anything else boots (see "Every run starts from the same disk"). A failure fails `up` and leaves that boot running for inspection; nothing else runs on it until `chore vm:down`. `chore vm:provision` re-runs it regardless. |
 | `[test] command` | string | none | Run by `chore vm:test` on the **host**, from the repository root, with the VM up; extra arguments are appended. It reaches the guest through `FLTH_VM` (the path of `vm.sh`) and finds the share at `FLTH_SHARE_HOST`. The VM is torn down afterwards. |
 | `[test] guest_command` | string | none | Run by `chore vm:guest-test` **inside the guest**, from `/repo` (this repository, mounted there read-write), with arguments appended and `FLTH_GUEST=1` set. Output streams as it happens and its exit status is the task's. The harness knows nothing about what it is: the `[setup]` script installs whatever the guest needs to run it — a compiler, an interpreter, a package manager's worth of tools — and anything the run should leave behind goes in the share. |
+| `[cache] size` | string | none | **Declares a cache that outlives every boot**, e.g. `16G`. A disk of its own, mounted at `/cache` in the guest on every boot and kept when the boot stops, unlike everything else a run writes (see "Every run starts from the same disk"). For in-guest build state a run can rebuild but should not have to: point a toolchain's home or build directory under `/cache`. Its first boot gives it the filesystem the guest's root uses. Sparse, so it takes host space only as it fills. Changing the size replaces it with an empty one; `chore vm:destroy` deletes it with the machine. No `[cache]` section, no `/cache`. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
 | *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
 | `[vm] memory` | string | `4G` | Guest memory, e.g. `2G`, `2048M`. |
@@ -536,7 +537,19 @@ So **anything a suite keeps in the guest between runs is gone**: a build
 directory or package cache on the guest's own disk is rebuilt on every
 boot. Install what every run needs in the setup script; put what should
 outlive a run on the share or in the repository mount, both of which
-live on the host.
+live on the host — or, for build state that is slow over a share,
+**declare a cache** (`[cache] size`).
+
+**A declared cache is the one exception, and only by name.** It is a
+second disk, `machines/<project>/cache.img`, attached outside the
+overlay and mounted at `/cache` on every boot, so what a run writes
+there is there for the next one, across `vm:down` and every disposable
+boot. It is attached through QEMU's own arguments, not as a provider
+disk, because the provider applies `snapshot=on` to every disk it
+attaches. The guest finds it by its serial and, on its first boot, gives
+it the filesystem its own root uses; the harness names no filesystem and
+knows nothing about what is kept there. A consumer that declares none
+gets no `/cache`, and nothing a run writes outlives it.
 
 ### The engine interface
 

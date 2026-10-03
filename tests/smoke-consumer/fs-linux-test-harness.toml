@@ -15,6 +15,12 @@ deadline_minutes = 120
 [share]
 dir = ".vm-share"
 
+[cache]
+# A disk of its own at /cache in the guest, kept across boots: the one
+# place a run's writes outlive it. Declared, so the smoke test can prove
+# both halves: this survives, and nothing outside it does.
+size = "4G"
+
 [setup]
 # Runs as root INSIDE the VM. The consumer installs its own tooling.
 script = "setup.sh"

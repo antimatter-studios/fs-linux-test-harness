@@ -9,6 +9,8 @@
 # harness checkout is never written to and each consumer has its own
 # disk. A boot writes that disk only when engine_up is given --persist;
 # every other boot runs on a throwaway overlay (vagrant/Vagrantfile).
+# A consumer that declares a cache also has a second disk beside it,
+# which every boot writes (engine_vagrant_cache_disk).
 
 ENGINE_VAGRANT_DIR="$FLTH_HARNESS/vagrant"
 
@@ -34,6 +36,10 @@ engine_prepare() {
     # Every Vagrant command evaluates the Vagrantfile, which requires it;
     # only `up` acts on it, and engine_up --persist overrides it there.
     export FLTH_VM_DISPOSABLE=1
+    # Set on every call, empty when no cache is declared, so the
+    # Vagrantfile never sees one a previous consumer exported.
+    export FLTH_VM_CACHE_DISK=""
+    [ -n "$CFG_cache_size" ] && FLTH_VM_CACHE_DISK="$(engine_vagrant_cache_path)"
     mkdir -p "$FLTH_MACHINE_DIR" "$FLTH_SHARE_HOST" "$(dirname "$(engine_ssh_control)")"
 
     # UEFI firmware for an arm64 guest on a Linux host. The QEMU provider
@@ -154,6 +160,46 @@ engine_vagrant_tmpdir() {
     printf '%s\n' "$dir"
 }
 
+# THE DECLARED CACHE IS A DISK OF ITS OWN (#39). Every boot that runs
+# anything is disposable, so a build directory on the guest's own disk is
+# rebuilt every time. A consumer that wants one kept says so ([cache]
+# size), and gets this: a raw image in the machine directory, attached
+# beside the machine's disk but never through the provider's drive list,
+# whose snapshot=on would discard it with the run (vagrant/Vagrantfile).
+# The guest gives it a filesystem on its first boot and mounts it at
+# FLTH_CACHE_GUEST on every boot (vagrant/guest/mount-cache.sh).
+#
+# RAW AND SPARSE, made by `dd` seeking past its end, so it needs no image
+# tool on the host and takes no space until the guest writes. A size that
+# no longer matches the declaration gets a new, empty disk rather than a
+# resize: growing it would mean growing the filesystem in it, which is
+# filesystem knowledge, and a cache is something a run can rebuild.
+#
+# Made here and not in engine_prepare, which runs on every command: this
+# runs only when the machine is about to boot, so the disk is never
+# replaced under a running guest.
+engine_vagrant_cache_path() { printf '%s/cache.img\n' "$FLTH_MACHINE_DIR"; }
+
+engine_vagrant_cache_disk() {
+    local disk want have
+    [ -n "$CFG_cache_size" ] || return 0
+    disk="$(engine_vagrant_cache_path)"
+    want=$(( ${CFG_cache_size%G} * 1024 * 1024 * 1024 ))
+    if [ -f "$disk" ]; then
+        have="$(stat -c %s "$disk" 2>/dev/null || stat -f %z "$disk")"
+        [ "$have" = "$want" ] && return 0
+        echo "[vm] the cache disk is $have bytes and [cache] size says $CFG_cache_size:" \
+            "replacing it with an empty one (a cache is rebuilt, never resized)" >&2
+        rm -f "$disk"
+    fi
+    mkdir -p "$(dirname "$disk")"
+    dd if=/dev/null of="$disk" bs=1 count=0 seek="$want" 2>/dev/null || {
+        rm -f "$disk"
+        echo "vm: could not create the cache disk $disk" >&2
+        return 1
+    }
+}
+
 # The disposable overlay is created under the TMPDIR QEMU inherits, which
 # is this directory too: on disk beside the slot, never a RAM-backed /tmp
 # that a long run's writes could fill.
@@ -161,6 +207,7 @@ engine_up() {
     local tmp disposable=1
     [ "${1:-}" = --persist ] && disposable=0
     tmp="$(engine_vagrant_tmpdir)" || return 1
+    engine_vagrant_cache_disk || return 1
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     FLTH_VM_DISPOSABLE="$disposable" TMPDIR="$tmp" engine_vagrant up --provider qemu >&2 || return
@@ -176,10 +223,13 @@ engine_down() {
     engine_ssh_close
 }
 
+# The cache goes with the machine: destroy is the reset, and a cache is
+# something a run can rebuild.
 engine_destroy() {
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
-    engine_vagrant destroy -f >&2
+    engine_vagrant destroy -f >&2 || return
+    rm -f "$(engine_vagrant_cache_path)"
 }
 
 # Vagrant's ssh settings for the machine, cached beside it. Written after
