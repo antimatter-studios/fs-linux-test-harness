@@ -10,6 +10,9 @@
 #   disposable    a run that leaves a file, a loop device and a mount
 #                 behind changes not one byte of the machine's disk, and
 #                 the next boot sees none of it
+#   cache         the declared cache (#39) is a mount of its own, with the
+#                 root's filesystem, and what a run leaves there is still
+#                 there after the boot that wrote it has stopped
 #   apt-ready     a held dpkg lock is found and named, as dpkg sees it
 #   slot          a second consumer cannot boot while this one holds it
 #   run / share   exit status and output come back; files cross both ways
@@ -105,6 +108,13 @@ check_true '[ -f "$disk" ]' "the machine's disk is at $disk" "no linked-box.img 
 sum() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | awk '{print $1}'; }
 before="$(sum "$disk")"
 check_eq "$("$VM" config | sed -n 's/^disk.setup=//p')" "$(sum "$CONSUMER/setup.sh")" "the disk is recorded as carrying this setup"
+cache_guest="$(sed -n 's/^FLTH_CACHE_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
+check_eq "$("$VM" run "findmnt -n -o FSTYPE $cache_guest" 2>/dev/null)" "$("$VM" run 'findmnt -n -o FSTYPE /' 2>/dev/null)" \
+    "the declared cache is mounted at $cache_guest, with the filesystem the guest's root uses"
+check_contains "$("$VM" run "findmnt -n -o SOURCE $cache_guest" 2>/dev/null)" "/dev/vd" "a disk of its own, not the root or a share"
+check_true '[ -f "$machine/cache.img" ]' "its disk is in the machine directory" "no cache.img under $machine"
+"$VM" run "echo kept > $cache_guest/flth-smoke-kept-this" 2>/dev/null
+check_eq "$?" 0 "a run writes into the cache"
 "$VM" run 'set -e
     echo left > /var/lib/flth-smoke-left-this
     truncate -s 16M /var/tmp/flth-smoke.img
@@ -131,6 +141,8 @@ check_eq "$("$VM" run 'losetup -a | grep -c flth-smoke' 2>/dev/null)" 0 "and so 
 check_eq "$("$VM" run 'findmnt -n /mnt/flth-smoke >/dev/null && echo mounted || echo unmounted' 2>/dev/null)" unmounted "and its mount"
 check_eq "$("$VM" run 'test -e /var/tmp/flth-smoke.img && echo kept || echo gone' 2>/dev/null)" gone "and the image behind them"
 check_contains "$("$VM" run 'mkfs.ext4 -V 2>&1 | sed -n 1p' 2>/dev/null)" "mke2fs" "while what setup installed is still there"
+check_eq "$("$VM" run "cat $cache_guest/flth-smoke-kept-this" 2>/dev/null)" kept \
+    "and what the run left in the declared cache survived the stop and the disposable boot"
 
 step "slot: a second consumer cannot boot"
 printf '[project]\nname = "flth-smoke-contender"\n[setup]\nscript = "setup.sh"\n' > "$CONTENDER/fs-linux-test-harness.toml"
@@ -290,6 +302,7 @@ step "destroy"
 "$VM" destroy
 check_eq "$?" 0 "vm.sh destroy succeeds"
 check_contains "$("$VM" status 2>&1)" "(absent)" "the VM no longer exists"
+check_true '[ ! -e "$machine/cache.img" ]' "and its cache went with it" "destroy left $machine/cache.img behind"
 
 trap - EXIT
 rm -rf "$CONTENDER"

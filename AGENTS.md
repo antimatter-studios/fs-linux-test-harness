@@ -260,7 +260,10 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   before anything runs. A test that wants the guest to remember something
   between boots is asking for the state bleed this exists to prevent;
   `tests/disposable.sh` holds the orchestration to it, `tests/smoke.sh`
-  proves it on a real disk.
+  proves it on a real disk. The one exception is a consumer's declared
+  cache (`[cache] size`, mounted at `/cache`): a second disk, attached
+  through `extra_qemu_args` and never as a provider disk, because the
+  provider applies `snapshot=on` to every disk it attaches.
 - **`deadline_minutes` is an idle timeout.** Every `run` and `exec` re-arms it
   as the call starts and ends, so a single call longer than it (a whole
   `guest-test` run is one call) is still cut off.

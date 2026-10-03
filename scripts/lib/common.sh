@@ -61,6 +61,20 @@ FLTH_SHARE_GUEST="/share"
 # shellcheck disable=SC2034  # read by vm.sh
 FLTH_REPO_GUEST="/repo"
 
+# The guest path of a consumer's DECLARED CACHE ([cache] size), mounted on
+# every boot of a consumer that declares one and absent otherwise. Fixed
+# for the same reason as the share: a consumer's suite points its build
+# state there by name.
+#
+# It is the one place a run's writes outlive the boot that made them.
+# Everything else a disposable boot writes is thrown away when it stops
+# (lib/engine.sh, engine_up); this is a disk of its own, outside that
+# overlay, so a build directory or package cache kept here is
+# incremental from one run to the next. The harness provides the place
+# and knows nothing about what is kept in it.
+# shellcheck disable=SC2034  # read by vm.sh
+FLTH_CACHE_GUEST="/cache"
+
 # Eight hex characters of a string, for names that must be short.
 flth_hash8() {
     if command -v sha256sum >/dev/null 2>&1; then

@@ -48,6 +48,10 @@ repo_guest="$(sed -n 's/^FLTH_REPO_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/comm
 check_eq "$(grep -c "repo_guest = \"$repo_guest\"" "$REPO/vagrant/Vagrantfile" | tr -d ' ')" 1 "and mounts the consumer repository where guest-test says it is"
 check_eq "$(grep -c "s|$repo_guest|" "$REPO/tests/stubs/engine.sh" | tr -d ' ')" 1 "and the stub engine redirects that mount too"
 
+cache_guest="$(sed -n 's/^FLTH_CACHE_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
+check_eq "$(grep -c "cache_guest = \"$cache_guest\"" "$REPO/vagrant/Vagrantfile" | tr -d ' ')" 1 "and mounts a declared cache where vm.sh says it is"
+check_eq "$(grep -c "s|$cache_guest" "$REPO/tests/stubs/engine.sh" | tr -d ' ')" 1 "and the stub engine redirects that mount too"
+
 # Every public vm.sh command has a chore task, and every task's script exists.
 commands="$(sed -n 's/^#   vm\.sh \([a-z-]*\).*/\1/p' "$REPO/scripts/vm.sh")"
 for c in $commands; do
