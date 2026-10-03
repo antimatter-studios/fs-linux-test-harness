@@ -201,4 +201,25 @@ unset FLTH_VM_NAME
 evaluate linux-gnu x86_64 1 vagrant-qemu
 check_contains "$(field error)" "not by running vagrant directly" "vagrant run by hand stops at the first missing value, and says why"
 
+# --- the macOS workflow's `vagrant validate` --------------------------------
+# That step runs real Vagrant on the Vagrantfile, which refuses to load
+# without every value it requires. A value added here and not there fails
+# only on the macOS runner, after a Homebrew install; this finds it first.
+# FLTH_QEMU_DIR is required only on a Mac without Homebrew's QEMU firmware.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+validate_step="$(awk '/validates under real Vagrant/,/vagrant validate$/' \
+    "$here/.github/workflows/macos-host.yml")"
+if [ -z "$validate_step" ]; then
+    bad "macos-host.yml has a step that runs vagrant validate"
+else
+    while read -r var; do
+        if grep -qE "(^|[[:space:]])(export )?${var}[:=]" <<<"$validate_step"; then
+            ok "macos-host.yml's vagrant validate step sets $var"
+        else
+            bad "macos-host.yml's vagrant validate step sets $var, which the Vagrantfile requires"
+        fi
+    done < <(grep -oE 'flth_env\("FLTH_[A-Z_]+"' "$here/vagrant/Vagrantfile" \
+        | grep -oE 'FLTH_[A-Z_]+' | grep -vx FLTH_QEMU_DIR | sort -u)
+fi
+
 finish vagrantfile
