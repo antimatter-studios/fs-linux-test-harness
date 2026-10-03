@@ -194,6 +194,7 @@ out="$(vm config)"
 check_contains "$out" "identity=$IDENTITY" "config prints the slot identity"
 check_contains "$out" "slot=$FLTH_STATE_DIR/slot.lock" "and where the slot lives"
 check_contains "$out" "repo.guest=/repo" "and where the consumer repository is mounted in the guest"
+check_contains "$out" "cache.guest=none" "and that no cache is kept, none being declared"
 
 # --- exec: the per-call path, which never boots -------------------------
 

@@ -32,6 +32,9 @@
 #   [share]   dir               string, default ".vm-share"
 #   [setup]   script            string, required
 #   [test]    command           string, optional
+#   [test]    guest_command     string, optional
+#   [cache]   size              string, required in a [cache] section;
+#                               no section, no cache
 #
 # After `flth_config_load`, each is available as CFG_<section>_<key>,
 # and FLTH_ROOT is the absolute path of the directory holding the file.
@@ -84,6 +87,7 @@ flth_config_key_type() {
         setup.script)        echo string ;;
         test.command)        echo string ;;
         test.guest_command)  echo string ;;
+        cache.size)          echo string ;;
     esac
 }
 
@@ -113,6 +117,8 @@ flth_config_load() {
     CFG_test_command=""
     # shellcheck disable=SC2034  # read by vm.sh
     CFG_test_guest_command=""
+    # Empty: no cache. A consumer keeps one only by declaring it.
+    CFG_cache_size=""
 
     while IFS= read -r line || [ -n "$line" ]; do
         lineno=$((lineno + 1))
@@ -126,7 +132,7 @@ flth_config_load() {
         if [[ "$line" =~ $re_section ]]; then
             section="${BASH_REMATCH[1]}"
             case "$section" in
-                project | vm | share | setup | test) ;;
+                project | vm | share | setup | test | cache) ;;
                 *) flth_config_error "$file:$lineno: unknown section [$section]"; return 1 ;;
             esac
             case "$seen_sections" in
@@ -177,6 +183,20 @@ flth_config_load() {
     done < "$file"
 
     FLTH_ROOT="$(cd "$(dirname "$file")" && pwd -P)"
+    # A [cache] section that sizes nothing is a declaration with no cache
+    # behind it: it would read as kept and be lost. The size becomes a
+    # disk's size, so it is held to the shape of [vm] disk — and "" is
+    # refused there too, because empty is how "no cache" is spelled.
+    case "$seen_sections" in
+        *" cache "*)
+            case "$seen_keys" in
+                *" cache.size "*) ;;
+                *) flth_config_error "$file: [cache] size is required in a [cache] section"; return 1 ;;
+            esac
+            [[ "$CFG_cache_size" =~ ^[1-9][0-9]{0,4}G$ ]] ||
+                { flth_config_error "$file: [cache] size must look like 16G, got '$CFG_cache_size'"; return 1; }
+            ;;
+    esac
     flth_config_validate "$file"
 }
 

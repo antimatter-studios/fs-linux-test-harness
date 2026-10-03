@@ -174,4 +174,45 @@ vm up 2>/dev/null
 check_eq "$(lifecycle)" "up --persist,down,up" "and the next boot provisions a new one"
 vm down 2>/dev/null
 
+# --- a declared cache outlives every boot, and nothing else does (#39) ------
+
+# A consumer that keeps an in-guest build cache declares it, and gets a
+# place at /cache whose writes survive the disposable boot that made them.
+# Whatever the run wrote anywhere else is gone exactly as before. That the
+# real engine keeps its side — a disk of its own, outside the overlay — is
+# pinned by tests/vagrantfile.sh and tests/engine-vagrant.sh and proven on
+# a VM by tests/smoke.sh.
+vm destroy 2>/dev/null
+CC="$SANDBOX/cached"
+make_consumer "$CC" disposable-test '[cache]' 'size = "4G"'
+vmc() { (cd "$CC" && "$VM" "$@"); }
+vmc up 2>/dev/null
+check_eq "$?" 0 "a consumer that declares a cache boots"
+check_eq "$(vmc run 'test -d /cache && echo there' 2>/dev/null)" there "and finds its cache at /cache"
+check_contains "$(vmc config)" "cache.guest=/cache" "and config says where it is"
+check_contains "$(vmc config)" "cache.size=4G" "and how big"
+vmc run "echo built > /cache/build-output; touch $GUEST_LIB/not-declared" 2>/dev/null
+vmc down 2>/dev/null
+stub_reset_calls
+vmc up 2>/dev/null
+check_eq "$(lifecycle)" up "the next boot is disposable"
+check_eq "$(vmc run 'cat /cache/build-output' 2>/dev/null)" built "and what the last run left in the cache is there"
+check_eq "$(vmc run "test -e $GUEST_LIB/not-declared && echo survived || echo gone" 2>/dev/null)" gone \
+    "while what it left anywhere else is gone"
+echo 'echo "setup v4 ran" >> "$SETUP_LOG"' >> "$CC/setup.sh"
+vmc down 2>/dev/null
+stub_reset_calls
+vmc up 2>/dev/null
+check_eq "$(lifecycle)" "up --persist,down,up" "a changed setup script provisions the disk"
+check_eq "$(vmc run 'cat /cache/build-output' 2>/dev/null)" built "and the cache survives that too"
+vmc destroy 2>/dev/null
+vmc up 2>/dev/null
+check_eq "$(vmc run 'cat /cache/build-output 2>/dev/null || echo empty' 2>/dev/null)" empty \
+    "destroy empties it: a cache is regenerable, and destroy is the reset"
+vmc down 2>/dev/null
+vm up 2>/dev/null
+check_eq "$(vm run 'test -e /cache && echo there || echo none' 2>/dev/null)" none \
+    "a consumer that declares no cache has no /cache"
+vm down 2>/dev/null
+
 finish disposable

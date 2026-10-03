@@ -91,6 +91,42 @@ share_tag   = "flth_share"
 repo_guest = "/repo"
 repo_tag   = "flth_repo"
 
+# THE DECLARED CACHE (#39): a raw disk image scripts/lib/engine-vagrant.sh
+# makes in the machine directory when the consumer's config has a [cache]
+# section, and the only thing a disposable boot writes that outlives it.
+# Empty when none is declared; optional, unlike every value above, because
+# most consumers keep nothing.
+#
+# IT IS ATTACHED THROUGH extra_qemu_args, NEVER AS A PROVIDER DISK. The
+# provider applies extra_drive_args — snapshot=on on a disposable boot —
+# to every drive it attaches, its extra disks included, and a cache that
+# reached that list would be discarded with the run it exists to outlive.
+# The serial is how the guest finds it: /dev/disk/by-id/virtio-<serial>,
+# whatever order the disks were probed in. At most 20 characters.
+#
+# ITS PCI SLOT IS FIXED, AFTER THE MACHINE'S OWN DISK. QEMU creates every
+# -device before the device an `-drive if=virtio` implies, so a cache
+# left to take the next free slot was found ahead of the provider's disk.
+# A BIOS boots the first disk it finds, and on Linux x86_64 that was the
+# empty cache: the guest never came up. Slot 0x10 is free on q35 and on
+# virt, and above every slot the provider's own devices are given.
+cache_disk = ENV["FLTH_VM_CACHE_DISK"].to_s
+unless cache_disk.empty? || cache_disk =~ %r{\A/[A-Za-z0-9._/ -]*\z}
+  raise "FLTH_VM_CACHE_DISK must be an absolute path, got #{cache_disk.inspect}"
+end
+cache_guest = "/cache"
+cache_id = "flth_cache"
+cache_serial = "flth-cache"
+cache_args =
+  if cache_disk.empty?
+    []
+  else
+    %W(
+      -drive if=none,id=#{cache_id},file=#{cache_disk.gsub(",", ",,")},format=raw
+      -device virtio-blk-pci,drive=#{cache_id},serial=#{cache_serial},addr=0x10
+    )
+  end
+
 case host
 when :macos_arm64
   flth_require_plugin("vagrant-qemu-christhomas", "the QEMU provider used on macOS")
@@ -191,6 +227,7 @@ Vagrant.configure("2") do |config|
       # has just set. Drop it only once the port switches credentials per
       # thread.
       qe.extra_virtiofsd_args = ["--thread-pool-size=1", "--xattr"]
+      qe.extra_qemu_args = cache_args unless cache_args.empty?
     when :linux_arm64
       qe.arch = "aarch64"
       qe.machine = "virt,accel=kvm,highmem=on"
@@ -223,7 +260,7 @@ Vagrant.configure("2") do |config|
       qe.extra_qemu_args = %W(
         -virtfs local,path=#{share_dir.gsub(",", ",,")},mount_tag=#{share_tag},security_model=mapped-xattr,id=#{share_tag}
         -virtfs local,path=#{repo_dir.gsub(",", ",,")},mount_tag=#{repo_tag},security_model=none,id=#{repo_tag}
-      )
+      ) + cache_args
     end
   end
 
@@ -249,6 +286,13 @@ Vagrant.configure("2") do |config|
                         path: "guest/mount-share.sh", args: [share_tag, share_guest]
     config.vm.provision "repo", type: "shell", run: "always",
                         path: "guest/mount-share.sh", args: [repo_tag, repo_guest]
+  end
+
+  # The declared cache, at the same place on every boot. The guest gives
+  # a new disk the filesystem its own root uses, so the harness names none.
+  unless cache_disk.empty?
+    config.vm.provision "cache", type: "shell", run: "always",
+                        path: "guest/mount-cache.sh", args: [cache_serial, cache_guest]
   end
 
   # A DEADLINE THE HOST CANNOT FAIL TO ENFORCE. Every other teardown is

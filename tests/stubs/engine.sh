@@ -19,6 +19,10 @@
 # it wrote is kept; when any other boot stops, it is thrown away. That is
 # the engine's promise (lib/engine.sh, engine_up), modelled so the
 # orchestration can be held to using it.
+#
+# THE CACHE. A consumer that declares one ([cache] size) has $STUB/cache
+# as its guest's /cache for every boot, persist or not: it is a disk of
+# its own, outside the overlay. destroy deletes it with the machine.
 
 STUB="${FLTH_TEST_STUB:?the stub engine needs FLTH_TEST_STUB}"
 
@@ -52,6 +56,11 @@ engine_up() {
     rm -rf "$STUB/guest-lib"
     cp -R "$STUB/disk" "$STUB/guest-lib"
     echo "$persist" > "$STUB/boot-persist"
+    rm -f "$STUB/guest-cache"
+    if [ -n "${CFG_cache_size:-}" ]; then
+        mkdir -p "$STUB/cache"
+        ln -s "$STUB/cache" "$STUB/guest-cache"
+    fi
     stub_read after_up running > "$STUB/state"
 }
 
@@ -61,7 +70,7 @@ stub_boot_ended() {
         rm -rf "$STUB/disk"
         cp -R "$STUB/guest-lib" "$STUB/disk"
     fi
-    rm -rf "$STUB/boot-persist" "$STUB/guest-lib"
+    rm -rf "$STUB/boot-persist" "$STUB/guest-lib" "$STUB/guest-cache"
 }
 
 engine_down() {
@@ -73,11 +82,11 @@ engine_down() {
 engine_destroy() {
     stub_log destroy
     stub_read after_destroy absent > "$STUB/state"
-    rm -rf "$STUB/disk" "$STUB/guest-lib" "$STUB/boot-persist"
+    rm -rf "$STUB/disk" "$STUB/guest-lib" "$STUB/boot-persist" "$STUB/cache" "$STUB/guest-cache"
 }
 
 # Runs the script HERE, with the guest's fixed paths — the setup stamp,
-# the hold marker, the repository mount — redirected into the stub
+# the hold marker, the repository mount, the cache — redirected into the stub
 # directory, so the real logic executes against a tree a test can make.
 engine_run() {
     stub_log run
@@ -86,7 +95,8 @@ engine_run() {
         sed -e "s|/var/lib/fs-linux-test-harness|$STUB/guest-lib|g" \
             -e "s|/run/fs-linux-test-harness-held|$STUB/guest-held|g" \
             -e "s|/run/fs-linux-test-harness-rearmed|$STUB/guest-rearmed|g" \
-            -e "s|/repo|$STUB/guest-repo|g" |
+            -e "s|/repo|$STUB/guest-repo|g" \
+            -e "s|/cache\\([/ ']\\)|$STUB/guest-cache\\1|g" -e "s|/cache\$|$STUB/guest-cache|" |
         bash -s
 }
 
