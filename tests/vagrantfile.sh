@@ -182,6 +182,11 @@ args="$(field config/$P.extra_qemu_args)"
 check_contains "$args" "if=none,id=flth_cache,file=$cache_disk,format=raw" "  the cache is a drive of its own"
 check_contains "$args" "virtio-blk-pci,drive=flth_cache,serial=flth-cache" \
     "  with a serial the guest finds it by"
+# QEMU creates every -device before the device an -drive if=virtio
+# implies, so an unplaced cache took the PCI slot ahead of the machine's
+# own disk: the BIOS booted the empty cache, and the guest never came up.
+check_contains "$args" "serial=flth-cache,addr=0x10" \
+    "  on a PCI slot after the machine's own disk, which the BIOS boots"
 check_lacks "$args" "id=flth_cache,file=$cache_disk,format=raw,snapshot" "  and its writes are never sent to the overlay"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  while the machine's own disk stays disposable"
 check_contains "$args" "mount_tag=flth_share" "  and the shares are still there"

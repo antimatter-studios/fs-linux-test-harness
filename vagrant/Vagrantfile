@@ -103,6 +103,13 @@ repo_tag   = "flth_repo"
 # reached that list would be discarded with the run it exists to outlive.
 # The serial is how the guest finds it: /dev/disk/by-id/virtio-<serial>,
 # whatever order the disks were probed in. At most 20 characters.
+#
+# ITS PCI SLOT IS FIXED, AFTER THE MACHINE'S OWN DISK. QEMU creates every
+# -device before the device an `-drive if=virtio` implies, so a cache
+# left to take the next free slot was found ahead of the provider's disk.
+# A BIOS boots the first disk it finds, and on Linux x86_64 that was the
+# empty cache: the guest never came up. Slot 0x10 is free on q35 and on
+# virt, and above every slot the provider's own devices are given.
 cache_disk = ENV["FLTH_VM_CACHE_DISK"].to_s
 unless cache_disk.empty? || cache_disk =~ %r{\A/[A-Za-z0-9._/ -]*\z}
   raise "FLTH_VM_CACHE_DISK must be an absolute path, got #{cache_disk.inspect}"
@@ -116,7 +123,7 @@ cache_args =
   else
     %W(
       -drive if=none,id=#{cache_id},file=#{cache_disk.gsub(",", ",,")},format=raw
-      -device virtio-blk-pci,drive=#{cache_id},serial=#{cache_serial}
+      -device virtio-blk-pci,drive=#{cache_id},serial=#{cache_serial},addr=0x10
     )
   end
 
