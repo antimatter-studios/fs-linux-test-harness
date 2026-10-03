@@ -6,6 +6,8 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+## v0.3.0 — 2026-10-03
+
 ### Added
 
 - **A `macos-host` workflow runs the macOS host setup on a real Apple
