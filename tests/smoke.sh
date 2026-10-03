@@ -45,6 +45,18 @@ check_eq() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (expected '$2', got 
 check_true() { if eval "$1"; then ok "$2"; else bad "$3"; fi; }
 check_contains() { case "$1" in *"$2"*) ok "$3" ;; *) bad "$3 (lacked '$2' in: $1)" ;; esac; }
 step() { printf '\n== [%4ss] %s\n' "$(( $(date +%s) - started ))" "$1"; }
+verdict() { printf '\n== [%4ss] smoke: %s passed, %s failed\n' "$(( $(date +%s) - started ))" "$passes" "$fails"; }
+# A boot that failed leaves nothing for any later step to ask, and booting
+# again pays the whole retry budget a second time: two failed boots outlast
+# the CI job's timeout, which then cancels it with no verdict (#45). Stop
+# here, with the verdict; the EXIT trap still destroys the VM.
+boot_or_stop() {
+    if [ "$1" -ne 0 ]; then
+        echo "  smoke: the VM did not boot, so no later step can run; stopping" >&2
+        verdict
+        exit 1
+    fi
+}
 state() { "$VM" status >/dev/null 2>&1 && echo running || echo not-running; }
 slot_holder() { "$SLOT" status | sed -n 's/^held by \([^ ]*\) for.*/\1/p'; }
 
@@ -68,7 +80,9 @@ check_eq "$(state)" not-running "no smoke VM is running"
 step "up: boot, setup, deadline"
 t0=$(date +%s)
 "$VM" up
-check_eq "$?" 0 "vm.sh up succeeds"
+rc=$?
+check_eq "$rc" 0 "vm.sh up succeeds"
+boot_or_stop "$rc"
 echo "  (boot + setup took $(( $(date +%s) - t0 ))s)"
 check_eq "$(state)" running "the VM is running"
 check_eq "$(slot_holder)" flth-smoke "and holds the machine-wide slot"
@@ -108,7 +122,9 @@ check_eq "$?" 0 "the VM stops"
 check_eq "$(sum "$disk")" "$before" "the machine's disk is byte for byte what it was before the run"
 t0=$(date +%s)
 "$VM" up
-check_eq "$?" 0 "the next boot comes up"
+rc=$?
+check_eq "$rc" 0 "the next boot comes up"
+boot_or_stop "$rc"
 echo "  (a cold boot of a provisioned machine took $(( $(date +%s) - t0 ))s)"
 check_eq "$("$VM" run 'test -e /var/lib/flth-smoke-left-this && echo left || echo gone' 2>/dev/null)" gone "the file the run left is gone"
 check_eq "$("$VM" run 'losetup -a | grep -c flth-smoke' 2>/dev/null)" 0 "and so is its loop device"
@@ -277,5 +293,5 @@ check_contains "$("$VM" status 2>&1)" "(absent)" "the VM no longer exists"
 
 trap - EXIT
 rm -rf "$CONTENDER"
-printf '\n== [%4ss] smoke: %s passed, %s failed\n' "$(( $(date +%s) - started ))" "$passes" "$fails"
+verdict
 [ "$fails" -eq 0 ]
