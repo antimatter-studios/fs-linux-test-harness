@@ -43,6 +43,16 @@ changes allowed in minor versions until 1.0.
   `examples/minimal`'s `test` task, now run the suite through
   `vm.sh session <command...>`; the reaper is the net, not the plan.
 
+- **The macOS path needs virtiofsd 1.14.0 or newer, and `vm:host:check`
+  says so** (#26). Older builds of the macOS port read an arm64 guest's
+  open flags with x86_64's values, so the guest's `O_DIRECT` became
+  `O_DIRECTORY` and every direct-I/O open of a file on a share failed with
+  `ENOTDIR`. christhomas/virtiofsd v1.14.0 decodes them with the guest's
+  own values. `scripts/host-tools.sh` reads the installed formula's
+  version and, below 1.14.0, names the floor, the reason and
+  `brew upgrade antimatter-studios/tap/virtiofsd`. A Mac with an older
+  build must upgrade before it boots the guest.
+
 ### Fixed
 
 - **The macOS share's two unexplained virtiofsd settings are explained or

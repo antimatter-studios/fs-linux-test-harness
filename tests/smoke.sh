@@ -104,11 +104,11 @@ check_eq "$(cat "$("$VM" share)/guest-file.txt")" "from guest" "the host reads t
 step "direct I/O: a file on either share opens with O_DIRECT (#26)"
 # Some image tools open their image with O_DIRECT (xfs_repair among them,
 # and a loop device with direct I/O), and on the macOS engine that open
-# fails with ENOTDIR on both shares: the host's virtiofsd decodes an
+# failed with ENOTDIR on both shares: virtiofsd before 1.14.0 decoded an
 # arm64 guest's open flags with x86_64 values, where arm64's O_DIRECT is
-# O_DIRECTORY (christhomas/virtiofsd#3). This is the end-to-end check: it
-# fails on a Mac until the tap ships a fixed daemon, and must stay
-# green on 9p. A consumer meanwhile works on a guest-local copy (README,
+# O_DIRECTORY (christhomas/virtiofsd#3). scripts/host-tools.sh refuses
+# those builds. This is the end-to-end check that 1.14.0 fixed it on a
+# Mac, and it must stay green on 9p. A consumer meanwhile works on a guest-local copy (README,
 # "Where a tool works on an image"); tests/guest-scratch.sh holds the
 # smoke consumer to that.
 for dir in /share "$repo_guest"; do

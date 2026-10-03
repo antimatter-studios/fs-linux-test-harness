@@ -228,17 +228,18 @@ refuses something a filesystem tool does to an image file:
 
 | On | What fails | How it shows |
 | --- | --- | --- |
-| macOS (virtiofs) | any `O_DIRECT` open of a shared file — `xfs_repair`, `xfs_db`, `losetup --direct-io=on`, `dd iflag=direct` (#26) | `ENOTDIR` ("Not a directory"), whatever the image holds |
+| macOS (virtiofs), virtiofsd before 1.14.0 | any `O_DIRECT` open of a shared file — `xfs_repair`, `xfs_db`, `losetup --direct-io=on`, `dd iflag=direct` (#26) | `ENOTDIR` ("Not a directory"), whatever the image holds |
 | Linux (9p) | `mmap` of a shared file is unreliable | a tool killed by `SIGSEGV`, exit 139 (seen on CI's x86_64 guest) |
 | Linux (9p), `/repo` | setting ownership (`chown`, a tool restoring recorded uids): `security_model=none` cannot | `Operation not permitted` |
 
-The macOS row is a defect in the host's virtiofsd, not in the guest: it
-decodes an arm64 guest's open flags with x86_64 values, and arm64's
-`O_DIRECT` is x86_64's `O_DIRECTORY`, so the host opens the image as a
-directory (christhomas/virtiofsd#3). Until the tap
-(`antimatter-studios/tap/virtiofsd`) ships a fixed daemon, the open fails
-on every Mac. CI never sees it: CI's guest is x86_64 and shares
-over 9p.
+The macOS row is a defect in the host's virtiofsd, not in the guest:
+before 1.14.0 it decoded an arm64 guest's open flags with x86_64 values,
+and arm64's `O_DIRECT` is x86_64's `O_DIRECTORY`, so the host opened the
+image as a directory (christhomas/virtiofsd#3). virtiofsd v1.14.0 decodes
+them with the guest's own values, and `chore vm:host:check` refuses an
+older one. That fix is proven by the daemon's own tests on macOS CI
+runners; no Mac has yet run the smoke step below against it. CI here never
+sees the defect: CI's guest is x86_64 and shares over 9p.
 
 Each of these reads as a verdict on the image rather than on where it
 was kept. So **a tool that works on an image works on the guest's own disk**:
@@ -251,8 +252,8 @@ not have to know which of its tools those are.
 The smoke consumer does exactly this (`tests/smoke-consumer/guest-suite.sh`),
 and `tests/guest-scratch.sh` fails the build if any of its guest-side
 scripts points an image tool at the share or the repository mount.
-`chore smoke` opens a file on each share with `O_DIRECT`, so the defect
-fails the smoke run on a Mac until it is fixed.
+`chore smoke` opens a file on each share with `O_DIRECT`, which is the
+end-to-end check of the virtiofsd fix on a Mac.
 
 Every command the harness runs in the guest has **`FLTH_GUEST=1`** in its
 environment. A test helper that would otherwise ask the harness to run a
@@ -483,8 +484,10 @@ matches. That is read from the gem's source, not seen on a Mac. The
 runner and validates the Vagrantfile under the real forked provider, but
 cannot boot: GitHub's macOS runners have no nested virtualisation, so no
 HVF. Treat the row as untested until `chore smoke` on a Mac is recorded.
-One defect on it is known: a file on either virtiofs share cannot be
-opened with `O_DIRECT` (#26; see "Where a tool works on an image").
+One defect on it is known: with virtiofsd before 1.14.0, which
+`chore vm:host:check` now refuses, a file on either virtiofs share cannot
+be opened with `O_DIRECT` (#26; see "Where a tool works on an image").
+No Mac has yet confirmed 1.14.0 fixes it.
 
 **The box is not published.** It is not in the public Vagrant registry,
 and its GitHub release is in a private repository, whose download URL
@@ -616,7 +619,7 @@ person working in the guest: the VM stays up, and keeps the slot, until
 
 ```sh
 brew install --cask hashicorp/tap/hashicorp-vagrant
-brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd
+brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd   # virtiofsd 1.14.0 or newer
 vagrant plugin install vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas
 # not published anywhere public (#8): add a copy of its .box file
 vagrant box add --name christhomas/vagrant-rpi-bookworm-arm64 --architecture arm64 \

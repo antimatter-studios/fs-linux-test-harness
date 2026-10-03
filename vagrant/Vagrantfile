@@ -157,10 +157,12 @@ Vagrant.configure("2") do |config|
       qe.net_device = "virtio-net-device"
       # virtiofsd is the provider's default: `virtiofsd` on PATH, which is
       # the build `brew install antimatter-studios/tap/virtiofsd` installs
-      # (the macOS port, christhomas/virtiofsd). A preferred
+      # (the macOS port, christhomas/virtiofsd). It must be v1.14.0 or
+      # newer, which scripts/host-tools.sh checks: older builds read this
+      # arm64 guest's O_DIRECT as x86_64's O_DIRECTORY, and a direct-I/O
+      # open of a shared file failed with ENOTDIR (#26). A preferred
       # `virtiofsd-1.13.8-rc1` was carried here with no reason recorded;
-      # that port publishes no rc1 (its tags are v1.13.7 and v1.13.8, the
-      # latter released 2026-06-22), so it named a binary that existed on
+      # that port published no rc1, so it named a binary that existed on
       # one Mac and was ignored everywhere else.
       #
       # virtiofsd presents host files under this uid/gid; it must match
