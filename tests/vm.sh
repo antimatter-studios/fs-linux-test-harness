@@ -320,6 +320,23 @@ check_eq "$(cat "$C/during.txt")" running "a session that ends while another is 
 check_contains "$(cat "$C/inner.txt")" "another invocation is using it" "and says so"
 check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and the last session out brings it down"
 
+# A session's end leaves a HELD VM running (#36). `chore vm:up` holds the
+# VM so it outlives the invocation that booted it; a session that ends
+# beside it — a fixture build, a test run — did not ask for it and must
+# not take it down, any more than the reaper does. The slot stays with
+# the VM that is still running.
+stub_state absent; free_slot
+vm up 2>/dev/null; vm hold 2>/dev/null
+out="$(cd "$C" && bash -c 'set -e; . "$1"; true' flth-test "$STUB_HARNESS/scripts/vm-session.sh" 2>&1)"
+check_eq "$?" 0 "a session that ends beside a held VM succeeds"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" running "and leaves the held VM running"
+check_eq "$([ -f "$MACHINE/keep-running" ] && echo present || echo cleared)" present "and its hold in place"
+check_eq "$(slot_holder)" vm-test "and the slot with it"
+check_contains "$out" "held" "and says why it left it"
+vm down 2>/dev/null
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "vm:down still stops the held VM"
+check_eq "$(slot_holder)" "" "and releases the slot"
+
 # --- guest-test: the suite, run inside the guest -------------------------
 
 # The stub engine runs the guest script on the host and records it, so

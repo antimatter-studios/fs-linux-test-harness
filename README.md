@@ -46,7 +46,7 @@ one, which is how an oracle goes unnoticed running against nothing.
 | `chores.yml` | The harness's own tasks: `check`, `smoke`, `host:check`. |
 | `scripts/vm.sh` | The single entry point: every lifecycle command. |
 | `scripts/vm-slot.sh` | The machine-wide slot lock (`acquire` / `release` / `status`). |
-| `scripts/vm-session.sh` | Sourced by a consumer script: tear the VM down when it exits. |
+| `scripts/vm-session.sh` | A session: `vm.sh session <command...>` runs a command inside one, and a script that sources it becomes one. The VM comes down when it ends, however it ends. |
 | `scripts/host-tools.sh` | Checks the host and prints exactly what to install. |
 | `scripts/ci-setup-linux.sh` | Sets a hosted x86_64 Linux CI runner up to boot the VM (KVM access, QEMU, Vagrant, vagrant-qemu), for the harness's CI and every consumer's; `--box-cache-key` prints the box cache key. |
 | `scripts/lib/` | `config.sh` (the TOML reader), `engine.sh` (the engine interface), `engine-vagrant.sh` (its Vagrant implementation), `common.sh` (paths). |
@@ -71,7 +71,7 @@ vars:
 #   fs-linux-test-harness https://github.com/antimatter-studios/fs-linux-test-harness.git '{{.LINUX_HARNESS_REF}}'
 ```
 
-**2. Include the VM tasks, install the reaper, and tear down after tests.**
+**2. Include the VM tasks, install the reaper, and run the tests inside a session.**
 
 ```yaml
 includes:
@@ -85,9 +85,14 @@ lifecycle:
 tasks:
   test:
     cmds:
-      - defer: ../fs-linux-test-harness/scripts/vm.sh down
-      - cargo test
+      - ../fs-linux-test-harness/scripts/vm.sh session cargo test
 ```
+
+`vm.sh session <command...>` runs the command inside a **session**: the VM
+the tests boot comes down, and the machine-wide slot is released, when the
+command ends — passed, failed or killed — and run any way at all, not only
+through chore. Put it in the script your tiers run (`scripts/test.sh`) rather
+than in each task, so a run by hand gets it too. See [rule 2](#talking-to-the-guest-from-a-test-process).
 
 **3. Write `fs-linux-test-harness.toml` and a setup script.**
 
@@ -127,10 +132,11 @@ chore vm:down
 ```
 
 A test binary calls the harness directly:
-`../fs-linux-test-harness/scripts/vm.sh run "xfs_repair -n /share/test.img"`.
-A shell wrapper that boots the VM sources
-`../fs-linux-test-harness/scripts/vm-session.sh` near its top and the VM
-comes down when it exits.
+`../fs-linux-test-harness/scripts/vm.sh run "xfs_repair -n /share/test.img"`,
+and the runner that starts it runs it through
+`../fs-linux-test-harness/scripts/vm.sh session <command...>`. A shell
+wrapper that boots the VM sources `../fs-linux-test-harness/scripts/vm-session.sh`
+near its top instead; the VM comes down when it exits.
 
 Copy-ready versions of all of this are in [`examples/minimal/`](./examples/minimal/);
 a consumer that really runs is in [`tests/smoke-consumer/`](./tests/smoke-consumer/).
@@ -175,11 +181,31 @@ cheap and safe:
    VM when it is down, which is right for a script and wrong inside a test
    binary. `exec` never boots: it checks the process table, runs the
    command, and fails naming `chore vm:up` when there is no VM.
-2. **One boot per run.** Bring the VM up once (the first call of the
-   suite, or the task) and leave it; the harness keeps ONE multiplexed SSH
-   connection alive, so a command costs about 0.03 s instead of the 0.7 s
-   a fresh handshake costs. Let `lifecycle: after_all`'s reaper stop it at
-   the end of the invocation rather than holding it.
+2. **One boot per run, and the test runner owns it.** Bring the VM up
+   once (the first call of the suite, or the task) and leave it; the
+   harness keeps ONE multiplexed SSH connection alive, so a command costs
+   about 0.03 s instead of the 0.7 s a fresh handshake costs. The script
+   that runs the suite (`scripts/test.sh`, whatever every tier calls) runs
+   it through `vm.sh session <command...>`, so the VM comes down and the
+   slot is released when the run ends, however it ends:
+
+   ```sh
+   exec "$repo/../fs-linux-test-harness/scripts/vm.sh" session cargo test "$@"
+   ```
+
+   **Do not leave it to the reaper.** The reaper runs only inside a chore
+   invocation of *this* repository, but the slot is one for the whole
+   machine: a run started any other way exits with the VM idle and the slot
+   held, and every other repository's VM work queues behind it until the
+   guest's idle deadline. The reaper is the net for a run that never
+   reached the runner (a bare `cargo test`), not the plan.
+
+   The runner decides where a session makes sense, so the consumer does not
+   have to: in the guest (`FLTH_GUEST=1`) and on a host that cannot run the
+   VM (`host-tools.sh --quiet` fails — a CI runner without KVM) it runs the
+   command as it is, and asks the engine nothing. A VM held with `chore
+   vm:up` is left up when the run ends, so `chore vm:up` before a series of
+   runs keeps it across them; `FLTH_KEEP_VM=1` does the same for one run.
 3. **Nothing is copied.** The consumer repository is mounted in the guest
    (`/repo`), so a file the test wrote under the checkout is already
    there; the shared directory (`/share`) is for what a run hands across.
@@ -396,6 +422,7 @@ relative, and must not leave the repository.
 | `chore vm:share` | Print the host path of the shared directory. |
 | `chore vm:test [-- args]` | Boot, run the `[test] command` on the HOST, tear down. A failing teardown fails the task; the test's own failure wins if both fail. `FLTH_KEEP_VM=1` keeps the VM. |
 | `chore vm:guest-test [-- args]` | Boot, run the `[test] guest_command` INSIDE the guest from `/repo`, tear down — the same session rules. For a suite whose host cannot run it. |
+| `chore vm:session -- <command>` | Run a command on the HOST inside a session: the VM it boots comes down, and the slot is released, when it ends — passed, failed or killed. A held VM is left up. What a consumer's test runner calls as `vm.sh session <command...>`; see [rule 2](#talking-to-the-guest-from-a-test-process). |
 | `chore vm:provision` | Re-run the setup script, changed or not. |
 | `chore vm:down` | Halt, **confirm** the VM stopped, release the slot. Fails if the VM is still running or its state cannot be read. Keeps the disk. |
 | `chore vm:status` | Exit 0 when running, 1 otherwise, and say which. |
@@ -421,7 +448,7 @@ relative, and must not leave the repository.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FLTH_CONFIG` | search upward | Path of the consumer's config. |
-| `FLTH_KEEP_VM` | unset | `1`: `vm:test` and `vm-session.sh` leave the VM running. |
+| `FLTH_KEEP_VM` | unset | `1`: `vm:test`, `vm:guest-test`, `vm.sh session` and every script that sources `vm-session.sh` leave the VM running. |
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/<project>/`) and firmware links. |
 | `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | The slot lock. Must be the same for every repository on the machine. |
 | `FLTH_SLOT_WAIT` | `3600` | Seconds `up` waits for the slot before giving up. |
@@ -555,13 +582,17 @@ overlapping.
 
 In order of precision:
 
-1. **`down`** — `chore vm:down`, a chore `defer:`, `vm-session.sh`'s exit
-   trap, or `vm:test`'s own teardown. Fails loudly when the VM will not stop.
+1. **`down`** — `chore vm:down` or a chore `defer:`; and a **session's
+   end** — `vm.sh session <command...>` finishing, the exit trap of a script
+   that sources it, or `vm:test`'s own teardown — which brings the VM down
+   unless it is held or another live session is using it. Fails loudly when
+   the VM will not stop.
 2. **`reap`** — from `lifecycle: after_all`, on any later chore
    invocation: stops a VM nothing accounted for (a bare `cargo test`, a
    killed run). Fails soft, so an unrelated `chore build` is not turned red.
    It leaves alone a VM a **live session** is using: `vm-session.sh` (and so
-   `vm:test`, `vm:guest-test` and any script that sources it) records its
+   `vm:test`, `vm:guest-test`, `vm.sh session` and any script that sources
+   it) records its
    process in the machine directory, and reap says which pid it left the VM
    for. A session whose process has died no longer counts. When a session
    ends while another is still using the same machine — two worktrees of one
@@ -573,8 +604,9 @@ In order of precision:
    a minute), so it measures idleness rather than the boot's lifetime. The
    one net that works when the host process is hung or killed.
 
-`hold` (and `chore vm:up`) opts out of 2 and 3 for a person working in
-the guest; `down` and `destroy` clear it, and a reboot re-arms the deadline.
+`hold` (and `chore vm:up`) opts out of a session's end, 2 and 3 for a
+person working in the guest: the VM stays up, and keeps the slot, until
+`down` or `destroy` clears the hold. A reboot re-arms the deadline.
 
 ## Host setup
 
