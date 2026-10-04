@@ -23,7 +23,7 @@ printf '#!/bin/sh\nexit 0\n' > "$BIN/sleep"
 # prints $STUBDIR/ssh-config; everything is logged.
 cat > "$BIN/vagrant" <<'STUB'
 #!/usr/bin/env bash
-echo "vagrant $* cwd=$PWD dot=$VAGRANT_DOTFILE_PATH disposable=${FLTH_VM_DISPOSABLE:-unset} tmpdir=${TMPDIR:-}" >> "$STUBDIR/log"
+echo "vagrant $* cwd=$PWD dot=$VAGRANT_DOTFILE_PATH disposable=${FLTH_VM_DISPOSABLE:-unset} port=${FLTH_VM_SSH_PORT:-unset} tmpdir=${TMPDIR:-}" >> "$STUBDIR/log"
 n="$(cat "$STUBDIR/locked" 2>/dev/null || echo 0)"
 if [ "$n" -gt 0 ]; then
     echo $((n - 1)) > "$STUBDIR/locked"
@@ -247,5 +247,33 @@ check_eq "$(dd if="$disk" bs=1 skip=4096 count=10 2>/dev/null | tr -d '\0')" "" 
 check_contains "$out" "cache" "and says the cache was replaced"
 engine_destroy 2>/dev/null
 check_eq "$(test -e "$disk" && echo kept || echo gone)" gone "destroy deletes the cache with the machine"
+
+# --- the SSH forward port (#49) ---------------------------------------------
+
+# QEMU cannot forward a port another socket holds, and the configured one
+# sits inside Linux's ephemeral range, so any outgoing connection on the
+# host can be holding it at boot. A boot takes the configured port when it
+# is free and another free one when it is not, on every attempt, so a
+# retry routes around the busy port instead of failing on it again.
+command -v perl >/dev/null || { fail "perl is required to hold a port (it is in every macOS and Debian base install)"; finish engine-vagrant; }
+bindable() { perl -MIO::Socket::INET -e 'exit(IO::Socket::INET->new(LocalAddr => "0.0.0.0", LocalPort => $ARGV[0], Proto => "tcp", Listen => 1) ? 0 : 1)' "$1"; }
+perl -MIO::Socket::INET -e 'my $s = IO::Socket::INET->new(LocalAddr => "0.0.0.0", LocalPort => 0, Proto => "tcp", Listen => 1) or die; open(my $f, ">", $ARGV[0]) or die; print $f $s->sockport, "\n"; close $f; sleep 60' "$SANDBOX/held-port" &
+holder=$!
+held=""
+for _ in $(seq 50); do held="$(cat "$SANDBOX/held-port" 2>/dev/null)"; [ -n "$held" ] && break; perl -e 'select(undef, undef, undef, 0.1)'; done
+make_consumer "$SANDBOX/ported" port-test '[vm]' "ssh_port = $held"
+export FLTH_CONFIG="$SANDBOX/ported/fs-linux-test-harness.toml"
+flth_load
+engine_prepare
+: > "$STUBDIR/log"
+# A short state directory: the machine's SSH control socket lives there,
+# and a socket path is limited to about 100 bytes.
+port_state="$(mktemp -d /tmp/flth-port.XXXXXX)"
+FLTH_STATE_DIR="$port_state" engine_up 2>/dev/null
+rm -rf "$port_state"
+got="$(grep '^vagrant up' "$STUBDIR/log" | sed -n 's/.* port=\([0-9a-z]*\).*/\1/p')"
+check_eq "$(case "$got" in '' | *[!0-9]*) echo "no port: '$got'" ;; "$held") echo same ;; *) echo moved ;; esac)" moved "a configured port another socket holds is not handed to the boot ($held)"
+check_eq "$( [ -n "$got" ] && [ "$got" != unset ] && bindable "$got" && echo free || echo "not free: $got")" free "the boot gets a port nothing holds"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 
 finish engine-vagrant
