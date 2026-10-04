@@ -60,6 +60,8 @@ version_at_least() {
 
 check_vagrant() {
     local install="$1" version
+    # Perl picks the SSH forward port at boot (#49); bash cannot bind one.
+    have perl || need "perl" "picks a free host port for the VM's SSH forward" "it ships with every macOS and Debian base install"
     if ! have vagrant; then
         need "vagrant (2.4 or newer)" "drives the VM" "$install"
         return

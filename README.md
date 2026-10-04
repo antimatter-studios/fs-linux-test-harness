@@ -405,7 +405,7 @@ chose.
 | `[vm] memory` | string | `4G` | Guest memory, e.g. `2G`, `2048M`. |
 | `[vm] cpus` | integer | `4` | Guest CPUs, 1–64. |
 | `[vm] disk` | string | `32G` | Guest disk size, e.g. `16G`. |
-| `[vm] ssh_port` | integer | `50122` | Host port forwarded to the guest's SSH. Auto-corrected by Vagrant if taken. |
+| `[vm] ssh_port` | integer | `50122` | Host port forwarded to the guest's SSH when it is free at boot; when another socket holds it, the boot forwards a free port the kernel hands out instead, and says so. |
 | `[vm] deadline_minutes` | integer | `480` | The guest powers itself off after this long **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. |
 
 Paths may contain only letters, digits, `.`, `_`, `-` and `/`, must be
