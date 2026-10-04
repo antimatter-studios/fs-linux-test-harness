@@ -203,11 +203,39 @@ engine_vagrant_cache_disk() {
 # The disposable overlay is created under the TMPDIR QEMU inherits, which
 # is this directory too: on disk beside the slot, never a RAM-backed /tmp
 # that a long run's writes could fill.
+# THE SSH FORWARD PORT IS CHOSEN AT EVERY BOOT (#49). QEMU cannot forward
+# a port another socket holds, and the configured one ([vm] ssh_port,
+# default 50122) sits inside Linux's ephemeral range, so any outgoing
+# connection on the host may be holding it. A boot takes the configured
+# port when it can bind it and any free port the kernel hands out when it
+# cannot, so a retry routes around a busy port instead of failing on it
+# again. Perl, because bash cannot bind a socket and perl is in every
+# macOS and Debian base install.
+engine_vagrant_ssh_port() {
+    perl -MIO::Socket::INET -e '
+        for my $p ($ARGV[0], 0) {
+            my $s = IO::Socket::INET->new(LocalAddr => "0.0.0.0", LocalPort => $p,
+                                          Proto => "tcp", Listen => 1) or next;
+            print $s->sockport, "\n";
+            exit 0;
+        }
+        exit 1;' "$1"
+}
+
 engine_up() {
-    local tmp disposable=1
+    local tmp disposable=1 port
     [ "${1:-}" = --persist ] && disposable=0
     tmp="$(engine_vagrant_tmpdir)" || return 1
     engine_vagrant_cache_disk || return 1
+    port="$(engine_vagrant_ssh_port "$CFG_vm_ssh_port")" || {
+        echo "vm: no free host port for the SSH forward" >&2
+        return 1
+    }
+    [ "$port" = "$CFG_vm_ssh_port" ] ||
+        echo "[vm] SSH port $CFG_vm_ssh_port is held by another socket: forwarding $port" >&2
+    # Exported, not passed to `up` alone: the ssh settings are read back
+    # from Vagrant just below, and must name the port this boot forwards.
+    export FLTH_VM_SSH_PORT="$port"
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     FLTH_VM_DISPOSABLE="$disposable" TMPDIR="$tmp" engine_vagrant up --provider qemu >&2 || return
