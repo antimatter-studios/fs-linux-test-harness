@@ -290,6 +290,13 @@ vm_down() {
     # runs as a chore `defer:`, where its exit status is the only thing
     # between a leaked VM and a green run.
     engine_down || true
+    # A graceful halt that does not finish -- a long run's guest slow or
+    # wedged at shutdown -- is forced before down gives up (#51). The VM
+    # is disposable at this point, so nothing is lost by forcing it.
+    if [ "$(engine_state 2>/dev/null)" = running ]; then
+        echo "vm: the graceful halt left the VM running; forcing it down." >&2
+        engine_down --force || true
+    fi
     if ! release_if_confirmed_stopped; then
         echo "vm: halt did not leave the VM confirmed stopped." >&2
         exit 1
