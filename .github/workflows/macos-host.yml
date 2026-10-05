@@ -70,17 +70,24 @@ jobs:
             { echo "::error::this QEMU has no vhost-user-fs device; the macOS shares need it"; exit 1; }
           virtiofsd --version
 
-      - name: host:check names the box, and only the box
+      # The box is published (#8): the first boot fetches it from its
+      # public release, so a Mac with the tools above is ready without it.
+      - name: host:check finds every requirement present
         run: |
           set +e -uo pipefail  # the step shell has -e; these read a status
           out="$(bash scripts/host-tools.sh 2>&1)"; rc=$?
           printf '%s\n' "$out"
-          if [ "$rc" -ne 1 ] ||
-             ! grep -qF '1 requirement(s) missing on Darwin arm64' <<<"$out" ||
-             ! grep -qF 'missing: the box christhomas/vagrant-rpi-bookworm-arm64' <<<"$out"; then
-            echo "::error::expected exactly one missing requirement, the unpublished box (exit $rc)"
+          if [ "$rc" -ne 0 ] || ! grep -qF 'all present (Darwin arm64)' <<<"$out"; then
+            echo "::error::expected every requirement present, the box being fetched on first boot (exit $rc)"
             exit 1
           fi
+
+      - name: The box's public release answers without credentials
+        run: |
+          set -euo pipefail
+          code=$(curl -sIL -o /dev/null -w '%{http_code}' \
+            https://github.com/christhomas/vagrant-rpi-bookworm-arm64/releases/download/v1.0.0/rpi-arm64.box)
+          [ "$code" = 200 ] || { echo "::error::the box's release answered $code"; exit 1; }
 
       - name: The Vagrantfile validates under real Vagrant and the forked provider
         env:
