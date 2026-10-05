@@ -147,7 +147,7 @@ echo applied"
 # in parallel calls `up` from several threads at once; while the first
 # boot is under way the VM is not yet running, so every later caller
 # decided to boot it too, and QEMU refused the second forward of the same
-# port (christhomas/rust-fs-ext4#487). The lock is a directory, made
+# port, failing a consumer's oracle tier. The lock is a directory, made
 # atomically, holding its owner's pid: a later `up` waits for it, then
 # reads the state afresh and finds the VM running. An owner that died
 # leaves a lock whose pid is gone, which the next caller takes over.
