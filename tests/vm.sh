@@ -396,4 +396,25 @@ check_eq "$([ -f "$MACHINE/setup.sha256" ] && echo recorded || echo none)" none 
 check_eq "$(cat "$FLTH_TEST_STUB/state")" running "the VM is left up to be inspected"
 vm down 2>/dev/null
 
+# --- two ups at once -----------------------------------------------------
+
+# A test process that runs its oracle tests in parallel calls `up` from
+# several threads at once. While the first boot is under way the VM is not
+# yet running, so every later caller decided to boot it too, and QEMU
+# refused the second forward of the same port on every attempt
+# (christhomas/rust-fs-ext4#487). One up boots; the others wait for it and
+# find the VM running.
+printf 'true\n' > "$C/setup.sh"
+# One boot first, so the disk is provisioned and the race is a plain boot.
+stub_state absent; free_slot; vm up >/dev/null 2>&1; vm down 2>/dev/null
+stub_reset_calls
+echo 2 > "$FLTH_TEST_STUB/up_delay"
+( vm up >/dev/null 2>&1; echo $? > "$SANDBOX/up-1" ) &
+( vm up >/dev/null 2>&1; echo $? > "$SANDBOX/up-2" ) &
+wait
+check_eq "$(cat "$SANDBOX/up-1")|$(cat "$SANDBOX/up-2")" "0|0" "two ups at once both succeed"
+check_eq "$(calls_of up)" 1 "  and boot the machine once"
+rm -f "$FLTH_TEST_STUB/up_delay"
+vm down 2>/dev/null
+
 finish vm

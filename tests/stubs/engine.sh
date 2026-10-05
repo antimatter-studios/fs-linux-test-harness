@@ -7,6 +7,7 @@
 #   state          what engine_state prints (running|stopped|absent|unknown)
 #   up_failures    how many engine_up calls fail before one succeeds
 #   after_up       state after a successful up (default running)
+#   up_delay       seconds a successful up takes before the VM is running
 #   after_failed_up state after a failed up (default stopped)
 #   after_down     state after engine_down (default stopped)
 #   after_force_down state after engine_down --force (default: after_down's)
@@ -62,6 +63,8 @@ engine_up() {
         mkdir -p "$STUB/cache"
         ln -s "$STUB/cache" "$STUB/guest-cache"
     fi
+    # A boot takes time, and until it ends the VM is not running.
+    /bin/sleep "$(stub_read up_delay 0)"
     stub_read after_up running > "$STUB/state"
 }
 
