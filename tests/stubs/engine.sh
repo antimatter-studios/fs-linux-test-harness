@@ -9,6 +9,7 @@
 #   after_up       state after a successful up (default running)
 #   after_failed_up state after a failed up (default stopped)
 #   after_down     state after engine_down (default stopped)
+#   after_force_down state after engine_down --force (default: after_down's)
 #   after_destroy  state after engine_destroy (default absent)
 #   ps_unreadable  present: engine_alive answers 2
 #
@@ -75,7 +76,11 @@ stub_boot_ended() {
 
 engine_down() {
     stub_log "down${1:+ $1}"
-    stub_read after_down stopped > "$STUB/state"
+    if [ "${1:-}" = --force ]; then
+        stub_read after_force_down "$(stub_read after_down stopped)" > "$STUB/state"
+    else
+        stub_read after_down stopped > "$STUB/state"
+    fi
     case "$(cat "$STUB/state")" in stopped | absent) stub_boot_ended ;; esac
 }
 
