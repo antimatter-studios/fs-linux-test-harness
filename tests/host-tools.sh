@@ -3,12 +3,9 @@
 # host-tools.sh — scripts/host-tools.sh on a macOS host, with `uname`,
 # `brew` and `vagrant` stubbed so a Mac's answers can be given anywhere.
 #
-# What is pinned: the macOS box is not published anywhere a stranger can
-# download it, so a Mac that lacks it locally must be told so, with the
-# command that adds a copy, before a boot that would otherwise fail inside
-# Vagrant. It must not be handed a download URL: the box's GitHub release
-# is in a private repository, and its URL answers 404 to anyone without
-# the owner's access, Vagrant included (#8).
+# What is pinned: the macOS box is published as a public GitHub release,
+# and the Vagrantfile names it as the box's URL, so the first boot on a
+# Mac fetches it. A Mac without it added is therefore ready (#8).
 #
 # And a virtiofsd older than the release that decodes an arm64 guest's
 # open flags is refused, with the command that upgrades it.
@@ -49,16 +46,8 @@ check_contains "$out" "all present (Darwin arm64)" "and says so"
 
 printf 'cloud-image/debian-12 (qemu, 20260909.2596.0, (arm64))\n' > "$SANDBOX/boxes"
 out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
-check_eq "$?" 1 "a Mac without the box is not ready"
-check_contains "$out" "missing: the box $BOX" "naming the box"
-check_contains "$out" "not published" "saying why it has to be added by hand"
-check_contains "$out" "vagrant box add --name $BOX --architecture arm64 " \
-    "and the command that adds a copy, under the name and architecture the Vagrantfile asks for"
-check_lacks "$out" "https://" "without a download URL, which answers Vagrant with a 404"
-
-printf '%s-old (qemu, 0.9.0, (arm64))\n' "$BOX" > "$SANDBOX/boxes"
-out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
-check_eq "$?" 1 "a box whose name merely starts with the one needed is not it"
+check_eq "$?" 0 "a Mac without the box added is ready: its first boot fetches it"
+check_lacks "$out" "the box $BOX" "and is not told to add it by hand"
 
 # virtiofsd before 1.14.0 read an arm64 guest's O_DIRECT as O_DIRECTORY.
 printf '%s (qemu, 1.0.0, (arm64))\n' "$BOX" > "$SANDBOX/boxes"

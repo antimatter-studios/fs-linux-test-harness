@@ -154,6 +154,9 @@ check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boo
 evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
 check_eq "$(field ok)" true "macOS arm64 evaluates"
 check_eq "$(field config/vm.box)" "christhomas/vagrant-rpi-bookworm-arm64" "  the owner's box"
+check_eq "$(field config/vm.box_url)" \
+    "https://github.com/christhomas/vagrant-rpi-bookworm-arm64/releases/download/v1.0.0/rpi-arm64.box" \
+    "  fetched from its public release on first boot (#8)"
 check_eq "$(field config/$P.machine)" "virt,accel=hvf,highmem=on" "  HVF"
 check_eq "$(field config/notify_forwarder.enable)" true "  notify forwarder enabled (disabling it breaks boot)"
 check_contains "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  shares over virtiofs"
