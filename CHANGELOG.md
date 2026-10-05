@@ -6,6 +6,33 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+## v0.4.0 — 2026-10-05
+
+### Fixed
+
+- **A boot takes the configured SSH port only when it is free** (#49).
+  The forward always used `[vm] ssh_port` (default 50122), which sits
+  inside Linux's ephemeral port range, so any outgoing connection on the
+  host could be holding it; QEMU then refused the forward, and every retry
+  failed on the same port. Each boot attempt now binds the configured port
+  first and, when another socket holds it, forwards a free port the kernel
+  hands out instead, and says which. Perl does the binding, and
+  `host-tools.sh` now requires it.
+- **A VM whose graceful halt does not stop it is forced down** (#51).
+  `vm down` gave up as soon as a graceful halt left the guest running,
+  which failed a whole green test tier on a long run's slow shutdown. It
+  now forces the VM down once and judges the state after that. A VM still
+  running after the forced halt, or a state that cannot be read, still
+  fails down and keeps the slot.
+- **Concurrent ups of one machine wait for the boot under way** (#53).
+  A consumer that runs its oracle tests in parallel calls `up` from
+  several threads at once. While the first boot was under way, every later
+  caller saw a VM that was not running and booted it too. Each boot then
+  failed on the same forwarded port. `up` now takes a per-machine lock
+  around the decision to boot and reads the state afresh once it holds
+  the lock. The lock is released as soon as `up` finishes, so parallel
+  runs on a running VM do not queue.
+
 ### Added
 
 - **A consumer can declare a cache that outlives every boot** (#39).
