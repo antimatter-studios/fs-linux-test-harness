@@ -143,7 +143,53 @@ echo applied"
     return 0
 }
 
+# ONE UP AT A TIME PER MACHINE. A test process that runs its oracle tests
+# in parallel calls `up` from several threads at once; while the first
+# boot is under way the VM is not yet running, so every later caller
+# decided to boot it too, and QEMU refused the second forward of the same
+# port (christhomas/rust-fs-ext4#487). The lock is a directory, made
+# atomically, holding its owner's pid: a later `up` waits for it, then
+# reads the state afresh and finds the VM running. An owner that died
+# leaves a lock whose pid is gone, which the next caller takes over.
+UP_LOCK_WAIT_SECS="${FLTH_UP_LOCK_WAIT_SECS:-2700}"
+
+up_lock_take() {
+    local lock="$FLTH_MACHINE_DIR/up.lock" waited=0 owner
+    mkdir -p "$FLTH_MACHINE_DIR"
+    until mkdir "$lock" 2>/dev/null; do
+        owner="$(cat "$lock/pid" 2>/dev/null || true)"
+        if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+            rm -rf "$lock"
+            continue
+        fi
+        if [ "$waited" -ge "$UP_LOCK_WAIT_SECS" ]; then
+            echo "vm: another up of this machine (pid ${owner:-unknown}) has held it for ${waited}s; not booting beside it." >&2
+            exit 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "$$" > "$lock/pid"
+    trap 'rm -rf "$FLTH_MACHINE_DIR/up.lock"' EXIT
+}
+
+# Held only while up decides and boots: `run` comes through up on every
+# call, and parallel runs on a VM that is up must not queue behind each
+# other. The EXIT trap covers up's own `exit` paths.
+up_lock_drop() {
+    rm -rf "$FLTH_MACHINE_DIR/up.lock"
+    trap - EXIT
+}
+
 vm_up() {
+    local rc=0
+    up_lock_take
+    vm_up_locked || rc=$?
+    up_lock_drop
+    return "$rc"
+}
+
+vm_up_locked() {
     local state
     state="$(engine_state)"
     case "$state" in
