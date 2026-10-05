@@ -337,11 +337,34 @@ vm_down() {
     # between a leaked VM and a green run.
     engine_down || true
     # A graceful halt that does not finish -- a long run's guest slow or
-    # wedged at shutdown -- is forced before down gives up (#51). The VM
-    # is disposable at this point, so nothing is lost by forcing it.
+    # wedged at shutdown -- is forced before down gives up (#51). An
+    # ordinary boot runs on a throwaway overlay, so nothing is lost by
+    # forcing it.
+    #
+    # A PROVISIONING boot is the exception (#57): its writes are kept on
+    # the disk every later boot starts from, and killing it can leave that
+    # disk damaged -- measured once as a root filesystem with errors and a
+    # guest that stopped in its initramfs on every boot after. So the guest
+    # is synced before it is forced, and a provisioning boot that still had
+    # to be forced is destroyed: the next boot provisions again from a
+    # clean disk rather than trusting one that may be damaged.
     if [ "$(engine_state 2>/dev/null)" = running ]; then
-        echo "vm: the graceful halt left the VM running; forcing it down." >&2
-        engine_down --force || true
+        if [ -f "$(provisioning_marker)" ]; then
+            engine_run sync >/dev/null 2>&1 || true
+            echo "vm: the provisioning boot's graceful halt left it running; forcing it down." >&2
+            engine_down --force || true
+            case "$(engine_state 2>/dev/null)" in
+                stopped | absent)
+                    echo "vm: a provisioning boot that had to be forced may have left its disk damaged," >&2
+                    echo "    so the machine is destroyed; the next boot provisions again from a clean disk." >&2
+                    engine_destroy || true
+                    rm -f "$(base_record)" "$FLTH_MACHINE_DIR/setup.sha256"
+                    ;;
+            esac
+        else
+            echo "vm: the graceful halt left the VM running; forcing it down." >&2
+            engine_down --force || true
+        fi
     fi
     if ! release_if_confirmed_stopped; then
         echo "vm: halt did not leave the VM confirmed stopped." >&2
