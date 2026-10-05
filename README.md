@@ -660,9 +660,8 @@ person working in the guest: the VM stays up, and keeps the slot, until
 brew install --cask hashicorp/tap/hashicorp-vagrant
 brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd   # virtiofsd 1.14.0 or newer
 vagrant plugin install vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas
-# not published anywhere public (#8): add a copy of its .box file
-vagrant box add --name christhomas/vagrant-rpi-bookworm-arm64 --architecture arm64 \
-  path/to/rpi-arm64.box
+# the box (christhomas/vagrant-rpi-bookworm-arm64) needs no step: the first
+# boot fetches it from its public GitHub release (#8)
 ```
 
 **Linux x86_64** (a CI runner does all of this with `scripts/ci-setup-linux.sh`)
