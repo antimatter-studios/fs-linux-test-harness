@@ -127,6 +127,26 @@ check_eq "$(calls_of 'down --force')" 1 "  forcing it once"
 check_eq "$(slot_holder)" "" "  and releasing the slot, the VM confirmed stopped"
 rm -f "$FLTH_TEST_STUB/after_force_down"
 
+check_eq "$(calls_of destroy)" 0 "  and an ordinary boot's disk is thrown away by the stop, never destroyed"
+
+# A PROVISIONING boot's writes are kept on the disk every later boot
+# starts from, so killing it can leave that disk damaged, and then every
+# boot after it fails (#57: the guest stopped in its initramfs, its root
+# filesystem marked as having errors). When its graceful halt does not
+# finish, the guest is synced before it is forced, and a provisioning boot
+# that had to be forced is destroyed, so the next boot provisions again
+# from a clean disk instead of trusting one that may be damaged.
+vm up 2>/dev/null; : > "$MACHINE/provisioning"; stub_reset_calls; : > "$FLTH_TEST_STUB/scripts"
+echo running > "$FLTH_TEST_STUB/after_down"; echo stopped > "$FLTH_TEST_STUB/after_force_down"
+out="$(vm down 2>&1)"
+check_eq "$?" 0 "a provisioning boot whose halt had to be forced is still a clean down"
+check_eq "$(grep -cx sync "$FLTH_TEST_STUB/scripts" | tr -d ' ')" 1 "  the guest is synced before it is forced"
+check_eq "$(calls_of destroy)" 1 "  its disk, which the kill may have damaged, is destroyed"
+check_contains "$out" "provisions again" "  saying the next boot provisions again"
+check_eq "$(slot_holder)" "" "  and the slot is released, the VM being gone"
+rm -f "$FLTH_TEST_STUB/after_down" "$FLTH_TEST_STUB/after_force_down"
+stub_state absent
+
 vm up 2>/dev/null; echo running > "$FLTH_TEST_STUB/after_down"; echo running > "$FLTH_TEST_STUB/after_force_down"
 out="$(vm down 2>&1)"
 check_eq "$?" 1 "a VM that even a forced halt leaves running fails down"
