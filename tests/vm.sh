@@ -116,10 +116,22 @@ check_eq "$?" 0 "down stops the VM"
 check_eq "$(slot_holder)" "" "and, confirmed stopped, releases the slot"
 check_eq "$([ -f "$MACHINE/keep-running" ] && echo present || echo cleared)" cleared "and clears the hold"
 
-vm up 2>/dev/null; echo running > "$FLTH_TEST_STUB/after_down"
+# A guest whose graceful halt does not finish (a long run's guest, slow or
+# wedged at shutdown) is forced down before down gives up, and a forced
+# halt that stops it is a clean down (#51).
+vm up 2>/dev/null; stub_reset_calls
+echo running > "$FLTH_TEST_STUB/after_down"; echo stopped > "$FLTH_TEST_STUB/after_force_down"
 out="$(vm down 2>&1)"
-check_eq "$?" 1 "a halt that leaves the VM running fails down"
+check_eq "$?" 0 "a halt that leaves the VM running is forced, and a forced stop is a clean down"
+check_eq "$(calls_of 'down --force')" 1 "  forcing it once"
+check_eq "$(slot_holder)" "" "  and releasing the slot, the VM confirmed stopped"
+rm -f "$FLTH_TEST_STUB/after_force_down"
+
+vm up 2>/dev/null; echo running > "$FLTH_TEST_STUB/after_down"; echo running > "$FLTH_TEST_STUB/after_force_down"
+out="$(vm down 2>&1)"
+check_eq "$?" 1 "a VM that even a forced halt leaves running fails down"
 check_eq "$(slot_holder)" vm-test "and keeps the slot"
+rm -f "$FLTH_TEST_STUB/after_force_down"
 
 echo unknown > "$FLTH_TEST_STUB/after_down"
 out="$(vm down 2>&1)"
