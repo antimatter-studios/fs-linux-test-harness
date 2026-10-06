@@ -11,7 +11,25 @@ lifecycle:
   after_all:
     - 'FLTH_CONFIG=tests/smoke-consumer/fs-linux-test-harness.toml ./scripts/vm.sh reap'
 
+vars:
+  # The one sibling: rust-fs-core, whose family scripts this repository runs
+  # in place rather than keeping copies of. A URL beside the ref, so nothing
+  # rebuilds one from a repo name.
+  FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
+  FS_CORE_REF: v0.3.3
+
 tasks:
+  siblings:
+    desc: Check out ../rust-fs-core at FS_CORE_REF, whose agents-core check `chore check` runs in place
+    cmds:
+      - |
+        set -eu
+        if [ -e ../rust-fs-core ]; then
+          echo "siblings: ../rust-fs-core is already checked out, left alone"
+        else
+          git clone --quiet --depth 1 --branch '{{.FS_CORE_REF}}' '{{.FS_CORE_URL}}' ../rust-fs-core
+        fi
+
   check:
     desc: 'VM-free self-test: bash -n, shellcheck, and every unit test (CI job: unit)'
     cmds: ['./tests/run.sh']

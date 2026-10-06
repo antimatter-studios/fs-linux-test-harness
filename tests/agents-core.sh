@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
 #
-# agents-core.sh — scripts/agents-core-check.sh passes this repository's
+# agents-core.sh — rust-fs-core's scripts/agents-core-check.sh, run in place,
+# passes this repository's
 # AGENTS.md, and REFUSES a modified, unmarked, mis-declared or absent one.
 # A gate that cannot fail is indistinguishable from no gate.
 #
-# The checker runs against copies in a sandbox, so the committed AGENTS.md
+# The checker runs against copies of the guide in a sandbox, so the committed AGENTS.md
 # is never edited, even by a test killed halfway.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 
-CHECK="$REPO/scripts/agents-core-check.sh"
-if [ ! -x "$CHECK" ] || [ ! -f "$REPO/AGENTS.md" ]; then
-    bad "scripts/agents-core-check.sh and AGENTS.md exist"
+CHECK="$REPO/../rust-fs-core/scripts/agents-core-check.sh"
+if [ ! -f "$CHECK" ] || [ ! -f "$REPO/AGENTS.md" ]; then
+    bad "../rust-fs-core/scripts/agents-core-check.sh and AGENTS.md exist (chore siblings)"
     finish agents-core
 fi
 
-check_eq "$("$CHECK" >/dev/null 2>&1; echo $?)" 0 "the committed AGENTS.md carries the shared block, unmodified"
+check_eq "$(FS_CORE_CALLER="$REPO" bash "$CHECK" >/dev/null 2>&1; echo $?)" 0 "the committed AGENTS.md carries the shared block, unmodified"
 check_eq "$(grep -c '^@AGENTS.md$' "$REPO/CLAUDE.md" 2>/dev/null | tr -d ' ')" 1 "CLAUDE.md imports AGENTS.md"
 
 # run_on <awk program|ABSENT> — the checker against an edited copy.
 run_on() {
     local tree="$SANDBOX/t$RANDOM$RANDOM"
-    mkdir -p "$tree/scripts"
-    cp "$CHECK" "$tree/scripts/"
+    mkdir -p "$tree"
     [ "$1" = ABSENT ] || awk "$1" "$REPO/AGENTS.md" > "$tree/AGENTS.md"
-    "$tree/scripts/agents-core-check.sh" >/dev/null 2>&1
+    FS_CORE_CALLER="$tree" bash "$CHECK" >/dev/null 2>&1
     echo $?
 }
 
