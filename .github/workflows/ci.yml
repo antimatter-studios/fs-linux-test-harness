@@ -47,6 +47,9 @@ jobs:
           bash --version | head -1
           shellcheck --version | sed -n 2p
           ruby --version
+      # tests/agents-core.sh runs rust-fs-core's agents-core check in place.
+      - name: chore siblings
+        run: chore siblings
       - name: chore check
         run: chore check
 

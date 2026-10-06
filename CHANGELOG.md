@@ -6,6 +6,13 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **The agents-core check runs in place from rust-fs-core.** The copy in
+  `scripts/agents-core-check.sh` is gone; `tests/agents-core.sh` runs
+  `../rust-fs-core/scripts/agents-core-check.sh`, which `chore siblings`
+  checks out at `FS_CORE_REF` (rust-fs-core 0.3.3, #212).
+
 ## v0.4.0 — 2026-10-05
 
 ### Fixed
