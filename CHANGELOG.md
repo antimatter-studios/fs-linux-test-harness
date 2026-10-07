@@ -13,6 +13,12 @@ changes allowed in minor versions until 1.0.
   `../rust-fs-core/scripts/agents-core-check.sh`, which `chore siblings`
   checks out at `FS_CORE_REF` (rust-fs-core 0.3.3, #212).
 
+### Fixed
+
+- **A transient HTTP 5xx from the chore release download no longer fails a CI
+  job.** The install-chore action retries both downloads up to five times on
+  any error; the checksum check still guards what was fetched.
+
 ## v0.4.0 — 2026-10-05
 
 ### Fixed
