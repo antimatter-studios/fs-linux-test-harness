@@ -53,8 +53,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Install chore
-        run: scripts/ci-install-chore.sh
+      - uses: ./.github/actions/install-chore
+        with:
+          version: ${{ env.CHORE_VERSION }}
       - name: chore siblings
         run: chore siblings
       - name: Classify the change
