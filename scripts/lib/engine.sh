@@ -33,6 +33,10 @@
 #                              ([cache] size) has it at
 #                              FLTH_CACHE_GUEST on EVERY boot, and what
 #                              is written there is kept either way.
+#   engine_console_log         print the path of the file holding the
+#                              console of the latest boot, failed or
+#                              not. It may be missing or empty: a boot
+#                              that never started a VM wrote nothing.
 #   engine_down [--force]      ask the VM to stop. Its exit status is
 #                              NOT trusted; callers confirm with
 #                              engine_state.

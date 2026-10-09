@@ -15,6 +15,17 @@ changes allowed in minor versions until 1.0.
 
 ### Fixed
 
+- **A guest that fails to boot shows its console** (#61). The QEMU
+  provider sends the guest's serial console to a Unix socket nothing
+  reads, so a boot that never answered SSH ended, ten minutes later, with
+  Vagrant's "Timed out while waiting for the machine to boot" and no way
+  to tell a kernel panic from a hung boot from a dead network. The
+  Vagrantfile now has QEMU log that console (`-set
+  chardev.ser0.logfile=`, which keeps the provider's socket) to
+  `console.log` in the machine directory, afresh on every boot and on
+  every host, and `up` prints its last 60 lines, each labelled
+  `[console]`, to stderr after every failed boot attempt. The engine
+  interface gains `engine_console_log`, which names the file.
 - **A transient HTTP 5xx from the chore release download no longer fails a CI
   job.** The install-chore action retries both downloads up to five times on
   any error; the checksum check still guards what was fetched.

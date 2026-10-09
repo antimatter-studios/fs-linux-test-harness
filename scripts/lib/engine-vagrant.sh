@@ -40,6 +40,8 @@ engine_prepare() {
     # Vagrantfile never sees one a previous consumer exported.
     export FLTH_VM_CACHE_DISK=""
     [ -n "$CFG_cache_size" ] && FLTH_VM_CACHE_DISK="$(engine_vagrant_cache_path)"
+    export FLTH_VM_CONSOLE_LOG
+    FLTH_VM_CONSOLE_LOG="$(engine_console_log)"
     mkdir -p "$FLTH_MACHINE_DIR" "$FLTH_SHARE_HOST" "$(dirname "$(engine_ssh_control)")"
 
     # UEFI firmware for an arm64 guest on a Linux host. The QEMU provider
@@ -58,6 +60,10 @@ engine_prepare() {
         export FLTH_QEMU_DIR="$dir"
     fi
 }
+
+# The guest's serial console, which the Vagrantfile has QEMU log here on
+# every boot (#61).
+engine_console_log() { printf '%s/console.log\n' "$FLTH_MACHINE_DIR"; }
 
 engine_vagrant_host_is_arm() {
     case "$(uname -m)" in arm64 | aarch64) return 0 ;; esac
@@ -238,6 +244,9 @@ engine_up() {
     export FLTH_VM_SSH_PORT="$port"
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
+    # QEMU starts the log afresh, but a boot that fails before QEMU starts
+    # must not leave the last boot's console to be shown as its own.
+    rm -f "$(engine_console_log)"
     FLTH_VM_DISPOSABLE="$disposable" TMPDIR="$tmp" engine_vagrant up --provider qemu >&2 || return
     engine_ssh_config >/dev/null
 }

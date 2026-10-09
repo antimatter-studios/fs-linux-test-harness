@@ -104,6 +104,7 @@ jobs:
           export VAGRANT_DOTFILE_PATH="$RUNNER_TEMP/machine/vagrant"
           export FLTH_SHARE_DIR="$RUNNER_TEMP/share"
           export FLTH_REPO_DIR="$GITHUB_WORKSPACE"
+          export FLTH_VM_CONSOLE_LOG="$RUNNER_TEMP/machine/console.log"
           mkdir -p "$VAGRANT_DOTFILE_PATH" "$FLTH_SHARE_DIR"
           cd vagrant
           vagrant validate

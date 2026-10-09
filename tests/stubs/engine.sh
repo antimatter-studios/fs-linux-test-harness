@@ -13,6 +13,7 @@
 #   after_force_down state after engine_down --force (default: after_down's)
 #   after_destroy  state after engine_destroy (default absent)
 #   ps_unreadable  present: engine_alive answers 2
+#   console        what every boot, failed or not, writes to its console log
 #
 # THE DISK. The guest's setup-stamp directory is $STUB/guest-lib
 # for the length of a boot, and $STUB/disk is what the machine's disk
@@ -38,6 +39,8 @@ engine_prepare() {
 
 engine_identity() { printf '%s\n' "$FLTH_MACHINE_DIR/stub"; }
 
+engine_console_log() { printf '%s\n' "$STUB/console.log"; }
+
 engine_state() {
     stub_log state
     cat "$STUB/state"
@@ -48,6 +51,8 @@ engine_up() {
     [ "${1:-}" = --persist ] && persist=1
     n="$(stub_read up_failures 0)"
     stub_log "up${1:+ $1}"
+    rm -f "$STUB/console.log"
+    [ -f "$STUB/console" ] && cp "$STUB/console" "$STUB/console.log"
     if [ "$n" -gt 0 ]; then
         echo $((n - 1)) > "$STUB/up_failures"
         stub_read after_failed_up stopped > "$STUB/state"

@@ -50,6 +50,8 @@ SLOT="$FLTH_HARNESS/scripts/vm-slot.sh"
 HOST_TOOLS="$FLTH_HARNESS/scripts/host-tools.sh"
 BOOT_ATTEMPTS=3
 BOOT_RETRY_WAIT=5
+# How much of the guest's console a failed boot prints (show_console).
+CONSOLE_TAIL_LINES=60
 
 usage() {
     sed -n '3,19p' "$SELF" | sed 's/^# \{0,1\}//'
@@ -237,6 +239,22 @@ vm_up_locked() {
     forget_disk_if_setup_ran
 }
 
+# THE GUEST'S CONSOLE, WHEN A BOOT FAILS (#61). A boot that never
+# answers SSH times out saying only that; what the guest printed on its
+# serial console (a kernel panic, a root that never mounted, a network
+# that never came up) is the one account of why. Its tail goes to stderr,
+# every line labelled, so a CI log keeps it beside the failure.
+show_console() {
+    local log
+    log="$(engine_console_log)"
+    if [ ! -s "$log" ]; then
+        echo "[vm] no console output in $log: the guest wrote nothing to its serial console" >&2
+        return 0
+    fi
+    echo "[vm] the guest's console, the last $CONSOLE_TAIL_LINES lines of $log:" >&2
+    tail -n "$CONSOLE_TAIL_LINES" "$log" | tr -d '\r' | sed 's/^/[console] /' >&2
+}
+
 # Boot, retrying.
 #
 # RETRIED, because the forwarded SSH port is not always free the instant
@@ -247,6 +265,7 @@ vm_up_locked() {
 boot_engine() {
     local attempt=1
     while ! engine_up "$@"; do
+        show_console
         if [ "$attempt" -ge "$BOOT_ATTEMPTS" ]; then
             echo "vm: the VM would not boot after $BOOT_ATTEMPTS attempts." >&2
             release_if_confirmed_stopped || true
