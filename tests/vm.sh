@@ -108,6 +108,32 @@ check_eq "$(slot_holder)" vm-test "a failed boot whose state cannot be read KEEP
 check_contains "$out" "the slot is kept rather than" "and says so"
 rm -f "$FLTH_TEST_STUB/after_failed_up"; free_slot
 
+# A boot that never answers SSH times out saying only that, so the
+# guest's console is the one account of why: a kernel panic, a root that
+# never mounted, a network that never came up (#61). Every failed attempt
+# shows its tail, labelled, on stderr where a CI log keeps it.
+seq -f 'console line %g' 1 100 > "$FLTH_TEST_STUB/console"
+stub_state absent; echo 3 > "$FLTH_TEST_STUB/up_failures"; stub_reset_calls
+out="$(vm up 2>&1)"
+check_contains "$out" "[console] console line 100" "a failed boot prints the guest's console, each line labelled"
+check_contains "$out" "[console] console line 41" "  its last 60 lines"
+check_lacks "$out" "console line 40" "  and no more"
+check_contains "$out" "$FLTH_TEST_STUB/console.log" "  naming the file it came from"
+check_eq "$(grep -c '^\[console\] console line 100$' <<<"$out")" 3 "  after every failed attempt, the last one included"
+free_slot
+
+rm -f "$FLTH_TEST_STUB/console"
+stub_state absent; echo 1 > "$FLTH_TEST_STUB/up_failures"
+out="$(vm up 2>&1)"
+check_contains "$out" "no console output" "a failed boot that left no console says so"
+vm down 2>/dev/null
+
+seq -f 'console line %g' 1 5 > "$FLTH_TEST_STUB/console"
+out="$(vm up 2>&1)"
+check_lacks "$out" "[console]" "a boot that succeeds prints no console"
+vm down 2>/dev/null
+rm -f "$FLTH_TEST_STUB/console"; free_slot
+
 # --- down ---------------------------------------------------------------
 
 stub_state absent; vm up 2>/dev/null; vm hold 2>/dev/null

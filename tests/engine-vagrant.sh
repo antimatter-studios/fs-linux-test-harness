@@ -209,6 +209,19 @@ engine_up --persist 2>/dev/null
 check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=0" "up --persist boots a machine whose writes reach its disk"
 check_eq "${FLTH_VM_DISPOSABLE:-unset}" 1 "and only that boot: the next Vagrant call is back to disposable"
 
+# --- the serial console (#61) -----------------------------------------------
+
+# The Vagrantfile logs the guest's console here; a failed boot prints it.
+# Every boot starts it afresh, and one that never reached QEMU must not
+# show the last boot's console as if it were its own.
+check_eq "${FLTH_VM_CONSOLE_LOG:-unset}" "$FLTH_MACHINE_DIR/console.log" \
+    "the Vagrantfile is told to log the console in the machine directory"
+check_eq "$(engine_console_log)" "$FLTH_MACHINE_DIR/console.log" "and engine_console_log names the same file"
+echo "the last boot's console" > "$FLTH_MACHINE_DIR/console.log"
+engine_up 2>/dev/null
+check_eq "$(test -e "$FLTH_MACHINE_DIR/console.log" && echo stale || echo cleared)" cleared \
+    "a boot clears the last boot's console before it starts"
+
 # --- engine_copy ------------------------------------------------------------
 
 echo data > "$SANDBOX/img.bin"

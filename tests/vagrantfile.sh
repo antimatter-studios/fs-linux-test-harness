@@ -101,6 +101,7 @@ field() { printf '%s' "$json" | ruby -rjson -e 'd = JSON.parse(STDIN.read); v = 
 export FLTH_VM_NAME=rust-fs-demo FLTH_VM_MEMORY=2G FLTH_VM_CPUS=2 FLTH_VM_DISK=16G FLTH_VM_SSH_PORT=50122
 export FLTH_VM_DEADLINE_MINUTES=480 FLTH_SHARE_DIR="$SANDBOX/share" FLTH_QEMU_DIR="$SANDBOX/fw"
 export FLTH_REPO_DIR="$SANDBOX/repo" FLTH_VM_DISPOSABLE=1 FLTH_VM_CACHE_DISK=""
+export FLTH_VM_CONSOLE_LOG="$SANDBOX/machine/console.log"
 
 P=vm.provider.qemu
 
@@ -173,6 +174,22 @@ check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boo
 evaluate darwin23 arm64 0 vagrant-qemu
 check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS with only the stock plugin is refused"
 
+# --- the serial console (#61) -----------------------------------------------
+# The provider sends the guest's serial console, where its kernel writes,
+# to a Unix socket nobody reads, so a boot that never answers SSH said
+# nothing about why. QEMU's own log of that chardev (`ser0`, in every
+# provider build) keeps it in the machine directory on every host.
+for h in "linux-gnu x86_64 1 vagrant-qemu" "linux-gnu aarch64 1 vagrant-qemu" \
+    "darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas"; do
+    # shellcheck disable=SC2086  # four words, on purpose
+    set -- $h
+    evaluate "$@"
+    args="$(field config/$P.extra_qemu_args)"
+    check_contains "$args" '"-set","chardev.ser0.logfile='"$FLTH_VM_CONSOLE_LOG"'"' \
+        "$1 $2: the console is logged to FLTH_VM_CONSOLE_LOG"
+    check_contains "$args" '"-set","chardev.ser0.logappend=off"' "  afresh on every boot"
+done
+
 # --- the declared cache (#39) -----------------------------------------------
 # A disk of its own, attached through extra_qemu_args and NOT through the
 # provider's drive list: extra_drive_args (snapshot=on on a disposable
@@ -203,7 +220,7 @@ FLTH_VM_CACHE_DISK="" evaluate linux-gnu x86_64 1 vagrant-qemu
 check_lacks "$(field config/$P.extra_qemu_args)" "flth_cache" "no cache declared: no cache drive"
 check_lacks "$(field config/vm.provision)" "mount-cache" "  and nothing mounted at /cache"
 FLTH_VM_CACHE_DISK="" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
-check_eq "$(field config/$P.extra_qemu_args)" null "  on macOS either"
+check_lacks "$(field config/$P.extra_qemu_args)" "flth_cache" "  on macOS either"
 
 evaluate darwin23 x86_64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
 check_contains "$(field error)" "supports macOS arm64, Linux aarch64 and Linux x86_64" "an Intel Mac is refused by name"
@@ -233,6 +250,9 @@ refuse_env FLTH_VM_DISPOSABLE "yes"
 refuse_env FLTH_VM_DISPOSABLE "1,file=/etc/shadow"
 refuse_env FLTH_VM_CACHE_DISK "relative/cache.img"
 refuse_env FLTH_VM_CACHE_DISK "/tmp/cache.img,snapshot=on"
+refuse_env FLTH_VM_CONSOLE_LOG "relative/console.log"
+refuse_env FLTH_VM_CONSOLE_LOG "/tmp/console.log
+-drive file=/etc/shadow"
 
 unset FLTH_VM_NAME
 evaluate linux-gnu x86_64 1 vagrant-qemu
