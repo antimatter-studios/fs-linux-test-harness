@@ -162,7 +162,7 @@ check_eq "$(field config/$P.machine)" "virt,accel=hvf,highmem=on" "  HVF"
 check_eq "$(field config/notify_forwarder.enable)" true "  notify forwarder enabled (disabling it breaks boot)"
 check_contains "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  shares over virtiofs"
 check_contains "$(field config/vm.synced_folder)" '"/repo"' "  the consumer repository among them"
-check_eq "$(field config/$P.extra_qemu_args)" null "  no 9p"
+check_lacks "$(field config/$P.extra_qemu_args)" "-virtfs" "  no 9p"
 check_eq "$(field config/$P.virtiofs_guest_uid)" 1001 "  virtiofs uid matches the box's vagrant user"
 check_eq "$(field config/$P.virtiofsd_bin)" null \
     "  virtiofsd is the provider's default, the tap's released build, never a hand-placed pre-release binary"

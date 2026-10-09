@@ -551,13 +551,33 @@ it the filesystem its own root uses; the harness names no filesystem and
 knows nothing about what is kept there. A consumer that declares none
 gets no `/cache`, and nothing a run writes outlives it.
 
+**A boot that fails shows the guest's console.** The provider sends the
+guest's serial console, where its kernel and init write, to a socket
+nothing reads, so a boot that never answers SSH used to end with
+Vagrant's "Timed out while waiting for the machine to boot" and nothing
+else. QEMU now also logs that console to
+`machines/<project>/console.log`, afresh on every boot, on every host.
+When a boot attempt fails, `up` prints its last 60 lines to stderr
+before it retries or gives up, each labelled, so a CI log tells a kernel
+panic from a root that never mounted from a network that never came up.
+For a guest whose kernel could not mount its root, it reads:
+
+```text
+[vm] the guest's console, the last 60 lines of <FLTH_CACHE_DIR>/machines/<project>/console.log:
+[console] [    2.481193] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+[console] ...
+[vm] boot failed, retrying in 5s (attempt 1 of 3)...
+```
+
+The file stays after a boot, failed or not, until the next one starts.
+
 ### The engine interface
 
 Everything the harness decides is written against a small interface
 ([`scripts/lib/engine.sh`](./scripts/lib/engine.sh)): `engine_prepare`,
 `engine_identity`, `engine_state` (running / stopped / absent /
 **unknown**), `engine_up`, `engine_down [--force]`, `engine_destroy`,
-`engine_run`, `engine_copy`, `engine_alive`. Vagrant is the only
+`engine_run`, `engine_copy`, `engine_alive`, `engine_console_log`. Vagrant is the only
 implementation ([`engine-vagrant.sh`](./scripts/lib/engine-vagrant.sh));
 another engine is one file. Two properties an engine must keep: a state
 it could not read is `unknown`, never `stopped`; and `engine_alive` is a

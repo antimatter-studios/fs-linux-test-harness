@@ -92,6 +92,13 @@ check_eq "$(slot_holder)" flth-smoke "and holds the machine-wide slot"
 check_eq "$("$VM" run hostname 2>/dev/null)" flth-smoke "the guest's hostname is the project name"
 check_contains "$("$VM" run 'uname -a' 2>/dev/null)" "Linux flth-smoke" "uname -a runs in the guest"
 check_contains "$("$VM" run 'mkfs.ext4 -V 2>&1 | head -1' 2>/dev/null)" "mke2fs" "the consumer's setup installed its tooling inside the VM"
+# The guest's serial console is logged in the machine directory, for a
+# failed boot to show (#61). The oracle is the guest's own kernel: the
+# release it reports is the one its boot banner wrote there.
+console_log="$("$VM" config | sed -n 's/^machine=//p')/console.log"
+release="$("$VM" run 'uname -r' 2>/dev/null)"
+check_contains "$(cat "$console_log" 2>/dev/null)" "Linux version $release" \
+    "the console log in the machine directory holds the guest kernel's boot banner"
 check_eq "$("$VM" run 'test -r /run/systemd/shutdown/scheduled && echo armed' 2>/dev/null)" armed "the guest's own poweroff deadline is armed"
 "$VM" run 'shutdown -c; rm -f /run/fs-linux-test-harness-rearmed' 2>/dev/null
 check_eq "$("$VM" run 'test -r /run/systemd/shutdown/scheduled && echo armed' 2>/dev/null)" armed \

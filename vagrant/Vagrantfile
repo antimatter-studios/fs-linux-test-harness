@@ -78,6 +78,7 @@ deadline  = flth_env("FLTH_VM_DEADLINE_MINUTES", /\A[1-9][0-9]{0,5}\z/, "a posit
 share_dir = flth_env("FLTH_SHARE_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
 repo_dir  = flth_env("FLTH_REPO_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
 disposable = flth_env("FLTH_VM_DISPOSABLE", /\A[01]\z/, "1 (a disposable boot) or 0 (a provisioning boot)") == "1"
+console_log = flth_env("FLTH_VM_CONSOLE_LOG", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
 
 share_guest = "/share"
 share_tag   = "flth_share"
@@ -90,6 +91,19 @@ share_tag   = "flth_share"
 # says what to run.
 repo_guest = "/repo"
 repo_tag   = "flth_repo"
+
+# THE GUEST'S SERIAL CONSOLE, KEPT IN A FILE (#61). The provider sends
+# it to a Unix socket nobody reads (`-chardev socket,id=ser0` and
+# `-serial chardev:ser0`, in the stock provider and the macOS fork alike),
+# and the guest's kernel writes there (console=ttyS0 on the Linux box).
+# So a boot that never answered SSH said nothing about why. `-set` adds
+# QEMU's own log to that chardev rather than replacing it: the provider's
+# socket stays, QEMU writes the log whether or not anything is connected
+# to it, and it starts afresh with each QEMU. It works because the
+# provider defines ser0 before it appends extra_qemu_args. The value is
+# not split on commas, so the path needs no escaping. scripts/vm.sh
+# prints its tail when a boot fails.
+console_args = ["-set", "chardev.ser0.logfile=#{console_log}", "-set", "chardev.ser0.logappend=off"]
 
 # THE DECLARED CACHE (#39): a raw disk image scripts/lib/engine-vagrant.sh
 # makes in the machine directory when the consumer's config has a [cache]
@@ -178,8 +192,8 @@ Vagrant.configure("2") do |config|
   config.vm.box_check_update = false
   config.vm.hostname = vm_name
 
-  # The provider daemonizes QEMU and sends the console to a socket, so a
-  # failed boot prints nothing; give a cold boot room.
+  # A cold boot takes time. One that does not finish in it prints the
+  # guest's console (console_args, above), not just the timeout.
   config.vm.boot_timeout = 600
 
   config.vm.provider "qemu" do |qe|
@@ -230,7 +244,7 @@ Vagrant.configure("2") do |config|
       # has just set. Drop it only once the port switches credentials per
       # thread.
       qe.extra_virtiofsd_args = ["--thread-pool-size=1", "--xattr"]
-      qe.extra_qemu_args = cache_args unless cache_args.empty?
+      qe.extra_qemu_args = console_args + cache_args
     when :linux_arm64
       qe.arch = "aarch64"
       qe.machine = "virt,accel=kvm,highmem=on"
@@ -263,7 +277,7 @@ Vagrant.configure("2") do |config|
       qe.extra_qemu_args = %W(
         -virtfs local,path=#{share_dir.gsub(",", ",,")},mount_tag=#{share_tag},security_model=mapped-xattr,id=#{share_tag}
         -virtfs local,path=#{repo_dir.gsub(",", ",,")},mount_tag=#{repo_tag},security_model=none,id=#{repo_tag}
-      ) + cache_args
+      ) + console_args + cache_args
     end
   end
 
