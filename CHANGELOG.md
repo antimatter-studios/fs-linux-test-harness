@@ -6,6 +6,8 @@ changes allowed in minor versions until 1.0.
 
 ## [Unreleased]
 
+## v0.4.1 — 2026-10-09
+
 ### Changed
 
 - **The agents-core check runs in place from rust-fs-core.** The copy in

@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/antimatter-studios/fs-linux-test-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/antimatter-studios/fs-linux-test-harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Release: v0.4.0](https://img.shields.io/badge/release-v0.4.0-blue.svg)](./CHANGELOG.md)
+[![Release: v0.4.1](https://img.shields.io/badge/release-v0.4.1-blue.svg)](./CHANGELOG.md)
 
 ## What is this
 
@@ -66,7 +66,7 @@ consumer's `siblings` task.
 ```yaml
 # chores.yml
 vars:
-  LINUX_HARNESS_REF: v0.4.0
+  LINUX_HARNESS_REF: v0.4.1
 # ... and add to the siblings task's list:
 #   fs-linux-test-harness https://github.com/antimatter-studios/fs-linux-test-harness.git '{{.LINUX_HARNESS_REF}}'
 ```
