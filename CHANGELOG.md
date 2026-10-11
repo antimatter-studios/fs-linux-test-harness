@@ -4,6 +4,9 @@ All notable changes to fs-linux-test-harness land here. The format
 loosely follows Keep a Changelog; versions follow semver, with breaking
 changes allowed in minor versions until 1.0.
 
+Changes not yet released are fragments in [`changelog.d/`](changelog.d/), one per
+pull request; a release gathers them into a section here.
+
 ## [Unreleased]
 
 ### Added
