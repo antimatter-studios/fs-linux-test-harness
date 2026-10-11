@@ -407,6 +407,7 @@ chose.
 | `[vm] disk` | string | `32G` | Guest disk size, e.g. `16G`. |
 | `[vm] ssh_port` | integer | `50122` | Host port forwarded to the guest's SSH when it is free at boot; when another socket holds it, the boot forwards a free port the kernel hands out instead, and says so. |
 | `[vm] deadline_minutes` | integer | `480` | The guest powers itself off after this long **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. |
+| `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. A consumer needing both runs a second config with its own `[project] name` and `[vm] ssh_port` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
 
 Paths may contain only letters, digits, `.`, `_`, `-` and `/`, must be
 relative, and must not leave the repository.

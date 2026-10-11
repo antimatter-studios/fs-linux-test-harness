@@ -76,10 +76,17 @@ rm -f "$(dirname "$0")/.generic-scripts.out"
 
 # The CI box cache key is derived from the Vagrantfile's pin, so a box
 # bump re-keys the cache rather than restoring the old box under a new pin.
-box_version="$(sed -n 's/^ *config\.vm\.box_version = "\([^"]*\)"$/\1/p' "$REPO/vagrant/Vagrantfile")"
-check_eq "$("$REPO/scripts/ci-setup-linux.sh" --box-cache-key)" \
-    "vagrant-box-cloud-image-debian-12-$box_version-amd64" \
+# From a directory with no consumer config above it, so the key is the
+# default guest's and not whichever repository holds this checkout.
+nowhere="$(mktemp -d)"
+pinned() { grep -E "^ *\"$1\" => " "$REPO/vagrant/Vagrantfile" | sed 's/.*", "\([^"]*\)"\].*/\1/'; }
+check_eq "$(cd "$nowhere" && "$REPO/scripts/ci-setup-linux.sh" --box-cache-key)" \
+    "vagrant-box-cloud-image-debian-12-$(pinned debian-12)-amd64" \
     "ci-setup-linux.sh keys the box cache on the box and version the Vagrantfile pins"
+check_eq "$(cd "$nowhere" && FLTH_VM_GUEST=debian-13 "$REPO/scripts/ci-setup-linux.sh" --box-cache-key)" \
+    "vagrant-box-cloud-image-debian-13-$(pinned debian-13)-amd64" \
+    "  and on the debian-13 box for a consumer whose guest that is"
+rmdir "$nowhere"
 check_eq "$(grep -c 'scripts/ci-setup-linux.sh' "$REPO/.github/workflows/ci.yml" | tr -d ' ')" 1 \
     "the harness's own smoke job sets its runner up with the script consumers use"
 

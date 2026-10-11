@@ -83,6 +83,7 @@ flth_config_key_type() {
         vm.disk)             echo string ;;
         vm.ssh_port)         echo integer ;;
         vm.deadline_minutes) echo integer ;;
+        vm.guest)            echo string ;;
         share.dir)           echo string ;;
         setup.script)        echo string ;;
         test.command)        echo string ;;
@@ -111,6 +112,9 @@ flth_config_load() {
     CFG_vm_disk="32G"
     CFG_vm_ssh_port="50122"
     CFG_vm_deadline_minutes="480"
+    # Which pinned guest boots: the Debian release, never a box name, so
+    # every consumer naming one boots exactly the box the harness pins.
+    CFG_vm_guest="debian-12"
     CFG_share_dir=".vm-share"
     CFG_setup_script=""
     # shellcheck disable=SC2034  # read by vm.sh
@@ -220,6 +224,11 @@ flth_config_validate() {
         { flth_config_error "$file: [vm] ssh_port must be between 1024 and 65535, got $CFG_vm_ssh_port"; return 1; }
     { [ "${#CFG_vm_deadline_minutes}" -le 6 ] && [ "$CFG_vm_deadline_minutes" -ge 1 ]; } ||
         { flth_config_error "$file: [vm] deadline_minutes must be a positive integer of at most six digits, got $CFG_vm_deadline_minutes"; return 1; }
+
+    case "$CFG_vm_guest" in
+        debian-12 | debian-13) ;;
+        *) flth_config_error "$file: [vm] guest must be debian-12 or debian-13, got '$CFG_vm_guest'"; return 1 ;;
+    esac
 
     flth_config_relative_path "$file" "[share] dir" "$CFG_share_dir" || return 1
 
