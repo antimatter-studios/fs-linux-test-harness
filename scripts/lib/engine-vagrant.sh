@@ -32,6 +32,7 @@ engine_prepare() {
     export FLTH_VM_DISK="$CFG_vm_disk"
     export FLTH_VM_SSH_PORT="$CFG_vm_ssh_port"
     export FLTH_VM_DEADLINE_MINUTES="$CFG_vm_deadline_minutes"
+    export FLTH_VM_GUEST="$CFG_vm_guest"
     export FLTH_SHARE_DIR="$FLTH_SHARE_HOST"
     # Every Vagrant command evaluates the Vagrantfile, which requires it;
     # only `up` acts on it, and engine_up --persist overrides it there.
