@@ -32,8 +32,12 @@ expect() {
     FS_CORE_CALLER="$REPO" bash "$CHECK" >/dev/null 2>&1
     local rc=$?
     case "$want" in
-        zero)    [ "$rc" -eq 0 ] && ok "$what" || bad "$what: expected exit 0, got $rc" ;;
-        nonzero) [ "$rc" -ne 0 ] && ok "$what" || bad "$what: expected non-zero, got $rc" ;;
+        zero)
+            if [ "$rc" -eq 0 ]; then ok "$what"; else bad "$what: expected exit 0, got $rc"; fi
+            ;;
+        nonzero)
+            if [ "$rc" -ne 0 ]; then ok "$what"; else bad "$what: expected non-zero, got $rc"; fi
+            ;;
     esac
 }
 
