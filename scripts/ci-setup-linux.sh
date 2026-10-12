@@ -27,6 +27,9 @@
 # Environment (defaults are the pins the harness is tested with):
 #   FLTH_VAGRANT_VERSION        2.4.9
 #   FLTH_VAGRANT_QEMU_VERSION   0.6.3
+#   FLTH_VM_GUEST               the guest whose box is cached: the consumer's
+#                               `[vm] guest`, read from the config found from
+#                               the working directory, or debian-12 without one
 #
 # It uses sudo and apt-get and changes the machine: it is for disposable
 # CI runners, not for a workstation (see README "Host setup").
@@ -36,14 +39,34 @@ VAGRANT_VERSION="${FLTH_VAGRANT_VERSION:-2.4.9}"
 VAGRANT_QEMU_VERSION="${FLTH_VAGRANT_QEMU_VERSION:-0.6.3}"
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-# The box the Vagrantfile pins for Linux hosts, read from the Vagrantfile
-# itself so a cache key cannot name a box the harness no longer boots.
+# The guest whose box this runner caches: FLTH_VM_GUEST, else the
+# consumer's `[vm] guest`, else debian-12, every guest's default.
+ci_guest() {
+    if [ -n "${FLTH_VM_GUEST:-}" ]; then
+        echo "$FLTH_VM_GUEST"
+        return
+    fi
+    local config
+    # shellcheck source=lib/config.sh
+    . "$HARNESS/scripts/lib/config.sh"
+    if config="$(flth_find_config 2>/dev/null)" && flth_config_load "$config" 2>/dev/null; then
+        echo "$CFG_vm_guest"
+    else
+        echo debian-12
+    fi
+}
+
+# The box the Vagrantfile pins for that guest on Linux hosts, read from the
+# Vagrantfile itself so a cache key cannot name a box the harness no
+# longer boots.
 box_cache_key() {
-    local box box_version
-    box="$(sed -n 's/^ *config\.vm\.box = "\(cloud-image[^"]*\)"$/\1/p' "$HARNESS/vagrant/Vagrantfile" | head -1)"
-    box_version="$(sed -n 's/^ *config\.vm\.box_version = "\([^"]*\)"$/\1/p' "$HARNESS/vagrant/Vagrantfile" | head -1)"
+    local guest pin box box_version
+    guest="$(ci_guest)"
+    pin="$(grep -E "^ *\"$guest\" => \[\"cloud-image/" "$HARNESS/vagrant/Vagrantfile" | head -1)"
+    box="$(sed -n 's/.*=> \["\(cloud-image[^"]*\)", "\([^"]*\)"\].*/\1/p' <<<"$pin")"
+    box_version="$(sed -n 's/.*=> \["\(cloud-image[^"]*\)", "\([^"]*\)"\].*/\2/p' <<<"$pin")"
     if [ -z "$box" ] || [ -z "$box_version" ]; then
-        echo "ci-setup-linux: could not read the pinned Linux box from vagrant/Vagrantfile" >&2
+        echo "ci-setup-linux: could not read the pinned Linux box for $guest from vagrant/Vagrantfile" >&2
         return 1
     fi
     echo "vagrant-box-${box//\//-}-${box_version}-amd64"

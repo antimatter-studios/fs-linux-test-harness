@@ -683,6 +683,7 @@ vm.cpus=$CFG_vm_cpus
 vm.disk=$CFG_vm_disk
 vm.ssh_port=$CFG_vm_ssh_port
 vm.deadline_minutes=$CFG_vm_deadline_minutes
+vm.guest=$CFG_vm_guest
 share.dir=$CFG_share_dir
 share.host=$FLTH_SHARE_HOST
 share.guest=$FLTH_SHARE_GUEST

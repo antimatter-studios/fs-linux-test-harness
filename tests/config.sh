@@ -25,7 +25,7 @@ load() {
 vm_dump() {
     printf '%s|' "$CFG_project_name" "$CFG_vm_memory" "$CFG_vm_cpus" "$CFG_vm_disk" \
         "$CFG_vm_ssh_port" "$CFG_vm_deadline_minutes" "$CFG_share_dir" "$CFG_setup_script" \
-        "$CFG_test_command" "$CFG_test_guest_command" "$CFG_cache_size"
+        "$CFG_test_command" "$CFG_test_guest_command" "$CFG_cache_size" "$CFG_vm_guest"
 }
 
 MIN='[project]
@@ -37,7 +37,7 @@ script = "setup.sh"'
 
 load "$MIN"
 check_eq "$rc" 0 "a minimal config loads"
-check_eq "$out" "rust-fs-demo|4G|4|32G|50122|480|.vm-share|setup.sh||||" "and every optional key takes its documented default"
+check_eq "$out" "rust-fs-demo|4G|4|32G|50122|480|.vm-share|setup.sh||||debian-12|" "and every optional key takes its documented default"
 
 load '# a comment line
 [project]   # trailing comment on a header
@@ -48,6 +48,7 @@ cpus = 2
 disk = "16G"
 ssh_port = 50200
 deadline_minutes = 90
+guest = "debian-13"
 [share]
 dir = "build/share"
 [setup]
@@ -58,7 +59,7 @@ guest_command = "./suite.sh --in-guest"
 [cache]
 size = "8G"'
 check_eq "$rc" 0 "every key, comments, a literal string and a bare integer load"
-check_eq "$out" "lit-name|2048M|2|16G|50200|90|build/share|setup.sh|./suite.sh --fast|./suite.sh --in-guest|8G|" "and each value lands where it should"
+check_eq "$out" "lit-name|2048M|2|16G|50200|90|build/share|setup.sh|./suite.sh --fast|./suite.sh --in-guest|8G|debian-13|" "and each value lands where it should"
 
 for example in "$REPO/examples/minimal" "$REPO/tests/smoke-consumer"; do
     err="$(flth_config_load "$example/fs-linux-test-harness.toml" 2>&1)"
@@ -131,6 +132,9 @@ ssh_port = 22"
 refuse "a zero deadline" "deadline_minutes must be a positive integer" "$MIN
 [vm]
 deadline_minutes = 0"
+refuse "a guest the harness does not pin" "[vm] guest must be debian-12 or debian-13" "$MIN
+[vm]
+guest = \"ubuntu-24.04\""
 refuse "a malformed cache size" "[cache] size must look like" "$MIN
 [cache]
 size = \"8\""

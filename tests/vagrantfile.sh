@@ -100,6 +100,7 @@ field() { printf '%s' "$json" | ruby -rjson -e 'd = JSON.parse(STDIN.read); v = 
 
 export FLTH_VM_NAME=rust-fs-demo FLTH_VM_MEMORY=2G FLTH_VM_CPUS=2 FLTH_VM_DISK=16G FLTH_VM_SSH_PORT=50122
 export FLTH_VM_DEADLINE_MINUTES=480 FLTH_SHARE_DIR="$SANDBOX/share" FLTH_QEMU_DIR="$SANDBOX/fw"
+export FLTH_VM_GUEST=debian-12
 export FLTH_REPO_DIR="$SANDBOX/repo" FLTH_VM_DISPOSABLE=1 FLTH_VM_CACHE_DISK=""
 export FLTH_VM_CONSOLE_LOG="$SANDBOX/machine/console.log"
 
@@ -150,6 +151,19 @@ check_eq "$(field config/$P.net_device)" "virtio-net-pci" "  PCI network device"
 check_eq "$(field config/$P.qemu_dir)" null "  no UEFI firmware directory"
 check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_share" "  shares over 9p"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boot's writes are discarded"
+
+check_eq "$(field config/vm.box)|$(field config/vm.box_version)" "cloud-image/debian-12|20260909.2596.0" \
+    "  Debian 12, pinned, unless the config names another guest"
+
+# --- [vm] guest ---------------------------------------------------------------
+FLTH_VM_GUEST=debian-13 evaluate linux-gnu x86_64 1 vagrant-qemu
+check_eq "$(field config/vm.box)|$(field config/vm.box_version)" "cloud-image/debian-13|20260914.2601.0" \
+    "a debian-13 guest boots the pinned Debian 13 box"
+FLTH_VM_GUEST=debian-13 evaluate linux-gnu aarch64 1 vagrant-qemu
+check_eq "$(field config/vm.box)|$(field config/vm.box_architecture)" "cloud-image/debian-13|arm64" \
+    "  on an aarch64 host too"
+FLTH_VM_GUEST=debian-13 evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_contains "$(field error)" "has no macOS box" "a debian-13 guest on a Mac is refused, saying there is no box for it"
 
 # --- macOS arm64 ------------------------------------------------------------
 evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
@@ -243,6 +257,9 @@ refuse_env FLTH_VM_SSH_PORT "22 -netdev x"
 refuse_env FLTH_VM_DEADLINE_MINUTES "480
 rm -rf /"
 refuse_env FLTH_VM_DEADLINE_MINUTES "0"
+refuse_env FLTH_VM_GUEST "ubuntu-24.04"
+refuse_env FLTH_VM_GUEST "debian-12
+config.vm.box = x"
 refuse_env FLTH_SHARE_DIR "relative/share"
 refuse_env FLTH_SHARE_DIR "/tmp/x,readonly=off"
 refuse_env FLTH_REPO_DIR "relative/repo"
