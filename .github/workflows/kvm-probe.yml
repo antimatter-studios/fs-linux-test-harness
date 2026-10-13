@@ -53,6 +53,23 @@ jobs:
             vagrant box add "cloud-image/$guest" --box-version "$ver" --provider libvirt
           done
           find ~/.vagrant.d/boxes -type f | xargs ls -l
+      - name: The harness's own QEMU command line for the Debian 13 box
+        run: |
+          set +e
+          export FLTH_CONFIG="$PWD/tests/smoke-consumer/fs-linux-test-harness.debian-13.toml"
+          ( timeout 300 scripts/vm.sh up > /tmp/vm-up.log 2>&1 ) &
+          for i in $(seq 1 60); do
+            pgrep -f qemu-system-x86_64 >/dev/null && break
+            sleep 5
+          done
+          sleep 10
+          echo "-- the QEMU process, one argument per line"
+          pid="$(pgrep -f qemu-system-x86_64 | head -1)"
+          tr '\0' '\n' < "/proc/$pid/cmdline"
+          wait
+          echo "-- vm.sh up, last 40 lines"
+          tail -40 /tmp/vm-up.log
+          scripts/vm.sh destroy >/dev/null 2>&1
       - name: Boot each box under each CPU model
         run: |
           set +e
