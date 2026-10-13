@@ -34,3 +34,47 @@ jobs:
             echo "::notice::${{ matrix.runner }}: no usable /dev/kvm"
           fi
           lsmod | grep -i kvm || echo "no kvm modules loaded"
+
+  # Why the pinned Debian 13 box does not boot on the KVM runner (#70): the
+  # box's own disk under plain QEMU, once per CPU model, with QEMU logging
+  # each reset and guest error, so the first boot's console and the CPU
+  # state it reset in are both in the log.
+  debian-13-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: KVM, QEMU and Vagrant
+        run: scripts/ci-setup-linux.sh
+      - name: Fetch the pinned boxes
+        run: |
+          for guest in debian-12 debian-13; do
+            ver="$(sed -n "s/.*\"$guest\" => \[\"cloud-image\/$guest\", \"\([^\"]*\)\"\].*/\1/p" vagrant/Vagrantfile)"
+            vagrant box add "cloud-image/$guest" --box-version "$ver" --provider libvirt
+          done
+          find ~/.vagrant.d/boxes -type f | xargs ls -l
+      - name: Boot each box under each CPU model
+        run: |
+          set +e
+          qemu-system-x86_64 --version | head -1
+          grep -m1 'model name' /proc/cpuinfo
+          for guest in debian-12 debian-13; do
+            img="$(find ~/.vagrant.d/boxes -path "*$guest*" -name '*.img' | head -1)"
+            qemu-img info "$img" | head -6
+            for cpu in host max qemu64 EPYC-v4; do
+              tag="$guest-$cpu"
+              qemu-img create -q -f qcow2 -F qcow2 -b "$img" "/tmp/$tag.qcow2"
+              timeout 90 qemu-system-x86_64 -machine q35,accel=kvm -cpu "$cpu" -m 2G -smp 2 \
+                -display none -monitor none -serial "file:/tmp/$tag.serial" \
+                -drive "file=/tmp/$tag.qcow2,if=virtio" -no-reboot \
+                -d guest_errors,cpu_reset -D "/tmp/$tag.qemu" 2>&1 | tail -5
+              echo "::group::$tag: exit $? (124 = still running at 90 s, i.e. booted)"
+              echo "-- serial (first 60 lines, tr'd)"
+              tr -d '\033' < "/tmp/$tag.serial" | tr '\r' '\n' | grep -v '^\s*$' | head -60
+              echo "-- qemu log: resets and errors"
+              grep -c 'CPU Reset' "/tmp/$tag.qemu"
+              grep -iE 'triple|fault|error' "/tmp/$tag.qemu" | head -10
+              tail -30 "/tmp/$tag.qemu"
+              echo "::endgroup::"
+            done
+          done
