@@ -1,0 +1,34 @@
+# The smoke consumer: a stand-in for a filesystem driver repository,
+# shaped the way a real one uses the harness. tests/smoke.sh drives it
+# through a real VM, in CI and on any host with KVM or HVF.
+
+[project]
+name = "flth-smoke"
+
+[vm]
+# The same consumer, booting the Debian 13 guest (#70).
+guest = "debian-13"
+memory = "2G"
+cpus = 2
+disk = "16G"
+ssh_port = 50122
+deadline_minutes = 120
+
+[share]
+dir = ".vm-share"
+
+[cache]
+# A disk of its own at /cache in the guest, kept across boots: the one
+# place a run's writes outlive it. Declared, so the smoke test can prove
+# both halves: this survives, and nothing outside it does.
+size = "4G"
+
+[setup]
+# Runs as root INSIDE the VM. The consumer installs its own tooling.
+script = "setup.sh"
+
+[test]
+# Runs on the host, from this directory, with the VM up.
+command = "./suite.sh"
+# Runs INSIDE the guest, from /repo — this directory, mounted there.
+guest_command = "./in-guest-suite.sh"

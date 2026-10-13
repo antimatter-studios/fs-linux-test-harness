@@ -36,7 +36,15 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CONSUMER="$REPO/tests/smoke-consumer"
 VM="$REPO/scripts/vm.sh"
 SLOT="$REPO/scripts/vm-slot.sh"
-export FLTH_CONFIG="$CONSUMER/fs-linux-test-harness.toml"
+# Which pinned guest boots: FLTH_SMOKE_GUEST, debian-12 by default, as every
+# consumer's is. Each guest has its own copy of the consumer's config, the
+# same but for `[vm] guest`, so CI boots every guest a consumer can pin (#70).
+SMOKE_GUEST="${FLTH_SMOKE_GUEST:-debian-12}"
+case "$SMOKE_GUEST" in
+    debian-12) export FLTH_CONFIG="$CONSUMER/fs-linux-test-harness.toml" ;;
+    debian-13) export FLTH_CONFIG="$CONSUMER/fs-linux-test-harness.debian-13.toml" ;;
+    *) echo "smoke: FLTH_SMOKE_GUEST must be debian-12 or debian-13, got '$SMOKE_GUEST'" >&2; exit 2 ;;
+esac
 unset FLTH_KEEP_VM
 
 fails=0
