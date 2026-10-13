@@ -142,6 +142,19 @@ cache_args =
     )
   end
 
+# A DISPLAY DEVICE ON x86_64 (#70). The provider passes `-vga none`, and
+# the Debian 13 box's GRUB then never hands over to its kernel: it prints
+# `Booting 'Debian GNU/Linux'`, the machine resets, and GRUB starts again,
+# with not one line of kernel output. Measured on the KVM runner (the
+# kvm-probe workflow's debian-13-boot job): the box under plain QEMU
+# boots; add only `-vga none` and it resets 384 times in a minute; add
+# `-vga std` after it and it boots again. The other additions the harness
+# makes (the shares, the cache disk at 0x10, `-parallel none`) change
+# nothing. Debian 12 boots either way. A later `-vga` replaces an earlier
+# one, so this gives the guest a standard VGA it never shows anywhere
+# (`-display none`), and its console is still the serial port.
+display_args = (host == :linux_x86_64 ? %w(-vga std) : [])
+
 case host
 when :macos_arm64
   flth_require_plugin("vagrant-qemu-christhomas", "the QEMU provider used on macOS")
@@ -288,7 +301,7 @@ Vagrant.configure("2") do |config|
       qe.extra_qemu_args = %W(
         -virtfs local,path=#{share_dir.gsub(",", ",,")},mount_tag=#{share_tag},security_model=mapped-xattr,id=#{share_tag}
         -virtfs local,path=#{repo_dir.gsub(",", ",,")},mount_tag=#{repo_tag},security_model=none,id=#{repo_tag}
-      ) + console_args + cache_args
+      ) + console_args + cache_args + display_args
     end
   end
 

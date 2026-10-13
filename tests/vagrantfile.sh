@@ -120,6 +120,7 @@ check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_repo,securit
     "  and shares the consumer repository with the host's real ownership and xattrs"
 check_contains "$(field config/vm.provision)" '"repo"' "  mounting it too, on every boot"
 check_eq "$(field config/notify_forwarder.enable)" null "  no macOS-only settings"
+check_lacks "$(field config/$P.extra_qemu_args)" "-vga" "  and no display device: the arm64 guests boot through UEFI"
 check_eq "$(field config/vm.hostname)" rust-fs-demo "  hostname from the project name"
 check_eq "$(field config/$P.memory)|$(field config/$P.smp)|$(field config/$P.disk_resize)" \
     "2G|cpus=2,sockets=1,cores=2,threads=1|16G" "  sizing from the config"
@@ -150,6 +151,8 @@ check_eq "$(field config/$P.machine)" "q35,accel=kvm" "  KVM, q35 machine"
 check_eq "$(field config/$P.net_device)" "virtio-net-pci" "  PCI network device"
 check_eq "$(field config/$P.qemu_dir)" null "  no UEFI firmware directory"
 check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_share" "  shares over 9p"
+check_contains "$(field config/$P.extra_qemu_args)" '"-vga","std"' \
+    "  a standard VGA after the provider's -vga none, without which Debian 13's GRUB resets the machine (#70)"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boot's writes are discarded"
 
 check_eq "$(field config/vm.box)|$(field config/vm.box_version)" "cloud-image/debian-12|20260909.2596.0" \

@@ -34,3 +34,60 @@ jobs:
             echo "::notice::${{ matrix.runner }}: no usable /dev/kvm"
           fi
           lsmod | grep -i kvm || echo "no kvm modules loaded"
+
+  # Why the pinned Debian 13 box does not boot on the KVM runner (#70): the
+  # box's own disk under plain QEMU, once per CPU model, with QEMU logging
+  # each reset and guest error, so the first boot's console and the CPU
+  # state it reset in are both in the log.
+  debian-13-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: KVM, QEMU and Vagrant
+        run: scripts/ci-setup-linux.sh
+      - name: Fetch the pinned boxes
+        run: |
+          for guest in debian-12 debian-13; do
+            ver="$(sed -n "s/.*\"$guest\" => \[\"cloud-image\/$guest\", \"\([^\"]*\)\"\].*/\1/p" vagrant/Vagrantfile)"
+            vagrant box add "cloud-image/$guest" --box-version "$ver" --provider libvirt
+          done
+          find ~/.vagrant.d/boxes -type f | xargs ls -l
+      - name: The harness's own QEMU command line for the Debian 13 box
+        run: |
+          set +e
+          export FLTH_CONFIG="$PWD/tests/smoke-consumer/fs-linux-test-harness.debian-13.toml"
+          ( timeout 300 scripts/vm.sh up > /tmp/vm-up.log 2>&1 ) &
+          for i in $(seq 1 60); do
+            pgrep -f qemu-system-x86_64 >/dev/null && break
+            sleep 5
+          done
+          sleep 10
+          echo "-- the QEMU process, one argument per line"
+          pid="$(pgrep -f qemu-system-x86_64 | head -1)"
+          tr '\0' '\n' < "/proc/$pid/cmdline"
+          wait
+          echo "-- vm.sh up, last 40 lines"
+          tail -40 /tmp/vm-up.log
+          scripts/vm.sh destroy >/dev/null 2>&1
+      - name: Boot the Debian 13 box with each of the harness's additions
+        run: |
+          set +e
+          img="$(find ~/.vagrant.d/boxes -path "*debian-13*" -name '*.img' | head -1)"
+          truncate -s 1G /tmp/cache.img
+          run() {
+            tag="$1"; shift
+            qemu-img create -q -f qcow2 -F qcow2 -b "$img" "/tmp/$tag.qcow2"
+            timeout 60 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 2G -smp 2 \
+              -display none -monitor none -serial "file:/tmp/$tag.serial" \
+              -drive "file=/tmp/$tag.qcow2,if=virtio" -d cpu_reset -D "/tmp/$tag.qemu" "$@"
+            echo "::group::$tag ($*): $(grep -c 'CPU Reset' "/tmp/$tag.qemu") resets, kernel lines: $(grep -c 'Linux version' "/tmp/$tag.serial")"
+            tr -d '\033' < "/tmp/$tag.serial" | tr '\r' '\n' | grep -v '^\s*$' | head -12
+            echo "::endgroup::"
+          }
+          run plain
+          run vga-none -vga none
+          run parallel-none -parallel none
+          run cache-disk -drive if=none,id=c,file=/tmp/cache.img,format=raw -device virtio-blk-pci,drive=c,serial=flth-cache,addr=0x10
+          run vga-none-then-std -vga none -vga std
+          run vga-none-plus-device -vga none -device VGA
