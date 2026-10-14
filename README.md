@@ -145,7 +145,7 @@ a consumer that really runs is in [`tests/smoke-consumer/`](./tests/smoke-consum
 
 The harness is the environment; this is the shape of the TESTS a
 filesystem driver repository builds on it. It is what
-[rust-fs-ext4](https://github.com/christhomas/rust-fs-ext4), the first
+[rust-fs-ext4](https://github.com/antimatter-studios/rust-fs-ext4), the first
 consumer, runs locally and in CI, written down so the other filesystem
 repositories copy one template rather than inventing four.
 
@@ -315,7 +315,7 @@ consumer resolves it at run time:
 # in the consumer's scripts/tier.sh: ask where core is, verify what you
 # found, and use it. Do not commit a copy.
 core="$(cargo metadata --format-version 1 --locked \
-        | jq -r '.packages[] | select(.name == "am-fs-core") | .manifest_path')"
+        | jq -r '.packages[] | select(.name == "rust-fs-core") | .manifest_path')"
 budget="$(dirname "$core")/scripts/output-budget.sh"
 [ "$(bash "$budget" --version)" = 'rust-fs-core-output-budget 1' ] || exit 1
 
