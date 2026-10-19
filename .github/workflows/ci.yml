@@ -26,9 +26,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# A pull request titled "red:" holds only its failing test, and its run is the
+# red evidence: each push to it is a group of its own commit and is never
+# cancelled, so the push that adds the fix cannot cancel it (agent-core v8).
+# tests/ci-concurrency.sh holds this.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}${{ startsWith(github.event.pull_request.title, 'red:') && format('-red-{0}', github.event.pull_request.head.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'red:') }}
 
 permissions:
   contents: read
