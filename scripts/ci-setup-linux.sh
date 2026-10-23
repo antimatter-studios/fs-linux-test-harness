@@ -27,6 +27,10 @@
 # Environment (defaults are the pins the harness is tested with):
 #   FLTH_VAGRANT_VERSION        2.4.9
 #   FLTH_VAGRANT_QEMU_VERSION   0.6.3
+#   FLTH_APT_TIMEOUT            240: the seconds each apt-get attempt may take
+#                               before it is cut off (lib/apt.sh)
+#   FLTH_APT_ATTEMPTS           3: the attempts each apt-get call makes before
+#                               it fails naming itself (lib/apt.sh)
 #   FLTH_VM_GUEST               the guest whose box is cached: the consumer's
 #                               `[vm] guest`, read from the config found from
 #                               the working directory, or debian-12 without one
@@ -38,6 +42,8 @@ set -euo pipefail
 VAGRANT_VERSION="${FLTH_VAGRANT_VERSION:-2.4.9}"
 VAGRANT_QEMU_VERSION="${FLTH_VAGRANT_QEMU_VERSION:-0.6.3}"
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=lib/apt.sh
+. "$HARNESS/scripts/lib/apt.sh"
 
 # The guest whose box this runner caches: FLTH_VM_GUEST, else the
 # consumer's `[vm] guest`, else debian-12, every guest's default.
@@ -109,8 +115,11 @@ fi
 endgroup
 
 group "QEMU"
-sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qemu-system-x86 qemu-utils >/dev/null
+# Each apt-get retries, times out, is bounded and tried again after a stall
+# (lib/apt.sh): a stalled mirror once held this group for 26 minutes,
+# printing nothing (#77).
+flth_apt "the package index" update -qq
+flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
 qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
 endgroup
 
@@ -120,8 +129,8 @@ if ! vagrant --version 2>/dev/null | grep -qx "Vagrant $VAGRANT_VERSION"; then
         sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" |
         sudo tee /etc/apt/sources.list.d/hashicorp.list >/dev/null
-    sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "vagrant=${VAGRANT_VERSION}-*" >/dev/null
+    flth_apt "HashiCorp's package index" update -qq
+    flth_apt "Vagrant $VAGRANT_VERSION" install -y -qq "vagrant=${VAGRANT_VERSION}-*"
 fi
 vagrant --version
 if ! vagrant plugin list 2>/dev/null | grep -q "^vagrant-qemu ($VAGRANT_QEMU_VERSION"; then
