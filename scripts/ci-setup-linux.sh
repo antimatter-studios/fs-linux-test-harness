@@ -27,8 +27,10 @@
 # Environment (defaults are the pins the harness is tested with):
 #   FLTH_VAGRANT_VERSION        2.4.9
 #   FLTH_VAGRANT_QEMU_VERSION   0.6.3
-#   FLTH_APT_TIMEOUT            600: the seconds each apt-get call may take
-#                               before it fails naming itself (lib/apt.sh)
+#   FLTH_APT_TIMEOUT            240: the seconds each apt-get attempt may take
+#                               before it is cut off (lib/apt.sh)
+#   FLTH_APT_ATTEMPTS           3: the attempts each apt-get call makes before
+#                               it fails naming itself (lib/apt.sh)
 #   FLTH_VM_GUEST               the guest whose box is cached: the consumer's
 #                               `[vm] guest`, read from the config found from
 #                               the working directory, or debian-12 without one
@@ -113,8 +115,9 @@ fi
 endgroup
 
 group "QEMU"
-# Each apt-get retries, times out and is bounded (lib/apt.sh): a stalled
-# mirror once held this group for 26 minutes, printing nothing (#77).
+# Each apt-get retries, times out, is bounded and tried again after a stall
+# (lib/apt.sh): a stalled mirror once held this group for 26 minutes,
+# printing nothing (#77).
 flth_apt "the package index" update -qq
 flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
 qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
