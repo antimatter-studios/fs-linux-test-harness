@@ -448,7 +448,7 @@ vm down 2>/dev/null
 # several threads at once. While the first boot is under way the VM is not
 # yet running, so every later caller decided to boot it too, and QEMU
 # refused the second forward of the same port on every attempt
-# (christhomas/rust-fs-ext4#487). One up boots; the others wait for it and
+# (antimatter-studios/rust-fs-ext4#487). One up boots; the others wait for it and
 # find the VM running.
 printf 'true\n' > "$C/setup.sh"
 # One boot first, so the disk is provisioned and the race is a plain boot.
