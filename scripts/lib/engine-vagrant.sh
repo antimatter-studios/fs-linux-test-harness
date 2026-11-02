@@ -229,9 +229,109 @@ engine_vagrant_ssh_port() {
         exit 1;' "$1"
 }
 
+# THE macOS GUEST'S KERNEL IS NOT ON ITS DISK (#80). The box starts QEMU with
+# -kernel and -initrd naming files beside the box, with no firmware and no
+# bootloader, so a kernel a setup script installs in the guest is never run,
+# and neither is anything that needs it. Measured on an Apple Silicon host with
+# a setup that installs a 6.12 kernel: /boot held vmlinuz-6.12.95+deb12-arm64,
+# and `uname -r` said 6.1.0-42-cloud-arm64. So when a provisioning boot ends its
+# newest kernel is copied out beside the machine, and every later boot is told
+# to run it (vagrant/Vagrantfile). A Linux guest boots through its own GRUB,
+# which chooses for itself, and none of this applies there.
+#
+# The release file is written last and is what records the answer, which may
+# be "none": a setup that installs no kernel stays on the box's.
+engine_vagrant_kernel_dir() { printf '%s/boot\n' "$FLTH_MACHINE_DIR"; }
+engine_vagrant_keeps_kernel() { [ "$(uname -s)" = Darwin ]; }
+
+engine_keep_kernel() {
+    engine_vagrant_keeps_kernel || return 0
+    local dir release
+    dir="$(engine_vagrant_kernel_dir)"
+    release="$(engine_run "$(cat "$ENGINE_VAGRANT_DIR/guest/newest-kernel.sh")")" || return 1
+    mkdir -p "$dir" || return 1
+    rm -f "$dir/release"
+    if [ -n "$release" ]; then
+        if ! engine_run "cat '/boot/vmlinuz-$release'" > "$dir/vmlinuz.new" ||
+            ! engine_run "cat '/boot/initrd.img-$release'" > "$dir/initrd.img.new"; then
+            rm -f "$dir/vmlinuz.new" "$dir/initrd.img.new"
+            return 1
+        fi
+        mv -f "$dir/vmlinuz.new" "$dir/vmlinuz" && mv -f "$dir/initrd.img.new" "$dir/initrd.img" || return 1
+        echo "[vm] the next boot runs $release, the newest kernel on the disk" >&2
+    else
+        rm -f "$dir/vmlinuz" "$dir/initrd.img"
+    fi
+    printf '%s' "$release" > "$dir/release"
+}
+
+# Whether a provisioning boot has answered for this disk. A disk provisioned by
+# a harness that kept no kernel has not, and takes one provisioning boot to.
+engine_kernel_known() {
+    engine_vagrant_keeps_kernel || return 0
+    [ -f "$(engine_vagrant_kernel_dir)/release" ]
+}
+
+# A kept kernel belongs to the disk that holds its modules.
+engine_forget_kernel() {
+    local dir
+    dir="$(engine_vagrant_kernel_dir)"
+    rm -f "$dir/release" "$dir/vmlinuz" "$dir/initrd.img" "$dir/vmlinuz.new" "$dir/initrd.img.new"
+    rmdir "$dir" 2>/dev/null || true
+}
+
+# WHAT A macOS BOOT LEAVES RUNNING MUST NOT HOLD THE CALLER'S OUTPUT (#80).
+# The macOS forwarder plugin starts its `notify-forwarder watch` processes
+# with no redirection, so they keep Vagrant's stdout and stderr, and they
+# outlive the boot. Handed the caller's stderr, they hold it: a test process
+# capturing `vm.sh up` waits for end-of-file on that pipe, and one consumer's
+# kernel tests sat for 47 minutes on their first call with the guest up and
+# idle. So on macOS Vagrant writes to a file, which is shown on stderr as it
+# grows, and what it leaves running holds only the file. The stock provider
+# on Linux starts nothing that keeps them.
+#
+# Vagrant stays in the foreground, so an interrupt reaches it as it always
+# did. Stopping when this process is gone keeps the follower from outliving
+# a killed `up`, which would be the same fault again.
+engine_vagrant_up() {
+    local log="$FLTH_MACHINE_DIR/vagrant-up.log" follower rc=0
+    if [ "$(uname -s)" != Darwin ]; then
+        engine_vagrant up --provider qemu >&2
+        return
+    fi
+    # A file of its own: an earlier boot's processes still hold the last one.
+    rm -f "$log" "$log.done"
+    : > "$log"
+    engine_vagrant_follow "$log" &
+    follower=$!
+    engine_vagrant up --provider qemu > "$log" 2>&1 || rc=$?
+    : > "$log.done"
+    wait "$follower" || true
+    rm -f "$log.done"
+    return "$rc"
+}
+
+engine_vagrant_follow() {
+    local log="$1" shown=0 total
+    while [ ! -e "$log.done" ] && kill -0 "$$" 2>/dev/null; do
+        total="$(wc -l < "$log")"
+        if [ "$total" -gt "$shown" ]; then
+            sed -n "$((shown + 1)),${total}p" "$log" >&2
+            shown="$total"
+        fi
+        sleep 1
+    done
+    sed -n "$((shown + 1)),\$p" "$log" >&2
+}
+
 engine_up() {
-    local tmp disposable=1 port
+    local tmp disposable=1 port dir kernel="" initrd=""
     [ "${1:-}" = --persist ] && disposable=0
+    dir="$(engine_vagrant_kernel_dir)"
+    if [ -s "$dir/release" ]; then
+        kernel="$dir/vmlinuz"
+        initrd="$dir/initrd.img"
+    fi
     tmp="$(engine_vagrant_tmpdir)" || return 1
     engine_vagrant_cache_disk || return 1
     port="$(engine_vagrant_ssh_port "$CFG_vm_ssh_port")" || {
@@ -248,7 +348,8 @@ engine_up() {
     # QEMU starts the log afresh, but a boot that fails before QEMU starts
     # must not leave the last boot's console to be shown as its own.
     rm -f "$(engine_console_log)"
-    FLTH_VM_DISPOSABLE="$disposable" TMPDIR="$tmp" engine_vagrant up --provider qemu >&2 || return
+    FLTH_VM_BOOT_KERNEL="$kernel" FLTH_VM_BOOT_INITRD="$initrd" \
+        FLTH_VM_DISPOSABLE="$disposable" TMPDIR="$tmp" engine_vagrant_up || return
     engine_ssh_config >/dev/null
 }
 
@@ -268,6 +369,7 @@ engine_destroy() {
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     engine_vagrant destroy -f >&2 || return
     rm -f "$(engine_vagrant_cache_path)"
+    engine_forget_kernel
 }
 
 # Vagrant's ssh settings for the machine, cached beside it. Written after

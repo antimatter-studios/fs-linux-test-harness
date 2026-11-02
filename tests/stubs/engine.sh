@@ -98,6 +98,12 @@ engine_destroy() {
     rm -rf "$STUB/disk" "$STUB/guest-lib" "$STUB/boot-persist" "$STUB/cache" "$STUB/guest-cache"
 }
 
+# Which kernel a boot runs is the real engine's business, and tests/boot-kernel.sh
+# holds it to it. Here there is nothing to find out and nothing to keep.
+engine_keep_kernel() { stub_log keep-kernel; }
+engine_kernel_known() { return 0; }
+engine_forget_kernel() { return 0; }
+
 # Runs the script HERE, with the guest's fixed paths — the setup stamp,
 # the hold marker, the repository mount, the cache — redirected into the stub
 # directory, so the real logic executes against a tree a test can make.

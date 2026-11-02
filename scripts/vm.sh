@@ -215,6 +215,7 @@ vm_up_locked() {
         absent)
             # A machine that does not exist has no disk to carry anything.
             rm -f "$(base_record)"
+            engine_forget_kernel
             ;;
     esac
     require_host_tools
@@ -230,7 +231,7 @@ vm_up_locked() {
     rm -f "$(provisioning_marker)"
 
     echo "[vm] booting $CFG_project_name (a first boot downloads the box and provisions)..." >&2
-    if [ "$PROVISION_MODE" = force ] ||
+    if [ "$PROVISION_MODE" = force ] || ! engine_kernel_known ||
         [ "$(cat "$(base_record)" 2>/dev/null || true)" != "$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" ]; then
         provision_disk
     fi
@@ -294,6 +295,11 @@ provision_disk() {
     : > "$(provisioning_marker)"
     boot_engine --persist
     apply_setup "$PROVISION_MODE"
+    if ! engine_keep_kernel; then
+        echo "vm: the newest kernel on the disk could not be kept for the next boot, so the disk is not" >&2
+        echo "    recorded as provisioned. The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
+        exit 1
+    fi
     # Graceful halt flushes the guest's caches; this makes sure of it.
     engine_run sync >/dev/null 2>&1 || true
     engine_down || true

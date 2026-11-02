@@ -1,0 +1,18 @@
+# A second smoke consumer, for the one promise the first cannot test: its
+# setup installs a kernel, which the next boot must run (tests/smoke.sh).
+
+[project]
+name = "flth-smoke-kernel"
+
+[vm]
+memory = "2G"
+cpus = 2
+disk = "16G"
+ssh_port = 50123
+deadline_minutes = 60
+
+[share]
+dir = ".vm-share"
+
+[setup]
+script = "setup.sh"

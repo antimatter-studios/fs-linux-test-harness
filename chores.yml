@@ -10,6 +10,7 @@ chore_min_version: 0.10.0
 lifecycle:
   after_all:
     - 'FLTH_CONFIG=tests/smoke-consumer/fs-linux-test-harness.toml ./scripts/vm.sh reap'
+    - 'FLTH_CONFIG=tests/smoke-kernel-consumer/fs-linux-test-harness.toml ./scripts/vm.sh reap'
 
 vars:
   # The one sibling: rust-fs-core, whose family scripts this repository runs
@@ -43,6 +44,7 @@ tasks:
     timeout: 60m
     on_timeout:
       - cmd: 'FLTH_CONFIG=tests/smoke-consumer/fs-linux-test-harness.toml ./scripts/vm.sh destroy'
+      - cmd: 'FLTH_CONFIG=tests/smoke-kernel-consumer/fs-linux-test-harness.toml ./scripts/vm.sh destroy'
       - cmd: 'for g in $TIMEOUT_PGID; do kill -TERM -"$g" 2>/dev/null || true; done'
     cmds: ['./tests/smoke.sh']
 

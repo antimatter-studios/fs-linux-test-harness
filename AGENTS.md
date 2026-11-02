@@ -353,6 +353,11 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   cache (`[cache] size`, mounted at `/cache`): a second disk, attached
   through `extra_qemu_args` and never as a provider disk, because the
   provider applies `snapshot=on` to every disk it attaches.
+- **On macOS the guest's kernel is not on its disk.** The box's own
+  Vagrantfile starts QEMU with `-kernel` and `-initrd` naming files beside the
+  box, with no firmware. A provisioning boot copies the disk's newest kernel
+  to `machines/<project>/boot/` and later boots run it (#80). `tests/boot-kernel.sh`
+  pins which boot runs what, and the last step of `tests/smoke.sh` proves it.
 - **`deadline_minutes` is an idle timeout.** Every `run` and `exec` re-arms it
   as the call starts and ends, so a single call longer than it (a whole
   `guest-test` run is one call) is still cut off.

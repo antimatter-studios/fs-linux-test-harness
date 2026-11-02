@@ -552,6 +552,17 @@ it the filesystem its own root uses; the harness names no filesystem and
 knows nothing about what is kept there. A consumer that declares none
 gets no `/cache`, and nothing a run writes outlives it.
 
+**A kernel the setup script installs is the one the next boot runs.** A
+Linux guest boots through its own GRUB, which picks the newest. The macOS
+box has no bootloader in its boot path: QEMU loads a kernel from beside the
+box (6.1, `cloud-arm64`). So when a provisioning boot ends, the harness copies
+the disk's newest kernel and initrd to `machines/<project>/boot/`, and every
+later boot runs those instead. The box's Raspberry Pi kernels in `/boot`
+do not count, so a setup that installs no kernel stays on the box's. A kernel
+with no initrd fails the provisioning, naming the file. A machine provisioned
+by an earlier harness takes one extra boot, once, to find its kernel; `vm:destroy`
+deletes the copies with the disk.
+
 **A boot that fails shows the guest's console.** The provider sends the
 guest's serial console, where its kernel and init write, to a socket
 nothing reads, so a boot that never answers SSH used to end with

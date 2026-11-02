@@ -142,6 +142,25 @@ cache_args =
     )
   end
 
+# THE KERNEL A PROVISIONING BOOT LEFT ON THE DISK, ON macOS (#80). The box
+# has no bootloader in its boot path: its own Vagrantfile sets
+# firmware_format = nil and passes -kernel and -initrd naming files beside the
+# box, so a kernel installed in the guest is never run. The harness copies the
+# disk's newest kernel out when a provisioning boot ends
+# (scripts/lib/engine-vagrant.sh, engine_keep_kernel) and names it here. The
+# provider puts the box's arguments first when it merges the two, and QEMU
+# takes the last -kernel and -initrd it is given. The box's -append stands.
+# Optional, like the cache: empty until a provisioning boot leaves a kernel.
+boot_files = %w[FLTH_VM_BOOT_KERNEL FLTH_VM_BOOT_INITRD].map do |name|
+  value = ENV[name].to_s
+  unless value.empty? || value =~ %r{\A/[A-Za-z0-9._/ -]*\z}
+    raise "#{name} must be an absolute path, got #{value.inspect}"
+  end
+  value
+end
+boot_kernel, boot_initrd = boot_files
+kernel_args = boot_kernel.empty? ? [] : ["-kernel", boot_kernel, "-initrd", boot_initrd]
+
 # A DISPLAY DEVICE ON x86_64 (#70). The provider passes `-vga none`, and
 # the Debian 13 box's GRUB then never hands over to its kernel: it prints
 # `Booting 'Debian GNU/Linux'`, the machine resets, and GRUB starts again,
@@ -193,9 +212,10 @@ Vagrant.configure("2") do |config|
       raise "[vm] guest #{guest} has no macOS box: the macOS guest is Debian 12 " \
             "(Raspberry Pi OS bookworm). Run a debian-13 guest on a Linux host."
     end
-    # A working UEFI bootloader and a kernel with the common filesystem
-    # modules. generic/debian12 is NOT used: it was rebuilt upstream
-    # without its \EFI\BOOT bootloader and no longer boots.
+    # A kernel with the common filesystem modules, booted directly: QEMU
+    # loads it from beside the box, with no firmware and no bootloader.
+    # generic/debian12 is NOT used: it was rebuilt upstream without its
+    # \EFI\BOOT bootloader and no longer boots.
     config.vm.box = "christhomas/vagrant-rpi-bookworm-arm64"
     # Published as a public GitHub release, so the first boot on a Mac
     # fetches it and nobody adds a copy by hand (#8).
@@ -268,7 +288,7 @@ Vagrant.configure("2") do |config|
       # has just set. Drop it only once the port switches credentials per
       # thread.
       qe.extra_virtiofsd_args = ["--thread-pool-size=1", "--xattr"]
-      qe.extra_qemu_args = console_args + cache_args
+      qe.extra_qemu_args = console_args + cache_args + kernel_args
     when :linux_arm64
       qe.arch = "aarch64"
       qe.machine = "virt,accel=kvm,highmem=on"
