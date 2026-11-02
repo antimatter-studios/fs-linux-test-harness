@@ -239,6 +239,36 @@ check_lacks "$(field config/vm.provision)" "mount-cache" "  and nothing mounted 
 FLTH_VM_CACHE_DISK="" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
 check_lacks "$(field config/$P.extra_qemu_args)" "flth_cache" "  on macOS either"
 
+# --- the kernel a provisioning boot left on the disk (#80) -------------------
+# The box's own Vagrantfile passes -kernel and -initrd, which the provider
+# puts first when it merges the two; QEMU takes the last of each. That part
+# is proven on a real guest by tests/smoke.sh, and this pins what is passed.
+boot_kernel="$SANDBOX/machine/boot/vmlinuz"
+boot_initrd="$SANDBOX/machine/boot/initrd.img"
+FLTH_VM_BOOT_KERNEL="$boot_kernel" FLTH_VM_BOOT_INITRD="$boot_initrd" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_eq "$(field ok)" true "a kept kernel evaluates on macOS"
+check_contains "$(field config/$P.extra_qemu_args)" "\"-kernel\",\"$boot_kernel\",\"-initrd\",\"$boot_initrd\"" \
+    "  QEMU is told to run it and its initrd"
+evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_lacks "$(field config/$P.extra_qemu_args)" "-kernel" "no kept kernel: the box's own arguments stand"
+for flth_host in "linux-gnu x86_64 1 vagrant-qemu" "linux-gnu aarch64 1 vagrant-qemu"; do
+    # shellcheck disable=SC2086  # four words, one for each argument
+    FLTH_VM_BOOT_KERNEL="$boot_kernel" FLTH_VM_BOOT_INITRD="$boot_initrd" evaluate $flth_host
+    check_lacks "$(field config/$P.extra_qemu_args)" "-kernel" "${flth_host% 1 *}: a Linux guest chooses its own kernel, whatever is exported"
+done
+refuse_boot_file() {
+    # refuse_boot_file <var> <value>
+    json=""
+    eval "$1=\"\$2\" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas"
+    check_contains "$(field error)" "$1" "$1=$(printf '%q' "$2") is refused"
+}
+refuse_boot_file FLTH_VM_BOOT_KERNEL "relative/vmlinuz"
+refuse_boot_file FLTH_VM_BOOT_KERNEL "/tmp/vmlinuz
+-drive file=/etc/shadow"
+refuse_boot_file FLTH_VM_BOOT_INITRD "relative/initrd.img"
+refuse_boot_file FLTH_VM_BOOT_INITRD "/tmp/initrd.img
+-drive file=/etc/shadow"
+
 evaluate darwin23 x86_64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
 check_contains "$(field error)" "supports macOS arm64, Linux aarch64 and Linux x86_64" "an Intel Mac is refused by name"
 

@@ -41,6 +41,15 @@
 #                              NOT trusted; callers confirm with
 #                              engine_state.
 #   engine_destroy             delete the VM, its disk and its cache
+#   engine_keep_kernel         on a provisioning boot, before it stops:
+#                              make the next boot run the newest kernel
+#                              on the disk, on a host whose guest does
+#                              not choose its own. Non-zero when it
+#                              could not. Elsewhere it does nothing.
+#   engine_kernel_known        exit 0 when a provisioning boot has done
+#                              that for this disk, or none needs to
+#   engine_forget_kernel       drop what engine_keep_kernel kept, when
+#                              the disk it came from is gone
 #   engine_run <script>        run a bash script as root in the guest;
 #                              exit with the script's status. stdout is
 #                              the script's stdout.

@@ -77,8 +77,11 @@ CONTENDER="$(mktemp -d)"
 cleanup() {
     step "cleanup: destroy the smoke VM"
     "$VM" destroy >/dev/null 2>&1 || "$VM" destroy
+    kernel_vm destroy >/dev/null 2>&1 || kernel_vm destroy
     rm -rf "$CONTENDER"
 }
+# The second consumer, whose setup installs a kernel (#80).
+kernel_vm() { FLTH_CONFIG="$REPO/tests/smoke-kernel-consumer/fs-linux-test-harness.toml" "$VM" "$@"; }
 trap cleanup EXIT
 
 step "host tools"
@@ -318,6 +321,35 @@ step "destroy"
 check_eq "$?" 0 "vm.sh destroy succeeds"
 check_contains "$("$VM" status 2>&1)" "(absent)" "the VM no longer exists"
 check_true '[ ! -e "$machine/cache.img" ]' "and its cache went with it" "destroy left $machine/cache.img behind"
+
+step "kernel: the next boot runs the kernel a provisioning boot installed (#80)"
+# The oracles are the guest's own: dpkg says which kernel the setup's package
+# installed, and the running kernel says what it is. On Linux the guest's GRUB
+# chooses it; on macOS the box starts QEMU on a kernel beside the box, and the
+# harness has to carry the disk's across.
+kernel_vm destroy >/dev/null 2>&1 || true
+t0=$(date +%s)
+kernel_vm up
+rc=$?
+check_eq "$rc" 0 "a setup that installs a kernel boots"
+boot_or_stop "$rc"
+echo "  (provisioning and the next boot took $(( $(date +%s) - t0 ))s)"
+installed="$(kernel_vm run 'dpkg-query -W -f="\${Depends}" "linux-image-$(dpkg --print-architecture)"' 2>/dev/null | sed -n 's/^linux-image-\([^ ,|]*\).*/\1/p')"
+check_true '[ -n "$installed" ]' "the guest's dpkg names the kernel the setup installed: $installed" "the guest's dpkg names no kernel for the setup's package"
+check_eq "$(kernel_vm run 'uname -r' 2>/dev/null)" "$installed" "the guest runs it"
+check_eq "$(kernel_vm run 'test -d "/lib/modules/$(uname -r)" && modprobe loop && echo loaded' 2>/dev/null)" loaded \
+    "and loads a module from the tree it installed"
+check_eq "$(kernel_vm run "findmnt -n -o TARGET /share; findmnt -n -o TARGET $repo_guest" 2>/dev/null | paste -sd, -)" "/share,$repo_guest" \
+    "and both shares mount under it"
+kernel_vm down
+check_eq "$?" 0 "the VM stops"
+kernel_vm up
+rc=$?
+check_eq "$rc" 0 "a later cold boot comes up"
+boot_or_stop "$rc"
+check_eq "$(kernel_vm run 'uname -r' 2>/dev/null)" "$installed" "and runs it too"
+kernel_vm destroy
+check_eq "$?" 0 "the second consumer's VM is destroyed"
 
 trap - EXIT
 rm -rf "$CONTENDER"
