@@ -38,10 +38,11 @@ check_case() {
 check_case 0 0 0 "work succeeds, teardown succeeds: success"
 pid="$(sed -n 's/^begin //p' "$LOG")"
 check_eq "$(grep -c "^down $pid config=" "$LOG" | tr -d ' ')" 1 "and ending it names the same process, so the marker it made is the one removed"
-check_eq "$(case "$pid" in '' | *[!0-9]*) echo bad ;; *) echo pid ;; esac)" pid "the session is named by a process id"
+check_eq "$(case "$pid" in ('' | *[!0-9]*) echo bad ;; (*) echo pid ;; esac)" pid "the session is named by a process id"
 check_case 0 3 3 "work fails, teardown succeeds: the work's status"
 check_case 1 0 1 "work succeeds, teardown FAILS: the script fails"
 check_case 1 3 3 "both fail: the work's status wins"
+check_case 0 129 129 "a normal exit 129 is not mistaken for SIGINT"
 
 stub_down 0; work "false; echo not reached"; run_work
 check_eq "$?" 1 "a set -e abort keeps its status"
@@ -57,8 +58,10 @@ check_contains "$(cat "$LOG")" "config=$(cd "$SANDBOX/consumer" && pwd -P)/fs-li
 signal_case() {
     # signal_case <signal> <number>
     stub_down 0; work "sleep 30 & wait \$!"; : > "$LOG"
+    set -m
     (cd "$SANDBOX/consumer" && exec ./work.sh) >/dev/null 2>&1 &
     local pid=$! tries=0
+    set +m
     until grep -q "^begin $pid\$" "$LOG" 2>/dev/null || [ "$tries" -ge 100 ]; do
         sleep 0.1; tries=$((tries + 1))
     done

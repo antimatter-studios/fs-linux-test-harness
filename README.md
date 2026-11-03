@@ -740,12 +740,27 @@ The Vagrantfile recognises a plugin loaded either way.
 
 ## CI and automated merging
 
+The VM-free checks run with the host's system Bash and Ruby (including
+macOS Bash 3.2 and Ruby 2.6). Install `shellcheck` and `timeout` as well
+(`brew install shellcheck coreutils` on macOS). The stub engine executes
+Debian guest scripts locally, so it separately needs Bash 4.2 or newer:
+on macOS, install `bash` and run
+`FLTH_TEST_GUEST_BASH="$(brew --prefix bash)/bin/bash" chore check`.
+That selects only the guest interpreter; the host scripts still use
+`/bin/bash`. A missing or incompatible guest interpreter fails once,
+before the suites start, with the requirement named.
+
+`new_sandbox` uses an explicit `mktemp` template under `TMPDIR`. Tests
+that need Unix sockets use a short directory under `/tmp` by default;
+set `FLTH_TEST_SOCKET_ROOT` to another short scratch root to keep those
+directories elsewhere. The production 103-byte socket limit is unchanged.
+
 Every pull request and every push to `main` runs
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml):
 
 | Job | Runs on | What a green run proves |
 | --- | --- | --- |
-| `unit (VM-free)` | `ubuntu-latest` | `chore check`: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the slot lock's guarantees (no age-alone break, generation-bound deletes, half-written records, unreadable process tables, contention between two consumers); the orchestration against a stub engine (boot retries, never releasing on an unread state, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
+| `unit (VM-free, OS)` | `ubuntu-latest` and `macos-15` arm64 | `chore check` with each host's system Bash: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the slot lock's guarantees (no age-alone break, generation-bound deletes, half-written records, unreadable process tables, contention between two consumers); the orchestration against a stub engine (boot retries, never releasing on an unread state, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
 | `smoke (real VM, x86_64 KVM)` | `ubuntu-latest` with KVM | `chore smoke`: a real Debian VM boots through the harness under KVM; the smoke consumer's setup installs `e2fsprogs` inside it; a run that leaves a file, a loop device and a mount behind changes no byte of the machine's disk, and the next boot sees none of it; a second consumer is refused the slot; exit status, output and files cross host↔guest; hold survives the reaper and a leaked VM does not; a realistic suite (build an ext4 image from host files, read back with `debugfs`, compare, `e2fsck -fn`, collect results on the host) **passes**; the same suite with one byte of file data corrupted **fails with a non-zero exit**; `FLTH_KEEP_VM=1`, `down` and `destroy` behave. |
 | `ci-ok` | `ubuntu-latest` | Green only if every job above ran and succeeded (a failed, cancelled **or skipped** job fails it). |
 

@@ -55,12 +55,12 @@ cat > "$C/oracle.sh" <<EOF
 #!/usr/bin/env bash
 "$VM" up >/dev/null 2>&1 || exit 1
 find "$MACHINE/sessions" -type f 2>/dev/null | wc -l | tr -d ' ' > "$OUT/sessions-during"
+trap 'cat "$FLTH_TEST_STUB/state" > "$OUT/state-when-killed"; exit 143' TERM
 echo "\$\$" > "$OUT/pid"
 case "\$1" in
     pass) exit 0 ;;
     fail) exit 101 ;;
     hang)
-        trap 'cat "$FLTH_TEST_STUB/state" > "$OUT/state-when-killed"; exit 143' TERM
         "$REAL_SLEEP" 30 & wait \$!
         ;;
     sleep) exec "$REAL_SLEEP" 30 ;;
@@ -107,8 +107,12 @@ check_eq "$got" "[one][two words][a;b][from stdin]" \
 # Waits for the stand-in to have booted the VM, then sends the signal.
 start_hang() {
     # start_hang <mode>; sets $pid to the runner's pid
+    local monitor=0
+    case "$-" in *m*) monitor=1 ;; esac
+    set -m
     (cd "$C" && exec "${RUN[@]}" ./oracle.sh "$1") >/dev/null 2>&1 &
     pid=$!
+    [ "$monitor" = 1 ] || set +m
     local tries=0
     until [ -s "$OUT/pid" ] || [ "$tries" -ge 200 ]; do
         "$REAL_SLEEP" 0.05; tries=$((tries + 1))
@@ -137,9 +141,15 @@ expect_released "a run killed by TERM"
 # would make Ctrl-C forwarded to a test binary do nothing.
 reset
 start_hang sleep
+interrupt_started=$SECONDS
 kill -INT "$pid" 2>/dev/null
 wait "$pid"
 check_eq "$?" 130 "killed by INT: the command is interrupted, and the run's status is 128+2"
+if [ "$((SECONDS - interrupt_started))" -lt 10 ]; then
+    ok "SIGINT interrupts the 30-second command instead of waiting for it to finish"
+else
+    bad "SIGINT interrupts the 30-second command instead of waiting for it to finish"
+fi
 check_eq "$(command_left)" gone \
     "and the command is not left running"
 expect_released "a run killed by INT"

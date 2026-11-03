@@ -279,11 +279,21 @@ chore host:check      # what this host is missing to run the VM
 and `smoke.sh`, so a new test file needs no registration. `shellcheck` and
 `ruby` are **required**: a missing one fails the run, it does not skip.
 
+The host scripts support system Bash 3.2 and Ruby 2.6. VM-free guest scripts
+need a separate Bash 4.2+ interpreter: on macOS use
+`FLTH_TEST_GUEST_BASH="$(brew --prefix bash)/bin/bash" chore check` after
+`brew install bash shellcheck coreutils`. This does not replace host Bash.
+The suite fails once up front when the guest interpreter cannot run the
+deadline's time-format `printf`. `timeout` is required for the apt checks.
+Set `FS_CORE_ROOT` to the pinned core checkout when it is not the sibling.
+`new_sandbox` respects `TMPDIR` through an explicit template; socket tests
+use a short root selected by `FLTH_TEST_SOCKET_ROOT` (default `/tmp`).
+
 CI (`.github/workflows/ci.yml`):
 
 | job | proves |
 |---|---|
-| `unit (VM-free)` | `chore check` |
+| `unit (VM-free, OS)` | `chore check` on Linux and macOS arm64, using each host's system Bash |
 | `smoke (real VM, x86_64 KVM)` | `chore smoke` on `ubuntu-latest` with KVM |
 | `ci-ok` | the single required check: every job above ran and succeeded |
 

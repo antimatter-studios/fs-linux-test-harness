@@ -78,7 +78,7 @@ rm -f "$(dirname "$0")/.generic-scripts.out"
 # bump re-keys the cache rather than restoring the old box under a new pin.
 # From a directory with no consumer config above it, so the key is the
 # default guest's and not whichever repository holds this checkout.
-nowhere="$(mktemp -d)"
+nowhere="$(mktemp -d "${TMPDIR:-/tmp}/flth.XXXXXX")"
 pinned() { grep -E "^ *\"$1\" => " "$REPO/vagrant/Vagrantfile" | sed 's/.*", "\([^"]*\)"\].*/\1/'; }
 check_eq "$(cd "$nowhere" && "$REPO/scripts/ci-setup-linux.sh" --box-cache-key)" \
     "vagrant-box-cloud-image-debian-12-$(pinned debian-12)-amd64" \

@@ -98,11 +98,23 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
   unit:
-    name: unit (VM-free)
-    runs-on: ubuntu-latest
+    name: unit (VM-free, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: macOS VM-free tools
+        if: runner.os == 'macOS'
+        run: |
+          brew install shellcheck coreutils bash
+          echo "FLTH_TEST_GUEST_BASH=$(brew --prefix bash)/bin/bash" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: The host uses its system Bash
+        run: echo '/bin:/usr/bin:/usr/sbin:/sbin' >> "$GITHUB_PATH"
       - uses: ./.github/actions/install-chore
         with:
           version: ${{ env.CHORE_VERSION }}
