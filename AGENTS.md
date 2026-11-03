@@ -371,6 +371,9 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   cache (`[cache] size`, mounted at `/cache`): a second disk, attached
   through `extra_qemu_args` and never as a provider disk, because the
   provider applies `snapshot=on` to every disk it attaches.
+- **Status 255 from a call into the guest is ssh's or the script's.** `vm.sh`
+  keeps it and reports what it found on stderr (`report_lost_guest`, #105). A
+  new path into the guest goes through `guest_run` or it gets a bare 255.
 - **On macOS the guest's kernel is not on its disk.** The box's own
   Vagrantfile starts QEMU with `-kernel` and `-initrd` naming files beside the
   box, with no firmware. A provisioning boot copies the disk's newest kernel

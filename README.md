@@ -536,6 +536,17 @@ by the next. Teardown inside a suite is a courtesy, not the guarantee:
 it does not run when a test crashes halfway, which is when the state it
 would have cleaned up is worst.
 
+**What the guest deletes goes back to the host.** The overlay is on the
+host's disk and grows with each block the guest touches. The drive takes
+`discard=unmap` and the guest's root is remounted with `discard`
+(`vagrant/guest/online-discard.sh`), so a freed block leaves the overlay soon
+after the guest's filesystem commits. Measured through QEMU's monitor on an Apple
+Silicon host, after writing and deleting 1 GiB twice: 1.33 GiB of overlay before
+this, 25.3 MiB after. On a KVM runner the overlay read up to 1802 MiB straight
+after a `sync` and 11 MiB three seconds later, having written and deleted 14336
+MiB by then. What a suite keeps is still on the host's disk, and a host with too little for it
+pauses the guest; `vm.sh` then says so (below).
+
 Only a **provisioning boot** writes the disk. When the setup script has
 changed since the disk last took it (the record is
 `machines/<project>/base.sha256`, `disk.setup=` in `chore vm:config`),
@@ -600,7 +611,8 @@ Everything the harness decides is written against a small interface
 ([`scripts/lib/engine.sh`](./scripts/lib/engine.sh)): `engine_prepare`,
 `engine_identity`, `engine_state` (running / stopped / absent /
 **unknown**), `engine_up`, `engine_down [--force]`, `engine_destroy`,
-`engine_run`, `engine_copy`, `engine_alive`, `engine_console_log`. Vagrant is the only
+`engine_run`, `engine_copy`, `engine_alive`, `engine_console_log`,
+`engine_vm_status`, `engine_guest_answers`, `engine_overlay_dir`. Vagrant is the only
 implementation ([`engine-vagrant.sh`](./scripts/lib/engine-vagrant.sh));
 another engine is one file. Two properties an engine must keep: a state
 it could not read is `unknown`, never `stopped`; and `engine_alive` is a
@@ -659,6 +671,25 @@ minutes instead of leaving it waiting for ever. `[vm] deadline_minutes`
 is an idle timeout, re-armed by every call, so it has to outlast your
 longest single call — a whole `vm:guest-test` run is one call — not your
 whole suite.
+
+**A lost connection says what stopped the guest.** ssh's own failures are
+status 255, and Vagrant's ssh settings keep ssh quiet about them. When `run`,
+`exec`, `guest-test` or a setup script gets 255, `vm.sh` keeps that status and
+prints on stderr, before any teardown frees the evidence, what it found:
+
+```text
+vm: exit 255: ssh lost its connection to the guest, or the command itself exited 255.
+vm: what stopped it: QEMU paused the guest.
+vm: a write to the guest's disk failed. The overlay grows on the host's disk, and a full host disk stops a guest this way.
+vm: QEMU says: VM status: paused (io-error)
+vm: QEMU says: I/O status: nospace
+vm: 16 MB free on the host's disk holding the overlay (<FLTH_STATE_DIR>/tmp); the overlay is 3.49 GiB.
+[vm] the guest's console, the last 20 lines of <FLTH_CACHE_DIR>/machines/<project>/console.log:
+```
+
+The other answers are a guest that powered itself off, a QEMU that ended with
+no power-off on the console, a guest that does not answer, and one that does,
+where ssh cannot tell a lost connection from a command that exited 255 itself.
 
 ## The slot lock
 

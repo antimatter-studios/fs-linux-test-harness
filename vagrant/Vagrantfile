@@ -257,7 +257,16 @@ Vagrant.configure("2") do |config|
     # half-finished install a run leaves behind is gone with it. Only the
     # provisioning boot, which applies the consumer's setup script, runs
     # without it (scripts/vm.sh, provision_disk).
-    qe.extra_drive_args = "snapshot=on" if disposable
+    #
+    # discard=unmap LETS THE OVERLAY SHRINK (#105). QEMU's default ignores what
+    # the guest says it has freed, so the overlay holds every block ever written
+    # until the boot ends, and werror=enospc then pauses the guest when the host's
+    # disk fills: a 14 GB runner lost its guest that way, on a suite whose guest
+    # used about 6.5 GB. QEMU copies this option down to the overlay, which
+    # gives the freed clusters back as holes. The guest's side of it is
+    # guest/online-discard.sh, below. The provisioning boot is left out: nothing
+    # it deletes grows anything, and the disk it writes is meant to be kept.
+    qe.extra_drive_args = "snapshot=on,discard=unmap" if disposable
 
     case host
     when :macos_arm64
@@ -339,6 +348,11 @@ Vagrant.configure("2") do |config|
   # let go. First, so it precedes everything that follows a boot.
   config.vm.provision "apt-ready", type: "shell", run: "always",
                       path: "guest/apt-ready.sh"
+
+  if disposable
+    config.vm.provision "online-discard", type: "shell", run: "always",
+                        path: "guest/online-discard.sh"
+  end
 
   if host == :macos_arm64
     config.notify_forwarder.enable = true

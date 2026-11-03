@@ -135,10 +135,13 @@ check_contains "$(field config/vm.provision)" '["480"]' "  the deadline minutes 
 check_eq "$(field config/vagrant.plugins)" "{}" "  the box's own plugin declaration is cleared"
 check_contains "$(field config/vm.provision)" '[[["apt-ready"],{"type":"shell","run":"always","path":"guest/apt-ready.sh"}]' \
     "  the package manager is made ready on every boot, before anything else is provisioned"
-check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" \
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" \
     "  a disposable boot writes to an overlay QEMU discards, never to the machine's disk"
+check_contains "$(field config/vm.provision)" '"path":"guest/online-discard.sh"' \
+    "  what the guest deletes goes back to the host: the drive takes its discards and the root sends them"
 FLTH_VM_DISPOSABLE=0 evaluate linux-gnu aarch64 1 vagrant-qemu
 check_eq "$(field config/$P.extra_drive_args)" null "  a provisioning boot writes the disk itself"
+check_lacks "$(field config/vm.provision)" "online-discard" "  and its root sends no discards to a drive that ignores them"
 
 evaluate linux-gnu aarch64 0 vagrant-qemu
 check_contains "$(field error)" "KVM is required" "Linux without usable /dev/kvm is refused, not emulated"
@@ -159,7 +162,7 @@ check_eq "$(field config/$P.qemu_dir)" null "  no UEFI firmware directory"
 check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_share" "  shares over 9p"
 check_contains "$(field config/$P.extra_qemu_args)" '"-vga","std"' \
     "  a standard VGA after the provider's -vga none, without which Debian 13's GRUB resets the machine (#70)"
-check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boot's writes are discarded"
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  a disposable boot's writes are discarded"
 
 check_eq "$(field config/vm.box)|$(field config/vm.box_version)" "cloud-image/debian-12|20260909.2596.0" \
     "  Debian 12, pinned, unless the config names another guest"
@@ -207,7 +210,7 @@ check_contains "$(field config/$P.extra_virtiofsd_args)" '"--thread-pool-size=1"
     "  one virtiofsd thread: the macOS port switches credentials process-wide"
 check_contains "$(field config/$P.extra_virtiofsd_args)" '"--xattr"' "  extended attributes survive the share"
 check_contains "$(field config/vm.provision)" '"guest/apt-ready.sh"' "  the box's first-boot dialog is disabled and the package manager made ready"
-check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  a disposable boot's writes are discarded"
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  a disposable boot's writes are discarded"
 evaluate darwin23 arm64 0 vagrant-qemu
 check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS with only the stock plugin is refused"
 
@@ -245,7 +248,7 @@ check_contains "$args" "virtio-blk-pci,drive=flth_cache,serial=flth-cache" \
 check_contains "$args" "serial=flth-cache,addr=0x10" \
     "  on a PCI slot after the machine's own disk, which the BIOS boots"
 check_lacks "$args" "id=flth_cache,file=$cache_disk,format=raw,snapshot" "  and its writes are never sent to the overlay"
-check_eq "$(field config/$P.extra_drive_args)" "snapshot=on" "  while the machine's own disk stays disposable"
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  while the machine's own disk stays disposable"
 check_contains "$args" "mount_tag=flth_share" "  and the shares are still there"
 check_contains "$(field config/vm.provision)" '"path":"guest/mount-cache.sh","args":["flth-cache","/cache"]' \
     "  it is mounted at /cache on every boot"

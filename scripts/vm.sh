@@ -52,6 +52,10 @@ BOOT_ATTEMPTS=3
 BOOT_RETRY_WAIT=5
 # How much of the guest's console a failed boot prints (show_console).
 CONSOLE_TAIL_LINES=60
+# What a lost connection prints of it: several calls can lose the guest at once.
+LOST_GUEST_CONSOLE_LINES=20
+LOST_GUEST_TRIES=5
+LOST_GUEST_RETRY_WAIT=3
 
 usage() {
     sed -n '3,19p' "$SELF" | sed 's/^# \{0,1\}//'
@@ -108,7 +112,7 @@ sha256_of() {
 # /dev/null so an `apt-get` inside cannot swallow what follows. Its output
 # goes to stderr, so the stdout of `vm.sh run` is only the command's.
 apply_setup() {
-    local mode="$1" script hash host_stamp guest force=0 payload out
+    local mode="$1" script hash host_stamp guest force=0 payload out rc
     script="$FLTH_ROOT/$CFG_setup_script"
     hash="$(sha256_of "$script")"
     host_stamp="$FLTH_MACHINE_DIR/setup.sha256"
@@ -134,8 +138,11 @@ mkdir -p \"\$(dirname \"\$stamp\")\"
 printf '%s\n' '$hash' > \"\$stamp\"
 echo applied"
 
-    if ! out="$(engine_run "$guest")"; then
+    rc=0
+    out="$(engine_run "$guest")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
         rm -f "$host_stamp"
+        [ "$rc" -ne 255 ] || report_lost_guest
         echo "vm: the setup script ($CFG_setup_script) failed inside the VM." >&2
         echo "    The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
         exit 1
@@ -247,14 +254,100 @@ vm_up_locked() {
 # that never came up) is the one account of why. Its tail goes to stderr,
 # every line labelled, so a CI log keeps it beside the failure.
 show_console() {
-    local log
+    local log lines="${1:-$CONSOLE_TAIL_LINES}"
     log="$(engine_console_log)"
     if [ ! -s "$log" ]; then
         echo "[vm] no console output in $log: the guest wrote nothing to its serial console" >&2
         return 0
     fi
-    echo "[vm] the guest's console, the last $CONSOLE_TAIL_LINES lines of $log:" >&2
-    tail -n "$CONSOLE_TAIL_LINES" "$log" | tr -d '\r' | sed 's/^/[console] /' >&2
+    echo "[vm] the guest's console, the last $lines lines of $log:" >&2
+    tail -n "$lines" "$log" | tr -d '\r' | sed 's/^/[console] /' >&2
+}
+
+# A LOST CONNECTION SAYS WHAT STOPPED THE GUEST (#105). ssh's own failures are
+# status 255, Vagrant's settings carry `LogLevel FATAL` so ssh prints nothing about
+# them, and the teardown that follows frees whatever could have told why. A guest
+# paused on a full host disk ended a consumer's run with a bare 255, two minutes
+# after QEMU had stopped it. So this looks while there is something to look at:
+#
+#   QEMU's process     gone: powered off if the console says so, otherwise killed
+#   QEMU's monitor     paused: a failed write when its status says so
+#   the guest          no answer: hung or crashed
+#
+# A script may exit 255 too, and ssh cannot tell the two apart, so a guest that
+# answers is reported as both. All of it is on stderr and the status is not
+# touched: a consumer may read either. Status 255 is the only one that costs this.
+report_lost_guest() {
+    local alive=0 status="" answered=0 tries=0 console free dir overlay
+    echo "vm: exit 255: ssh lost its connection to the guest, or the command itself exited 255." >&2
+
+    # A guest shutting down drops its connections a moment before QEMU ends. A
+    # look at that moment finds QEMU running and a guest that does not answer,
+    # which is not a hang, so that answer has to hold before it is believed.
+    while :; do
+        alive=0
+        engine_alive "$(engine_identity)" || alive=$?
+        [ "$alive" -eq 0 ] || break
+        status="$(engine_vm_status)" || status=""
+        case "$status" in *'VM status: paused'*) break ;; esac
+        if engine_guest_answers; then
+            answered=1
+            break
+        fi
+        tries=$((tries + 1))
+        [ "$tries" -lt "$LOST_GUEST_TRIES" ] || break
+        sleep "$LOST_GUEST_RETRY_WAIT"
+    done
+
+    console="$(tail -n "$LOST_GUEST_CONSOLE_LINES" "$(engine_console_log)" 2>/dev/null || true)"
+    if [ "$alive" -eq 2 ]; then
+        echo "vm: what stopped it: unknown; the process table could not be read." >&2
+    elif [ "$alive" -ne 0 ]; then
+        case "$console" in
+            *'Power down'* | *'System halted'*)
+                echo "vm: what stopped it: the guest powered itself off; QEMU then ended." >&2 ;;
+            *)
+                echo "vm: what stopped it: QEMU ended and the guest's console records no power-off: it was killed or it crashed." >&2 ;;
+        esac
+    else
+        case "$status" in
+            *'VM status: paused'*)
+                echo "vm: what stopped it: QEMU paused the guest." >&2
+                case "$status" in
+                    *'io-error'* | *'I/O status: '*)
+                        echo "vm: a write to the guest's disk failed. The overlay grows on the host's disk, and a full host disk stops a guest this way." >&2 ;;
+                esac
+                ;;
+            *)
+                if [ "$answered" = 1 ]; then
+                    echo "vm: what stopped it: not the guest: it is up and answers, so ssh lost its connection, or the command itself exited 255." >&2
+                else
+                    echo "vm: what stopped it: QEMU is running and the guest does not answer: it hung or it crashed." >&2
+                fi
+                ;;
+        esac
+        if [ -n "$status" ]; then
+            printf '%s\n' "$status" | grep -v '^overlay: ' | sed 's/^/vm: QEMU says: /' >&2
+        else
+            echo "vm: QEMU's monitor did not answer." >&2
+        fi
+    fi
+
+    dir="$(engine_overlay_dir)"
+    free="$(df -Pk "$dir" 2>/dev/null | awk 'NR == 2 { print int($4 / 1024) }')"
+    overlay="$(printf '%s\n' "$status" | sed -n 's/^overlay: //p')"
+    if [ -n "$free" ]; then
+        echo "vm: $free MB free on the host's disk holding the overlay ($dir)${overlay:+; the overlay is $overlay}." >&2
+    fi
+    show_console "$LOST_GUEST_CONSOLE_LINES"
+}
+
+# A call into the guest. Keeps its status, and reports when that is ssh's own.
+guest_run() {
+    local rc=0
+    engine_run "$(guest_call "$1")" || rc=$?
+    [ "$rc" -ne 255 ] || report_lost_guest
+    return "$rc"
 }
 
 # Boot, retrying.
@@ -693,7 +786,7 @@ vm_exec() {
         exit 1
     fi
     refuse_provisioning_boot
-    engine_run "$(guest_call "$*")"
+    guest_run "$*"
 }
 
 # THE CONSUMER'S SUITE, RUN IN THE GUEST, from the repository mounted at
@@ -789,7 +882,7 @@ case "$command" in
         vm_up
         # Joined, and run by the guest's shell: a pipeline or `&&` in the
         # command belongs to the guest, not the host.
-        engine_run "$(guest_call "$*")"
+        guest_run "$*"
         ;;
     exec)
         [ $# -gt 0 ] || flth_die "usage: vm.sh exec <command...>"

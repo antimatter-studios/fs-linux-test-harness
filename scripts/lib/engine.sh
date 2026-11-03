@@ -60,6 +60,15 @@
 #                              process table could not be read. A
 #                              process check with no engine call: the
 #                              reaper runs it on every chore invocation.
+#   engine_vm_status           what the VM's process says about the guest,
+#                              within a limit: `VM status: <status>`, then
+#                              `I/O status: <status>` when a disk's is not
+#                              ok, then `overlay: <size>` when it is known.
+#                              Non-zero, and nothing, when it does not answer.
+#   engine_guest_answers       exit 0 when the guest answers a new connection
+#                              within a limit
+#   engine_overlay_dir         print the directory holding a disposable
+#                              boot's overlay
 
 # shellcheck source=scripts/lib/engine-vagrant.sh
 . "$FLTH_HARNESS/scripts/lib/engine-vagrant.sh"
