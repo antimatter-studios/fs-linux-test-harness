@@ -26,7 +26,9 @@
 # NOTHING FILESYSTEM-SPECIFIC BELONGS HERE. The consumer's setup script,
 # run inside the guest by scripts/vm.sh, installs its own tooling.
 
+require "digest"
 require "rbconfig"
+require "uri"
 
 def flth_env(name, pattern, what)
   value = ENV[name]
@@ -340,6 +342,23 @@ Vagrant.configure("2") do |config|
 
   if host == :macos_arm64
     config.notify_forwarder.enable = true
+    # BUT NOTHING IN THE GUEST MAY WRITE TO THE SHARES (#84). The plugin's guest
+    # receiver (notify-forwarder v1.1.0, src/inject_utimes.cc) answers an event
+    # by opening the named file read-write: it writes the first byte of a file
+    # back, and it writes a byte to a file it reads as empty and truncates it to
+    # 0. A file the host is still writing is empty for a moment, so that
+    # truncate reached the host and emptied a payload it had just finished.
+    # Measured on an Apple Silicon host: 40 staged payloads drew 314 writes from
+    # the receiver, and with the host's first write stalled and the guest reading
+    # the share, 2 of 168 1048576-byte files ended at 0 bytes on the host, against
+    # 0 of 168 with the receiver stopped. Nothing here needs host events in the
+    # guest, so the plugin is given a receiver that exits. Its `binaries` setting
+    # is the way in: the receiver starts after provisioning, so no provisioner can
+    # stop it, and disabling the plugin stops the boot (above).
+    receiver_off = File.expand_path("guest/notify-receiver-off.sh", __dir__)
+    config.notify_forwarder.binaries = {
+      [:linux, :arm64] => ["file://#{URI::DEFAULT_PARSER.escape(receiver_off)}", Digest::SHA256.file(receiver_off).hexdigest],
+    }
     config.vm.synced_folder share_dir, share_guest, type: "virtiofs", create: true
     config.vm.synced_folder repo_dir, repo_guest, type: "virtiofs", create: true
   else

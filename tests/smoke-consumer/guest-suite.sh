@@ -15,6 +15,11 @@
 # tests/guest-scratch.sh refuses an image tool pointed at the share.
 set -euo pipefail
 
+# What the host and in-guest-suite.sh stage. Two empty files compare equal, and
+# an empty payload has no data block to flip, so a comparison alone can pass an
+# empty one, corrupted or not (#84).
+payload_size=1048576
+
 mode="$1"
 share=/share
 results="$share/results"
@@ -24,8 +29,18 @@ img="$work/fs.img"
 rm -rf "$results"
 mkdir -p "$results"
 
+check_size() {
+    local size
+    size="$(wc -c < "$1" | tr -d ' ')"
+    [ "$size" = "$payload_size" ] && return 0
+    echo fail > "$results/verdict"
+    echo "guest suite: $(basename "$1") is $size bytes, expected $payload_size" >&2
+    exit 1
+}
+
 uname -a > "$results/uname.txt"
 cp -R "$share/payload" "$work/payload"
+check_size "$work/payload/payload.bin"
 truncate -s 64M "$img"
 mkfs.ext4 -q -F -b 4096 -d "$work/payload" "$img"
 
@@ -42,6 +57,7 @@ fi
 debugfs -R "dump /payload.bin $work/dumped.bin" "$img" 2>/dev/null
 debugfs -R "cat /dir/hello.txt" "$img" 2>/dev/null > "$work/hello.txt"
 cp "$work/dumped.bin" "$work/hello.txt" "$results/"
+check_size "$work/dumped.bin"
 
 if ! cmp "$work/payload/payload.bin" "$work/dumped.bin" > "$work/cmp.log" 2>&1; then
     cp "$img" "$work/cmp.log" "$results/"

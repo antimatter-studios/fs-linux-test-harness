@@ -120,6 +120,7 @@ check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_repo,securit
     "  and shares the consumer repository with the host's real ownership and xattrs"
 check_contains "$(field config/vm.provision)" '"repo"' "  mounting it too, on every boot"
 check_eq "$(field config/notify_forwarder.enable)" null "  no macOS-only settings"
+check_eq "$(field config/notify_forwarder.binaries)" null "  and no guest receiver to replace"
 check_lacks "$(field config/$P.extra_qemu_args)" "-vga" "  and no display device: the arm64 guests boot through UEFI"
 check_eq "$(field config/vm.hostname)" rust-fs-demo "  hostname from the project name"
 check_eq "$(field config/$P.memory)|$(field config/$P.smp)|$(field config/$P.disk_resize)" \
@@ -177,6 +178,20 @@ check_eq "$(field config/vm.box_url)" \
     "  fetched from its public release on first boot (#8)"
 check_eq "$(field config/$P.machine)" "virt,accel=hvf,highmem=on" "  HVF"
 check_eq "$(field config/notify_forwarder.enable)" true "  notify forwarder enabled (disabling it breaks boot)"
+# The plugin's own guest receiver writes into the files an event names, and
+# truncates one it reads as empty, so the host's payload could end up empty (#84).
+# The stand-in the Vagrantfile gives the plugin must be what it is offered for an
+# arm64 guest, under its real checksum, and must do nothing.
+receiver_off="$REPO/vagrant/guest/notify-receiver-off.sh"
+receiver_sum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$receiver_off" 2>/dev/null)"
+binaries="$(field config/notify_forwarder.binaries)"
+check_contains "$binaries" "linux" "  the plugin is given a guest receiver for Linux"
+check_contains "$binaries" "arm64" "  on arm64"
+check_contains "$binaries" "file://$receiver_off" "  the harness's own stand-in"
+check_contains "$binaries" "${receiver_sum:-no checksum: the stand-in is missing}" "  under its real checksum"
+receiver_out="$(cd "$SANDBOX" && bash "$receiver_off" receive -p 29324 2>&1)"
+check_eq "$?|$receiver_out" "0|" "  which exits at once, saying nothing, as the plugin starts it"
+check_lacks "$(grep -v '^[[:space:]]*#' "$receiver_off" 2>/dev/null)" ">" "  and writes to nothing"
 check_contains "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  shares over virtiofs"
 check_contains "$(field config/vm.synced_folder)" '"/repo"' "  the consumer repository among them"
 check_lacks "$(field config/$P.extra_qemu_args)" "-virtfs" "  no 9p"
