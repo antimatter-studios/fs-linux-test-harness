@@ -24,7 +24,7 @@
 # Keys, their types and defaults (README.md documents each one):
 #
 #   [project] name              string, required
-#   [vm]      memory            string, default "4G"
+#   [vm]      memory            string, default "2G"
 #   [vm]      cpus              integer, default 4
 #   [vm]      disk              string, default "32G"
 #   [vm]      ssh_port          integer, default 50122
@@ -107,7 +107,10 @@ flth_config_load() {
 
     # shellcheck disable=SC2034  # read by the scripts that source this
     CFG_project_name=""
-    CFG_vm_memory="4G"
+    # Measured 2026-11-03: 656 guest-test cases pass at 2G/3G/4G in
+    # 280.71s/656.04s/327.01s; 2G is the smallest tested allocation.
+    # Shared-host method and results: docs/guest-memory-2026-11-03.md.
+    CFG_vm_memory="2G"
     CFG_vm_cpus="4"
     CFG_vm_disk="32G"
     CFG_vm_ssh_port="50122"

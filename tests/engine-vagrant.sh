@@ -66,7 +66,7 @@ ID="$(engine_identity)"
 check_eq "$VAGRANT_DOTFILE_PATH" "$FLTH_CACHE_DIR/machines/engine-test/vagrant" "machine state goes to the consumer's machine directory"
 check_eq "$VAGRANT_CWD" "$REPO/vagrant" "the Vagrantfile is the harness's own"
 check_eq "$FLTH_VM_NAME|$FLTH_VM_MEMORY|$FLTH_VM_CPUS|$FLTH_VM_DISK|$FLTH_VM_SSH_PORT|$FLTH_VM_DEADLINE_MINUTES" \
-    "engine-test|4G|4|32G|50122|480" "the config reaches the Vagrantfile through FLTH_VM_*"
+    "engine-test|2G|4|32G|50122|480" "the config reaches the Vagrantfile through FLTH_VM_*"
 # shellcheck disable=SC2153  # exported by engine_prepare
 check_eq "$FLTH_SHARE_DIR" "$(cd "$SANDBOX/c" && pwd -P)/.vm-share" "and the share as an absolute host path"
 check_eq "$ID" "$VAGRANT_DOTFILE_PATH" "the identity is the dotfile path, which QEMU's disk path contains"

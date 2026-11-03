@@ -37,7 +37,7 @@ script = "setup.sh"'
 
 load "$MIN"
 check_eq "$rc" 0 "a minimal config loads"
-check_eq "$out" "rust-fs-demo|4G|4|32G|50122|480|.vm-share|setup.sh||||debian-12|" "and every optional key takes its documented default"
+check_eq "$out" "rust-fs-demo|2G|4|32G|50122|480|.vm-share|setup.sh||||debian-12|" "and every optional key takes its documented default"
 
 load '# a comment line
 [project]   # trailing comment on a header

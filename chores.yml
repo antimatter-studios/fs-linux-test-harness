@@ -5,8 +5,8 @@ chore_min_version: 0.10.0
 # vm.chores.yml (see README.md). These are what CI runs, so a green local
 # `chore check && chore smoke` is the same evidence as a green pipeline.
 
-# A smoke VM left behind by a killed `chore smoke` is stopped by the next
-# chore invocation of any kind. Fails soft, as a net should.
+# Each invocation reaps only the smoke VM it booted. A different run's
+# idle VM stays up. Fails soft, as a net should.
 lifecycle:
   after_all:
     - 'FLTH_CONFIG=tests/smoke-consumer/fs-linux-test-harness.toml ./scripts/vm.sh reap'

@@ -3,7 +3,7 @@
 A generic Linux test VM for repositories that need a real Linux kernel and
 real Linux tools to test against. It owns the VM's lifecycle (`up`, `run`,
 `exec`, `put`, `down`, `reap`, `hold`, `destroy`), the machine-wide slot lock
-that keeps one VM running per host, the shared directory, the consumer
+that bounds running VMs per host (one by default), the shared directory, the consumer
 repository mounted at `/repo`, and the guest's own poweroff deadline. It knows
 nothing about what a consumer tests: no filesystem, no toolchain, no package.
 A consumer checks it out as a sibling (`../fs-linux-test-harness`), pinned by

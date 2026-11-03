@@ -46,7 +46,23 @@ new_sandbox() {
     trap "rm -rf '$SANDBOX'" EXIT
     export FLTH_CACHE_DIR="$SANDBOX/cache"
     export FLTH_STATE_DIR="$SANDBOX/state"
-    unset FLTH_CONFIG FLTH_KEEP_VM FLTH_SLOT_WAIT FLTH_SLOT_BOOT_GRACE
+    unset FLTH_CONFIG FLTH_KEEP_VM FLTH_SLOT_WAIT FLTH_SLOT_BOOT_GRACE FLTH_SLOT_COUNT
+    export FLTH_TEST_MEMINFO="$SANDBOX/meminfo"
+    printf 'MemAvailable:   67108864 kB\n' > "$FLTH_TEST_MEMINFO"
+    mkdir -p "$SANDBOX/memory-bin"
+    cat > "$SANDBOX/memory-bin/awk" <<'STUB'
+#!/bin/sh
+if [ "$#" = 2 ] && [ "$2" = /proc/meminfo ]; then
+    exec /usr/bin/awk "$1" "$FLTH_TEST_MEMINFO"
+fi
+exec /usr/bin/awk "$@"
+STUB
+    cat > "$SANDBOX/memory-bin/vm_stat" <<'STUB'
+#!/bin/sh
+printf '%s\n' 'Mach Virtual Memory Statistics: (page size of 16384 bytes)' 'Pages free: 4194304.' 'Pages inactive: 0.' 'Pages speculative: 0.'
+STUB
+    chmod +x "$SANDBOX/memory-bin/awk" "$SANDBOX/memory-bin/vm_stat"
+    export PATH="$SANDBOX/memory-bin:$PATH"
 }
 
 # make_consumer <dir> <name> [extra toml...] — a consumer repository with

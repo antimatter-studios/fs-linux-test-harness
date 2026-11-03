@@ -102,7 +102,7 @@ tasks:
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" hold']
 
   reap:
-    desc: Stop a VM that nothing cleaned up, unless it is held (for lifecycle after_all)
+    desc: Stop this invocation's unheld VM that nothing cleaned up (for lifecycle after_all)
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" reap']
 
   config:

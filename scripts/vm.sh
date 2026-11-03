@@ -206,8 +206,8 @@ vm_up_locked() {
         unknown)
             # A missing engine is the likeliest reason a state cannot be
             # read, so say that first if it is so. Then refuse: booting on
-            # a state nobody could read is how a second VM starts beside
-            # the first.
+            # a state nobody could read can start a duplicate VM outside
+            # the configured limit.
             require_host_tools
             echo "vm: could not read the VM's state; not booting until it can be read." >&2
             exit 1
@@ -227,6 +227,7 @@ vm_up_locked() {
         echo "vm: could not get the VM slot; not booting a second VM." >&2
         exit 1
     }
+    record_boot_invocation
     # Not running, so not on a provisioning boot, whatever a marker says.
     rm -f "$(provisioning_marker)"
 
@@ -265,7 +266,14 @@ show_console() {
 # failure happens, and covers causes nobody has guessed.
 boot_engine() {
     local attempt=1
-    while ! engine_up "$@"; do
+    while :; do
+        if ! "$SLOT" check-memory; then
+            release_if_confirmed_stopped || true
+            return 1
+        fi
+        if engine_up "$@"; then
+            return 0
+        fi
         show_console
         if [ "$attempt" -ge "$BOOT_ATTEMPTS" ]; then
             echo "vm: the VM would not boot after $BOOT_ATTEMPTS attempts." >&2
@@ -333,7 +341,7 @@ forget_disk_if_setup_ran() {
 
 # Release the slot ON THE STRENGTH OF A CONFIRMED STOP, never of an
 # attempt. A halt that reported success while the VM kept running must
-# keep the slot, or the next repository boots a second VM beside it; and
+# keep the slot, or the next repository exceeds the configured limit; and
 # a state that could not be read is not a stop.
 release_if_confirmed_stopped() {
     local state
@@ -408,9 +416,8 @@ vm_hold() {
     fi
 }
 
-# The safety net, run from a chore `lifecycle: after_all` so ANY chore
-# invocation cleans up a VM that nothing else did — a test run that
-# booted it, a run killed outright.
+# The safety net, run from a chore `lifecycle: after_all`: an invocation
+# cleans up only a VM it booted. Another run's idle VM is not a leak.
 #
 # It FAILS SOFT by design: chore reports an after_all failure without
 # failing the run, and turning an unrelated `chore build` red because
@@ -419,7 +426,7 @@ vm_hold() {
 # The probe is a process check, not an engine call: it runs on every
 # invocation, so it has to cost milliseconds.
 vm_reap() {
-    local others
+    local others invocation owner
     if ! engine_alive "$(engine_identity)"; then
         return 0
     fi
@@ -431,6 +438,14 @@ vm_reap() {
     if [ -n "$others" ]; then
         echo "[vm] left running: another invocation is using it (pid ${others//$'\n'/, })." >&2
         return 0
+    fi
+    invocation="$(chore_invocation direct)"
+    if [ -n "$invocation" ]; then
+        owner="$(cat "$FLTH_MACHINE_DIR/boot-invocation" 2>/dev/null || true)"
+        if [ "$invocation" = unknown ] || [ "$invocation" != "$owner" ]; then
+            echo '[vm] left running: another invocation owns this VM; after_all stops only its own VM.' >&2
+            return 0
+        fi
     fi
     echo "vm: a VM was left running by something that did not clean up — stopping it." >&2
     vm_down
@@ -462,6 +477,41 @@ sessions_dir() { printf '%s/sessions\n' "$FLTH_MACHINE_DIR"; }
 
 process_start() {
     ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
+}
+
+chore_invocation() {
+    local pid="$PPID" command parent arguments start depth=0
+    while [ "$pid" -gt 1 ] && [ "$depth" -lt 64 ]; do
+        command="$(ps -o comm= -p "$pid" 2>/dev/null | sed 's/^ *//')" || { echo unknown; return 0; }
+        if [ "${command##*/}" = chore ]; then
+            start="$(process_start "$pid")"
+            [ -n "$start" ] || { echo unknown; return 0; }
+            printf '%s\t%s\n' "$pid" "$start"
+            return 0
+        fi
+        if [ "${1:-}" = direct ]; then
+            case "${command##*/}" in sh | bash | zsh) ;; *) return 0 ;; esac
+            arguments="$(ps -o args= -p "$pid" 2>/dev/null)" || { echo unknown; return 0; }
+            case "$arguments" in *' -c '*) ;; *) return 0 ;; esac
+        fi
+        parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || { echo unknown; return 0; }
+        case "$parent" in '' | *[!0-9]*) break ;; esac
+        [ "$parent" != "$pid" ] || break
+        pid="$parent"
+        depth=$((depth + 1))
+    done
+    return 0
+}
+
+record_boot_invocation() {
+    local invocation start
+    invocation="$(chore_invocation)"
+    if [ -z "$invocation" ]; then
+        start="$(process_start "$PPID")"
+        invocation=unknown
+        [ -z "$start" ] || invocation="$(printf '%s\t%s' "$PPID" "$start")"
+    fi
+    printf '%s\n' "$invocation" > "$FLTH_MACHINE_DIR/boot-invocation"
 }
 
 # The pids of live sessions on this machine, one per line, except $1.
