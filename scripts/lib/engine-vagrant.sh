@@ -72,7 +72,16 @@ engine_vagrant_host_is_arm() {
 }
 
 engine_vagrant() {
-    (cd "$ENGINE_VAGRANT_DIR" && vagrant "$@")
+    (
+        cd "$ENGINE_VAGRANT_DIR" || exit 1
+        case "${1:-}" in
+            up | halt | destroy)
+                # shellcheck disable=SC2153
+                ruby "$FLTH_HARNESS/scripts/qemu-artifacts.rb" "$FLTH_STATE_DIR/tmp" vagrant "$@"
+                ;;
+            *) vagrant "$@" ;;
+        esac
+    )
 }
 
 engine_identity() {

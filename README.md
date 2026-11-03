@@ -663,6 +663,20 @@ limited to about 104 bytes. The ssh control socket is under
 a checkout. If even that path is too long, the boot is refused with the
 path and the length it would reach.
 
+**Unused provider artifacts are reclaimed.** The macOS provider also puts
+QEMU's named shared-memory file and virtiofs socket pidfiles in that directory.
+The harness checks it before and after start, halt, and destroy, so the next
+start also reclaims leftovers from an abrupt exit. Only recognized regular
+files owned by the current user are eligible. A process naming an artifact,
+an open file, or an unsuccessful process/open-file inspection keeps it.
+Inspection uses `ps` and `lsof`; missing `lsof` retains files with a diagnostic,
+never guesses that they are unused. A directory-wide advisory lock serializes
+cleanup and startup until QEMU appears in the process table; guest boot and
+provisioning then proceed concurrently within the configured slot limit.
+This mitigates the provider leak tracked in
+[vagrant-qemu#9](https://github.com/antimatter-studios/vagrant-qemu/issues/9);
+it does not change the separate notify-forwarder lifecycle.
+
 **A guest that goes away fails the call.** The client keeps the
 connection alive (`ServerAliveInterval=15`, `ServerAliveCountMax=8`), so
 a VM halted underneath a running command — by its own deadline, by a
