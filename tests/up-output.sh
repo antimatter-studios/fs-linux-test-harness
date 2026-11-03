@@ -20,12 +20,7 @@ new_sandbox
 # directory under it is refused when too long.
 FLTH_STATE_DIR="$(mktemp -d "${FLTH_TEST_SOCKET_ROOT:-/tmp}/flth.XXXXXX")"
 export FLTH_STATE_DIR
-# shellcheck disable=SC2329
-cleanup() {
-    [ ! -f "$STUBDIR/daemon.pid" ] || kill "$(cat "$STUBDIR/daemon.pid")" 2>/dev/null
-    rm -rf "$SANDBOX" "$FLTH_STATE_DIR"
-}
-trap cleanup EXIT
+trap '[ ! -f "$STUBDIR/daemon.pid" ] || kill "$(cat "$STUBDIR/daemon.pid")" 2>/dev/null; rm -rf "$SANDBOX" "$FLTH_STATE_DIR"' EXIT
 
 HOLD_SECONDS=15
 export HOLD_SECONDS

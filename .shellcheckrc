@@ -1,4 +1,9 @@
-# Sourced files are followed from the directory of the file sourcing them.
+# A sourced file is looked up from the working directory, which is the
+# repository root under tests/run.sh, and then from SCRIPTDIR. SCRIPTDIR is the
+# directory of the script being checked, also inside a file that script
+# sources. A library that names a neighbour by its bare name can therefore read
+# a test of that name instead, so scripts/lib/common.sh names
+# scripts/lib/config.sh in full and never reads tests/config.sh.
 external-sources=true
 source-path=SCRIPTDIR
 
