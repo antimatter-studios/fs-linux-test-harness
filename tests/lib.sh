@@ -32,8 +32,16 @@ check_lacks() {
     esac
 }
 
+require_guest_bash() {
+    export FLTH_TEST_GUEST_BASH="${FLTH_TEST_GUEST_BASH:-bash}"
+    if ! "$FLTH_TEST_GUEST_BASH" -c 'printf -v now "%(%s)T" -1' >/dev/null 2>&1; then
+        bad "guest scripts need Bash 4.2 or newer: set FLTH_TEST_GUEST_BASH to that interpreter (macOS: brew install bash)"
+        return 1
+    fi
+}
+
 new_sandbox() {
-    SANDBOX="$(mktemp -d)"
+    SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/flth.XXXXXX")" || exit 1
     # shellcheck disable=SC2064  # expand now: the path is fixed
     trap "rm -rf '$SANDBOX'" EXIT
     export FLTH_CACHE_DIR="$SANDBOX/cache"
@@ -60,6 +68,7 @@ make_consumer() {
 # the ones a real VM will not produce on demand. `sleep` is stubbed on
 # PATH so retry and wait loops cost nothing.
 make_stub_harness() {
+    require_guest_bash || exit 1
     STUB_HARNESS="$SANDBOX/harness"
     mkdir -p "$STUB_HARNESS"
     cp -R "$REPO/scripts" "$STUB_HARNESS/"

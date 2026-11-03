@@ -8,6 +8,8 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO" || exit 1
+. "$REPO/tests/lib.sh"
+require_guest_bash || exit 1
 failed=0
 
 step() { printf '\n== %s\n' "$1"; }

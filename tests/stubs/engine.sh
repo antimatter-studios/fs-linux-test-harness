@@ -116,7 +116,7 @@ engine_run() {
             -e "s|/run/fs-linux-test-harness-rearmed|$STUB/guest-rearmed|g" \
             -e "s|/repo|$STUB/guest-repo|g" \
             -e "s|/cache\\([/ ']\\)|$STUB/guest-cache\\1|g" -e "s|/cache\$|$STUB/guest-cache|" |
-        bash -s
+        "$FLTH_TEST_GUEST_BASH" -s
 }
 
 engine_copy() {

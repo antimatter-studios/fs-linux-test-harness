@@ -21,7 +21,8 @@ if [ ! -f "$CHECK" ]; then
     exit 1
 fi
 
-BAK="$(mktemp)"; cp CHANGELOG.md "$BAK"
+BAK="$(mktemp "${TMPDIR:-/tmp}/flth-changelog.XXXXXX")" || exit 1
+cp CHANGELOG.md "$BAK"
 PROBE="changelog.d/zz-changelog-check-probe.md"
 restore() { cp "$BAK" CHANGELOG.md; rm -f "$PROBE"; }
 trap 'restore; rm -f "$BAK"' EXIT

@@ -11,7 +11,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 
-CHECK="$REPO/../rust-fs-core/scripts/agents-core-check.sh"
+CHECK="${FS_CORE_ROOT:-$REPO/../rust-fs-core}/scripts/agents-core-check.sh"
 if [ ! -f "$CHECK" ] || [ ! -f "$REPO/AGENTS.md" ]; then
     bad "../rust-fs-core/scripts/agents-core-check.sh and AGENTS.md exist (chore siblings)"
     finish agents-core

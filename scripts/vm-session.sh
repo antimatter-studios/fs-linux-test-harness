@@ -137,6 +137,7 @@ trap flth_session_end EXIT
 if [ "$_flth_session_run" = 1 ]; then
     _flth_session_child=
     _flth_session_signalled=0
+    # shellcheck disable=SC2329
     _flth_session_forward() {
         # _flth_session_forward <status to report> <signal>
         _flth_session_signalled="$1"
@@ -146,15 +147,19 @@ if [ "$_flth_session_run" = 1 ]; then
     trap '_flth_session_forward 130 INT' INT
     trap '_flth_session_forward 143 TERM' TERM
 
+    _flth_session_monitor=0
+    case "$-" in *m*) _flth_session_monitor=1 ;; esac
+    set -m
     # A background job is the only way to keep receiving signals while the
-    # command runs. Without job control bash starts one with INT and QUIT
-    # ignored and stdin from /dev/null; the reset and the explicit
-    # redirection give the command what it would have had in the foreground.
+    # command runs. Job control keeps Bash 3.2 from ignoring INT and QUIT;
+    # resetting a background job's traps does not restore them there. The
+    # explicit redirection preserves the command's foreground stdin.
     (
         trap - INT QUIT
         exec "$@"
     ) 0<&0 &
     _flth_session_child=$!
+    [ "$_flth_session_monitor" = 1 ] || set +m
 
     # `wait` returns early when a trapped signal arrives; the command is
     # still running then (or not yet reaped), so wait again until it is gone.
@@ -165,4 +170,8 @@ if [ "$_flth_session_run" = 1 ]; then
     done
     [ "$_flth_session_signalled" = 0 ] || _flth_session_status="$_flth_session_signalled"
     exit "$_flth_session_status"
+else
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 fi

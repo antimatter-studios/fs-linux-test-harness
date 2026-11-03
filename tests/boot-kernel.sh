@@ -19,7 +19,7 @@ new_sandbox
 # Short on purpose, as in tests/engine-vagrant.sh: on macOS the socket
 # directory under it is refused when too long, and the sandbox is under
 # whatever TMPDIR ran this test.
-FLTH_STATE_DIR="$(mktemp -d /tmp/flth.XXXXXX)"
+FLTH_STATE_DIR="$(mktemp -d "${FLTH_TEST_SOCKET_ROOT:-/tmp}/flth.XXXXXX")"
 export FLTH_STATE_DIR
 # shellcheck disable=SC2064  # expand now: the paths are fixed
 trap "rm -rf '$SANDBOX' '$FLTH_STATE_DIR'" EXIT

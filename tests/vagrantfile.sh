@@ -57,8 +57,9 @@ class Recorder
   def method_missing(name, *args, **kw, &block)
     key = @prefix + name.to_s.sub(/=\z/, "")
     if name.to_s.end_with?("=")
-      @data[key] = args.first
-      return args.first
+      value = args.empty? ? kw : args.first
+      @data[key] = value
+      return value
     end
     if block
       sub = Recorder.new(@data, "#{key}.#{args.first}.")
@@ -71,12 +72,16 @@ class Recorder
     end
     Recorder.new(@data, key + ".")
   end
-  def respond_to_missing?(*) = true
+  def respond_to_missing?(*)
+    true
+  end
 end
 
 module Vagrant
   VERSION = "2.4.9"
-  def self.has_plugin?(name) = PLUGINS.include?(name)
+  def self.has_plugin?(name)
+    PLUGINS.include?(name)
+  end
   def self.configure(_version)
     data = {}
     yield Recorder.new(data, "")
