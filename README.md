@@ -765,9 +765,9 @@ In order of precision:
    it) records its
    process in the machine directory, and reap says which pid it left the VM
    for. A session whose process has died no longer counts. When a session
-   ends while another is still using the same machine — two worktrees of one
-   project share it — it leaves the VM to that one, and the last out brings
-   it down.
+   ends while another is still using the same machine, it leaves the VM to
+   that one, and the last out brings it down. A session or reap from another
+   worktree of the project leaves the VM to the worktree its guest has mounted.
 3. **The guest's own deadline** — scheduled inside the guest at every boot
    (`[vm] deadline_minutes`), confirmed from logind's record, and re-armed
    by every `run` and `exec` as the call starts and as it ends (at most once

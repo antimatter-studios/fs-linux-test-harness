@@ -190,6 +190,32 @@ up_lock_drop() {
     trap - EXIT
 }
 
+# THE MACHINE IS NAMED FOR THE PROJECT AND THE GUEST'S /repo IS ONE WORKTREE.
+# Every worktree of a repository shares a machine, and its guest mounts the one
+# that booted it, so a command from another worktree would run against the wrong
+# files while reporting success or an unrelated failure (#112). Each boot records
+# its worktree. A guest with no record came from a harness that kept none, so
+# which worktree it mounts is unknown and it is joined as before.
+mounted_worktree_record() { printf '%s\n' "$FLTH_MACHINE_DIR/mounted-worktree"; }
+
+# Print the worktree the guest has mounted, when that is not this one.
+mounted_elsewhere() {
+    local mounted
+    mounted="$(cat "$(mounted_worktree_record)" 2>/dev/null || true)"
+    [ -n "$mounted" ] && [ "$mounted" != "$FLTH_ROOT" ] || return 1
+    printf '%s\n' "$mounted"
+}
+
+# For a caller that knows the VM is up.
+refuse_other_worktree() {
+    local mounted
+    mounted="$(mounted_elsewhere)" || return 0
+    echo "vm: $CFG_project_name's VM has $mounted mounted at $FLTH_REPO_GUEST, and this is $FLTH_ROOT." >&2
+    echo "    Nothing ran: this command would have used the other worktree's files." >&2
+    echo "    Run it from that worktree, or again once that VM has stopped. 'chore vm:down' stops it, ending any run there." >&2
+    exit 1
+}
+
 vm_up() {
     local rc=0
     up_lock_take
@@ -205,6 +231,7 @@ vm_up_locked() {
         running)
             # No host-tool check on this path: `run` comes through here on
             # every call, and a VM that is up needs nothing installed.
+            refuse_other_worktree
             refuse_provisioning_boot
             apply_setup auto
             forget_disk_if_setup_ran
@@ -364,6 +391,8 @@ boot_engine() {
             release_if_confirmed_stopped || true
             return 1
         fi
+        mkdir -p "$FLTH_MACHINE_DIR"
+        printf '%s\n' "$FLTH_ROOT" > "$(mounted_worktree_record)"
         if engine_up "$@"; then
             return 0
         fi
@@ -499,6 +528,9 @@ vm_down() {
 }
 
 vm_hold() {
+    if engine_alive "$(engine_identity)"; then
+        refuse_other_worktree
+    fi
     mkdir -p "$FLTH_MACHINE_DIR"
     : > "$FLTH_HOLD"
     if engine_run "touch $FLTH_GUEST_HOLD_MARKER; shutdown -c" >/dev/null 2>&1; then
@@ -519,8 +551,12 @@ vm_hold() {
 # The probe is a process check, not an engine call: it runs on every
 # invocation, so it has to cost milliseconds.
 vm_reap() {
-    local others invocation owner
+    local others invocation owner mounted
     if ! engine_alive "$(engine_identity)"; then
+        return 0
+    fi
+    if mounted="$(mounted_elsewhere)"; then
+        echo "[vm] left running: it has $mounted mounted, and this is $FLTH_ROOT." >&2
         return 0
     fi
     if [ -f "$FLTH_HOLD" ]; then
@@ -551,8 +587,8 @@ vm_reap() {
 # consumer's fixture build, a consumer's test runner — and deliberately does not `hold`, because a hold must outlive the
 # invocation that set it. Without this, a VM in use by a forty-minute
 # fixture build was indistinguishable from a leak, and the reaper, run
-# by any other chore invocation (another terminal, another agent,
-# another worktree of the same project), stopped it mid-build.
+# by any other chore invocation (another terminal, another agent),
+# stopped it mid-build.
 #
 # So a session leaves a marker naming its process, and the reaper leaves
 # the VM alone while any marker's process is alive. A marker whose
@@ -659,10 +695,14 @@ vm_session_end() {
     # if this machine holds it — on the same evidence the slot's waiters
     # use to call a holder dead. A process table that cannot be read (2)
     # is not that evidence, and takes the full `down`.
-    local alive=0
+    local alive=0 mounted
     engine_alive "$(engine_identity)" || alive=$?
     if [ "$alive" -eq 1 ]; then
         "$SLOT" release
+        return 0
+    fi
+    if mounted="$(mounted_elsewhere)"; then
+        echo "[vm] left running: it has $mounted mounted, and this is $FLTH_ROOT." >&2
         return 0
     fi
     vm_down
@@ -675,6 +715,7 @@ vm_session_end() {
 vm_provision() {
     local held=0 others
     if [ "$(engine_state)" = running ]; then
+        refuse_other_worktree
         others="$(live_sessions)"
         if [ -n "$others" ]; then
             echo "vm: not provisioning: another invocation is using the VM (pid ${others//$'\n'/, })," >&2
@@ -704,7 +745,13 @@ vm_status() {
     local state
     state="$(engine_state)"
     case "$state" in
-        running) echo "vm: $CFG_project_name is running" ;;
+        running)
+            echo "vm: $CFG_project_name is running"
+            local mounted
+            if mounted="$(mounted_elsewhere)"; then
+                echo "vm: its guest has $mounted mounted at $FLTH_REPO_GUEST, and this is $FLTH_ROOT"
+            fi
+            ;;
         *) echo "vm: $CFG_project_name is not running ($state)"; exit 1 ;;
     esac
 }
@@ -785,6 +832,7 @@ vm_exec() {
         echo "    or use 'chore vm:run -- <command>', which boots on demand." >&2
         exit 1
     fi
+    refuse_other_worktree
     refuse_provisioning_boot
     guest_run "$*"
 }
@@ -891,6 +939,9 @@ case "$command" in
     put)
         [ $# -eq 1 ] || flth_die "usage: vm.sh put <file>"
         [ -f "$1" ] || flth_die "no such file: $1"
+        if engine_alive "$(engine_identity)"; then
+            refuse_other_worktree
+        fi
         engine_copy "$1"
         ;;
     share) echo "$FLTH_SHARE_HOST" ;;
