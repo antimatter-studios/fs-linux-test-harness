@@ -505,6 +505,12 @@ engine_copy() {
 # the first match SIGPIPEs `ps`, and the pipeline then fails BECAUSE it
 # matched — which read as "not running" precisely when it was.
 engine_alive() {
+    engine_vagrant_qemu_args "$1" >/dev/null
+}
+
+# The command line of this machine's QEMU, with engine_alive's statuses. awk reads
+# to the end: stopping at the match would fail the printf under pipefail.
+engine_vagrant_qemu_args() {
     local identity="$1" procs candidates=""
     [ -n "$identity" ] || return 1
     # 2 when the process table cannot be read: "could not look" is not
@@ -520,6 +526,73 @@ engine_alive() {
     [ -n "$procs" ] || return 2
     printf '%s\n' "$procs" | awk -v want="$identity/" '
         { n = split($1, parts, "/") }
-        parts[n] ~ /^qemu-system-/ && index($0, want) > 0 { found = 1 }
+        !found && parts[n] ~ /^qemu-system-/ && index($0, want) > 0 { print; found = 1 }
         END { exit !found }'
+}
+
+# WHAT A LOST GUEST IS ASKED (#105). Both run under a call a consumer is waiting
+# for, against a machine that may be in any state, so each has a limit of its own.
+ENGINE_VAGRANT_MONITOR_LIMIT=5
+ENGINE_VAGRANT_ANSWER_LIMIT=10
+
+# QEMU's monitor: a readline monitor on a socket the provider names on QEMU's
+# command line. Perl, as for the port above: macOS has no timeout(1), and netcat
+# is not on every Linux host. The monitor redraws each typed character, so a
+# prompt only ends an answer at the very end of what has arrived.
+engine_vagrant_monitor() {
+    local args socket
+    args="$(engine_vagrant_qemu_args "$(engine_identity)")" || return 1
+    socket="$(printf '%s\n' "$args" | sed -n 's/.*id=mon0,path=\([^, ]*\).*/\1/p')"
+    [ -n "$socket" ] || return 1
+    perl -MIO::Select -MIO::Socket::UNIX -e '
+        my ($limit, $path, @commands) = @ARGV;
+        $SIG{ALRM} = sub { exit 1 };
+        alarm $limit;
+        my $monitor = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $path) or exit 1;
+        $monitor->autoflush(1);
+        my $ready = IO::Select->new($monitor);
+        sub answer {
+            my $text = "";
+            until ($text =~ /\(qemu\) $/) {
+                $ready->can_read(1) or next;
+                sysread($monitor, my $chunk, 65536) or exit 1;
+                $text .= $chunk;
+            }
+            return $text;
+        }
+        answer();
+        foreach my $command (@commands) {
+            print {$monitor} "$command\n";
+            print answer();
+        }' "$ENGINE_VAGRANT_MONITOR_LIMIT" "$socket" "$@"
+}
+
+# The overlay is the top of the machine's disk's chain, so the first `disk size`
+# under disk0 is its size. Unlinked as it is, nothing else on the host can say.
+engine_vm_status() {
+    local answer
+    answer="$(engine_vagrant_monitor 'info status' 'info block -v')" || return 1
+    answer="$(printf '%s\n' "$answer" | tr -d '\r')"
+    printf '%s\n' "$answer" | grep -q '^VM status: ' || return 1
+    printf '%s\n' "$answer" | awk '/^VM status: / { print; exit }'
+    printf '%s\n' "$answer" | awk '/^ *I\/O status: / && $3 != "ok" { print "I/O status: " $3; exit }'
+    printf '%s\n' "$answer" | awk '
+        /^disk0 / { disk = 1 }
+        disk && /^disk size: / { sub(/^disk size: /, ""); print "overlay: " $0; exit }'
+}
+
+# A connection of its own, because the shared one is what was lost. alarm outlasts
+# the exec, so ssh is killed at the limit wherever it has got to.
+engine_guest_answers() {
+    local cfg
+    cfg="$(engine_ssh_config)" || return 1
+    perl -e 'alarm shift; exec @ARGV or exit 127' "$ENGINE_VAGRANT_ANSWER_LIMIT" \
+        ssh -F "$cfg" -o ControlPath=none -o ConnectTimeout="$ENGINE_VAGRANT_ANSWER_LIMIT" \
+        -T default true </dev/null >/dev/null 2>&1
+}
+
+# Where engine_up points QEMU's TMPDIR.
+engine_overlay_dir() {
+    # shellcheck disable=SC2153  # FLTH_STATE_DIR, set in lib/common.sh
+    printf '%s/tmp\n' "$FLTH_STATE_DIR"
 }

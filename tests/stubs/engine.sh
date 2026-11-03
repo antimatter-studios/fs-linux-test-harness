@@ -14,6 +14,10 @@
 #   after_destroy  state after engine_destroy (default absent)
 #   ps_unreadable  present: engine_alive answers 2
 #   console        what every boot, failed or not, writes to its console log
+#   vm_status      what engine_vm_status prints; absent: QEMU does not answer
+#   guest_answers  present: engine_guest_answers says the guest answers
+#   ends_on_probe  present: the VM stops when the guest is first probed, as one
+#                  shutting down does just after it drops its connections
 #
 # THE DISK. The guest's setup-stamp directory is $STUB/guest-lib
 # for the length of a boot, and $STUB/disk is what the machine's disk
@@ -123,6 +127,24 @@ engine_copy() {
     cp "$1" "$FLTH_SHARE_HOST/"
     printf '/share/%s\n' "$(basename "$1")"
 }
+
+# What a lost guest is asked about (lib/engine.sh). The real engine's answers
+# are held by tests/lost-guest-engine.sh, which talks to a stand-in monitor.
+engine_vm_status() {
+    stub_log vm-status
+    [ -f "$STUB/vm_status" ] && cat "$STUB/vm_status"
+}
+
+engine_guest_answers() {
+    stub_log guest-answers
+    if [ -f "$STUB/ends_on_probe" ]; then
+        rm -f "$STUB/ends_on_probe"
+        echo stopped > "$STUB/state"
+    fi
+    [ -f "$STUB/guest_answers" ]
+}
+
+engine_overlay_dir() { printf '%s\n' "$STUB"; }
 
 engine_alive() {
     [ -f "$STUB/ps_unreadable" ] && return 2

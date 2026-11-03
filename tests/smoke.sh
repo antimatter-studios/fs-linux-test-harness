@@ -13,6 +13,8 @@
 #   cache         the declared cache (#39) is a mount of its own, with the
 #                 root's filesystem, and what a run leaves there is still
 #                 there after the boot that wrote it has stopped
+#   overlay       what the guest deletes goes back to the host: the overlay,
+#                 as QEMU's monitor measures it, does not keep it (#105)
 #   apt-ready     a held dpkg lock is found and named, as dpkg sees it
 #   slot          a second consumer cannot boot while this one holds it
 #   run / share   exit status and output come back; files cross both ways
@@ -23,6 +25,8 @@
 #                 rather than a handshake (a test process makes hundreds)
 #   guest-test    the consumer's suite runs INSIDE the guest, from the
 #                 repository the harness mounts there
+#   lost guest    a guest paused or powered off under a running call ends that
+#                 call with what stopped it, not a bare 255 (#105)
 #   hold / reap   a held VM survives the reaper; a leaked one does not
 #   test          a passing suite passes and tears down; a CORRUPTED one
 #                 FAILS with a non-zero exit and still tears down;
@@ -73,6 +77,23 @@ state() { "$VM" status >/dev/null 2>&1 && echo running || echo not-running; }
 slot_holder() { "$SLOT" status | sed -n 's/^held by \([^ ]*\) for.*/\1/p'; }
 
 repo_guest="$(sed -n 's/^FLTH_REPO_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
+
+# QEMU'S MONITOR, ASKED DIRECTLY (#105). The overlay is unlinked as soon as it is
+# open, so nothing on the host can stat it and the host's free space moves with
+# whatever else runs there. The monitor reports the open file's size, on a socket
+# the provider names on QEMU's command line.
+monitor() {
+    local identity socket
+    identity="$("$VM" config | sed -n 's/^identity=//p')"
+    socket="$(ps -eo args= | awk -v want="$identity/" '$1 ~ /qemu-system-/ && index($0, want) > 0' |
+        sed -n 's/.*id=mon0,path=\([^, ]*\).*/\1/p' | sed -n 1p)"
+    [ -n "$socket" ] && perl "$REPO/tests/qemu-monitor.pl" "$socket" "$@"
+}
+# The overlay's size in MiB: the first image `info block -v` lists under the
+# machine's disk is the top of its chain.
+overlay_mib() {
+    monitor 'info block -v' | tr -d '\r' | awk '/^disk0 / { disk = 1 } disk && /^disk size: / { unit = $4 == "GiB" ? 1024 : $4 == "MiB" ? 1 : $4 == "KiB" ? 1 / 1024 : 0; if (unit) printf "%d\n", $3 * unit; exit }'
+}
 
 CONTENDER="$(mktemp -d)"
 cleanup() {
@@ -202,6 +223,45 @@ sleep 3
 check_eq "$(mtime "$left_alone") $(sum "$left_alone")" "$want" "nothing in the guest has written to a file the host wrote"
 rm -f "$left_alone"
 
+step "overlay: what the guest deletes goes back to the host (#105)"
+# The oracle is QEMU's monitor. A write takes more of the host's disk until the
+# overlay is deleted with the boot, and a suite that wrote and removed a lot could
+# fill a small runner: more, in total, than the guest has free is written here, a
+# chunk at a time. Stops at the first chunk the overlay kept, because on a host
+# short of disk carrying on is the very failure this checks for.
+overlay_before="$(overlay_mib)"
+check_true '[ -n "$overlay_before" ]' "QEMU's monitor measures the overlay: $overlay_before MiB" "QEMU's monitor did not give the overlay's size"
+overlay_chunk=2048
+overlay_limit=$((overlay_chunk / 4))
+guest_free="$("$VM" run 'df -m --output=avail / | tail -n 1' 2>/dev/null | tr -d ' ')"
+overlay_written=0
+overlay_after="${overlay_before:-0}"
+while [ "$overlay_written" -le "${guest_free:-0}" ] && [ $((overlay_after - ${overlay_before:-0})) -lt "$overlay_limit" ]; do
+    "$VM" run "dd if=/dev/zero of=/var/tmp/flth-smoke-chunk bs=1M count=$overlay_chunk conv=fsync status=none; rm -f /var/tmp/flth-smoke-chunk; sync" 2>/dev/null ||
+        { bad "writing and deleting a chunk failed in the guest"; break; }
+    overlay_written=$((overlay_written + overlay_chunk))
+    # The guest sends its discards when the commit that freed the blocks ends,
+    # which `sync` can return ahead of, so the overlay gets a moment to shrink.
+    overlay_waited=0
+    while :; do
+        overlay_after="$(overlay_mib)"
+        overlay_after="${overlay_after:-0}"
+        echo "  (after $overlay_written MiB and ${overlay_waited}s: $overlay_after MiB)"
+        if [ $((overlay_after - ${overlay_before:-0})) -lt "$overlay_limit" ] || [ "$overlay_waited" -ge 30 ]; then
+            break
+        fi
+        sleep 3
+        overlay_waited=$((overlay_waited + 3))
+    done
+done
+echo "  (wrote and deleted $overlay_written MiB, of $guest_free MiB free; the overlay went from $overlay_before to $overlay_after MiB)"
+check_true '[ $((overlay_after - ${overlay_before:-0})) -lt "$overlay_limit" ]' \
+    "the overlay gave back what the guest deleted" \
+    "the overlay kept what the guest deleted: $overlay_before MiB grew to $overlay_after MiB after $overlay_written MiB written and deleted"
+check_true '[ "$overlay_written" -gt "${guest_free:-0}" ]' \
+    "and more was written than the guest has free" \
+    "only $overlay_written MiB of the guest's $guest_free MiB free was written"
+
 step "direct I/O: a file on either share opens with O_DIRECT (#26)"
 # Some image tools open their image with O_DIRECT (xfs_repair among them,
 # and a loop device with direct I/O), and on the macOS engine that open
@@ -271,6 +331,24 @@ rm -f "$CONSUMER/.smoke-wrote-this"
 ruby "$REPO/tests/exec-cost.rb" "$VM" "$CONTENDER"
 check_eq "$?" 0 "exec meets its per-call budget and beats measured calls without SSH reuse"
 
+step "a lost guest: the call says what stopped it (#105)"
+# Paused through QEMU's own monitor, under a call that is running. ssh's keepalive
+# gives up about two minutes later, as it did on the runner whose disk filled.
+"$VM" exec 'sleep 600' > "$CONTENDER/lost.out" 2> "$CONTENDER/lost.err" &
+lost_call=$!
+sleep 5
+monitor stop >/dev/null
+check_eq "$?" 0 "QEMU's monitor pauses the guest under a running exec"
+wait "$lost_call"
+check_eq "$?" 255 "the call ends with ssh's own status"
+lost="$(cat "$CONTENDER/lost.err")"
+check_contains "$lost" "what stopped it: QEMU paused the guest" "and says QEMU paused the guest"
+check_contains "$lost" "VM status: paused" "in the status QEMU's monitor gives"
+check_contains "$lost" "free on the host's disk holding the overlay" "and what is free on the disk under it"
+check_eq "$(cat "$CONTENDER/lost.out")" "" "and none of that is on stdout"
+monitor cont >/dev/null
+check_eq "$("$VM" run 'echo back' 2>/dev/null)" back "the guest carries on when QEMU lets it"
+
 step "hold and reap"
 "$VM" hold
 check_eq "$("$VM" run 'test -e /run/fs-linux-test-harness-held && ! test -e /run/systemd/shutdown/scheduled && echo held' 2>/dev/null)" held \
@@ -319,6 +397,13 @@ step "test: FLTH_KEEP_VM=1"
 FLTH_KEEP_VM=1 "$VM" test
 check_eq "$?" 0 "the suite passes"
 check_eq "$(state)" running "and the VM is left running, as asked"
+
+step "a lost guest: one that powers itself off (#105)"
+"$VM" exec 'systemctl poweroff; sleep 300' > "$CONTENDER/poweroff.out" 2> "$CONTENDER/poweroff.err"
+check_eq "$?" 255 "a call under a guest that powers itself off ends with ssh's own status"
+lost="$(cat "$CONTENDER/poweroff.err")"
+check_contains "$lost" "what stopped it: the guest powered itself off" "and says so, from the console"
+check_contains "$lost" "[console]" "with the tail of the console"
 
 step "down"
 "$VM" down
