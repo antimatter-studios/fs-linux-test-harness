@@ -76,6 +76,26 @@ boot_or_stop() {
 state() { "$VM" status >/dev/null 2>&1 && echo running || echo not-running; }
 slot_holder() { "$SLOT" status | sed -n 's/^held by \([^ ]*\) for.*/\1/p'; }
 
+qemu_process() {
+    local identity
+    identity="$("$VM" config | sed -n 's/^identity=//p')"
+    [ -n "$identity" ] || return 1
+    ps -eo pid=,args= | awk -v want="$identity/" '$2 ~ /qemu-system-/ && index($0, want) > 0'
+}
+qemu_memory() { qemu_process | sed -n 's/.*mem-path=\([^, ]*\).*/\1/p'; }
+memory_stamp() { ruby -e 's = File.stat(ARGV[0]); puts "#{s.dev}:#{s.ino}"' "$1"; }
+check_artifacts_gone() {
+    local memory="$1" action="$2" artifact identity remaining=""
+    check_true '[ -z "$memory" ] || [ ! -e "$memory" ]' "$action removes unused QEMU memory" "$action left $memory behind"
+    [ -n "$memory" ] || return 0
+    identity="${memory##*/vagrant-qemu-}"
+    identity="${identity%-mem}"
+    for artifact in "${memory%/*}/vqemu-$identity-"virtiofs*.sock.pid; do
+        [ ! -e "$artifact" ] || remaining="$remaining $artifact"
+    done
+    check_eq "$remaining" '' "$action removes unused virtiofs socket pidfiles"
+}
+
 repo_guest="$(sed -n 's/^FLTH_REPO_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
 
 # QEMU'S MONITOR, ASKED DIRECTLY (#105). The overlay is unlinked as soon as it is
@@ -121,6 +141,10 @@ check_eq "$rc" 0 "vm.sh up succeeds"
 boot_or_stop "$rc"
 echo "  (boot + setup took $(( $(date +%s) - t0 ))s)"
 check_eq "$(state)" running "the VM is running"
+memory="$(qemu_memory)"
+if [ "$(uname -s)" = Darwin ]; then
+    check_true '[ -n "$memory" ] && [ -f "$memory" ]' "the running QEMU's shared-memory file is observed" "no shared-memory file was found for the running QEMU"
+fi
 check_eq "$(slot_holder)" flth-smoke "and holds the machine-wide slot"
 check_eq "$("$VM" run hostname 2>/dev/null)" flth-smoke "the guest's hostname is the project name"
 check_contains "$("$VM" run 'uname -a' 2>/dev/null)" "Linux flth-smoke" "uname -a runs in the guest"
@@ -169,6 +193,7 @@ check_contains "$("$VM" run 'losetup -a' 2>/dev/null)" "/var/tmp/flth-smoke.img"
 check_contains "$("$VM" run 'findmnt -n -o SOURCE /mnt/flth-smoke' 2>/dev/null)" "/dev/loop" "and findmnt the mount"
 "$VM" down
 check_eq "$?" 0 "the VM stops"
+check_artifacts_gone "$memory" down
 check_eq "$(sum "$disk")" "$before" "the machine's disk is byte for byte what it was before the run"
 t0=$(date +%s)
 "$VM" up
@@ -416,6 +441,44 @@ step "destroy"
 check_eq "$?" 0 "vm.sh destroy succeeds"
 check_contains "$("$VM" status 2>&1)" "(absent)" "the VM no longer exists"
 check_true '[ ! -e "$machine/cache.img" ]' "and its cache went with it" "destroy left $machine/cache.img behind"
+check_artifacts_gone "$memory" destroy
+
+step "an abrupt QEMU stop: the next boot reclaims abandoned memory"
+"$VM" up
+rc=$?
+check_eq "$rc" 0 "the abrupt-stop guest boots"
+boot_or_stop "$rc"
+memory="$(qemu_memory)"
+generation=""
+if [ -n "$memory" ]; then generation="$(memory_stamp "$memory")"; fi
+pid="$(qemu_process | awk '{print $1}')"
+case "$pid" in
+    '' | *[!0-9]*) bad "the smoke QEMU's pid could not be identified"; verdict; exit 1 ;;
+esac
+kill -KILL "$pid"
+check_eq "$?" 0 "only the smoke QEMU is stopped abruptly"
+attempt=0
+while [ "$attempt" -lt 10 ]; do
+    [ -z "$(qemu_process)" ] && break
+    sleep 1
+    attempt=$((attempt + 1))
+done
+check_eq "$(qemu_process)" '' "the abruptly stopped QEMU is gone"
+"$VM" up
+rc=$?
+check_eq "$rc" 0 "a new boot follows the abrupt stop"
+boot_or_stop "$rc"
+if [ -n "$memory" ]; then
+    replacement="$(memory_stamp "$(qemu_memory)")"
+    if [ "$generation" != "$replacement" ]; then
+        ok "the abandoned memory file was replaced, not reused"
+    else
+        bad "the next boot reused abandoned memory"
+    fi
+fi
+"$VM" destroy
+check_eq "$?" 0 "the abrupt-stop guest is destroyed"
+check_artifacts_gone "$memory" 'destroy after abrupt stop'
 
 step "kernel: the next boot runs the kernel a provisioning boot installed (#80)"
 # The oracles are the guest's own: dpkg says which kernel the setup's package
