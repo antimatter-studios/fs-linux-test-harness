@@ -39,7 +39,7 @@
 #                          running VM (180)
 set -euo pipefail
 
-# shellcheck source=lib/common.sh
+# shellcheck source=scripts/lib/common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/common.sh"
 
 LOCK="$FLTH_STATE_DIR/slot.lock"
