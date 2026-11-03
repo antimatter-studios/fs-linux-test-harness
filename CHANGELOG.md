@@ -9,6 +9,35 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## v0.5.2 — 2026-11-03
+
+### Fixed
+
+- **`scripts/ci-setup-linux.sh`'s apt-get calls retry, time out and say what
+  stalled (#77).** A stalled package mirror once held the QEMU step for 26
+  minutes with nothing in the log, and cancelled the jobs that waited on it.
+  Each call now:
+  - passes apt `Acquire::Retries=3` and 30-second http and https timeouts;
+  - bounds each attempt by `FLTH_APT_TIMEOUT` (240 seconds by default) and
+    makes `FLTH_APT_ATTEMPTS` attempts (3), configuring dpkg before the next
+    one, as a stall is one runner's and a fresh attempt usually finishes;
+  - prints a line before each attempt and after it runs;
+  - fails naming what it was fetching, with the tail of apt-get's output.
+
+- **On macOS, the next boot runs the kernel a setup script installed (#80).**
+  The macOS box starts QEMU on a kernel beside the box, with no bootloader, so
+  the guest stayed on 6.1 and a module only the installed kernel provides could
+  not load. A provisioning boot now copies the disk's newest kernel and initrd
+  to `machines/<project>/boot/`, leaving out the box's Raspberry Pi kernels, and
+  later boots run those. A setup that installs no kernel stays on the box's. A
+  machine provisioned before this takes one extra boot, once. Linux hosts are
+  unchanged.
+- **On macOS, a process capturing the output of `vm.sh up` gets it back (#80).**
+  The forwarder processes a boot starts kept Vagrant's stdout and stderr open,
+  so a capture never saw end-of-file and hung with the guest up and idle.
+  Vagrant now writes to `machines/<project>/vagrant-up.log`, shown on stderr as
+  it grows.
+
 ## v0.5.1 — 2026-10-13
 
 ### Fixed
