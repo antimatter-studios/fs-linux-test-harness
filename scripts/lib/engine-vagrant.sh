@@ -505,11 +505,18 @@ engine_copy() {
 # the first match SIGPIPEs `ps`, and the pipeline then fails BECAUSE it
 # matched — which read as "not running" precisely when it was.
 engine_alive() {
-    local identity="$1" procs
+    local identity="$1" procs candidates=""
     [ -n "$identity" ] || return 1
     # 2 when the process table cannot be read: "could not look" is not
     # "nothing is running".
-    procs="$(ps -eo args= 2>/dev/null)" || return 2
+    if command -v pgrep >/dev/null 2>&1; then
+        candidates="$(pgrep -x 'qemu-system-.*' 2>/dev/null)" || candidates=""
+    fi
+    if [ -n "$candidates" ]; then
+        procs="$(ps -p "${candidates//$'\n'/,}" -o args= 2>/dev/null)" || return 2
+    else
+        procs="$(ps -eo args= 2>/dev/null)" || return 2
+    fi
     [ -n "$procs" ] || return 2
     printf '%s\n' "$procs" | awk -v want="$identity/" '
         { n = split($1, parts, "/") }
