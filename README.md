@@ -183,8 +183,8 @@ cheap and safe:
    command, and fails naming `chore vm:up` when there is no VM.
 2. **One boot per run, and the test runner owns it.** Bring the VM up
    once (the first call of the suite, or the task) and leave it; the
-   harness keeps ONE multiplexed SSH connection alive, so a command costs
-   about 0.03 s instead of the 0.7 s a fresh handshake costs. The script
+   harness keeps ONE multiplexed SSH connection alive, avoiding a fresh
+   SSH handshake for every command. The script
    that runs the suite (`scripts/test.sh`, whatever every tier calls) runs
    it through `vm.sh session <command...>`, so the VM comes down and the
    slot is released when the run ends, however it ends:
@@ -421,7 +421,7 @@ relative, and must not leave the repository.
 | --- | --- |
 | `chore vm:up` | Boot, apply setup, and **hold** it: stays up until `vm:down`, the reaper leaves it, the guest deadline is cancelled. |
 | `chore vm:run -- <command>` | Run a command as root in the guest (booting if needed). Exit status and stdout/stderr are the guest command's. Operators like `&&` and `\|` belong to the guest. |
-| `chore vm:exec -- <command>` | The same, in a VM that is ALREADY up — and it never boots one. The per-call path for a test process: no state probe beyond a process check, and one multiplexed SSH connection shared by every call (~0.03 s each). Fails naming `chore vm:up` when nothing is running. |
+| `chore vm:exec -- <command>` | The same, in a VM that is ALREADY up — and it never boots one. The per-call path for a test process: no state probe beyond a process check, and one multiplexed SSH connection shared by every call. Smoke measures the complete call against calls without reuse. Fails naming `chore vm:up` when nothing is running. |
 | `chore vm:put <file>` | Copy a file into the shared directory; print its guest path (`/share/<name>`). |
 | `chore vm:share` | Print the host path of the shared directory. |
 | `chore vm:test [-- args]` | Boot, run the `[test] command` on the HOST, tear down. A failing teardown fails the task; the test's own failure wins if both fail. `FLTH_KEEP_VM=1` keeps the VM. |
@@ -613,11 +613,34 @@ second per `run`, against five to ten for `vagrant ssh` under bundler.
 
 **One connection, reused.** The first command opens an SSH master
 deliberately (`-M -N -f`, its own streams, socket under `FLTH_STATE_DIR`)
-and later commands ride it: about 0.03 s each instead of 0.7 s. The master
+and later commands ride it. The master
 is opened on purpose rather than grown out of the first command — a master
 that inherits a command's stdout keeps it open for as long as it persists,
 so a caller capturing the output of a one-second call would wait an hour
 for end-of-file. It is closed before a boot and after a stop.
+
+**The complete call is timed, not mistaken for SSH alone.** `tests/smoke.sh`
+uses `tests/exec-cost.rb` and a monotonic clock to time ten ordinary `exec`
+calls and ten with `ControlPath=none` and `ControlMaster=no`, interleaving
+them in alternating order. Every command must succeed. The ordinary average
+must be below 250 ms on Linux or 500 ms on macOS, and at least 20% faster
+than the measured calls without reuse; meeting the fixed budget alone does
+not establish reuse.
+
+On an Apple M1 Max with a Debian 12 HVF guest on 2026-11-03, ten interleaved
+calls per version averaged 456.3 ms before candidate-only process inspection
+and 291.1 ms after it. The old 250 ms assertion failed even though SSH's
+`mux_client_request_session` confirmed use of the master. The full
+`ps -eo args=` scan alone measured 65.5 ms per call in a separate twenty-call
+sample, before the shell copied and scanned its output. Loading the libraries,
+then the configuration, then preparing the engine measured 9, 31 and 43 ms
+cumulatively in a separate ten-call sample. Raw reused SSH measured 12–23 ms;
+raw fresh SSH measured 108–141 ms across two ten-call samples.
+
+The revised smoke check measured 366.3 ms against 522.0 ms with reuse disabled
+and passed. Forcing fresh SSH in both modes measured 544.3 ms against 482.0 ms
+and failed both the budget and reuse comparison. These are measurements of
+that host under changing load, not universal SSH or wrapper latencies.
 
 **Sockets live on a path the harness controls.** A Unix socket path is
 limited to about 104 bytes. The ssh control socket is under

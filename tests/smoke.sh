@@ -268,15 +268,8 @@ check_eq "$("$VM" exec "cat $repo_guest/$(basename "$FLTH_CONFIG") | sed -n 's/^
 "$VM" exec "touch $repo_guest/.smoke-wrote-this" 2>/dev/null
 check_true '[ -f "$CONSUMER/.smoke-wrote-this" ]' "the guest can write to it, so a build in there reaches the host" "the repository mount is read-only in the guest"
 rm -f "$CONSUMER/.smoke-wrote-this"
-# THE NUMBER THAT MATTERS: a suite asking the guest hundreds of questions
-# pays this per question. A fresh ssh handshake is ~0.7s; multiplexed,
-# ~0.03s.
-t0=$(date +%s%N)
-for _ in 1 2 3 4 5 6 7 8 9 10; do "$VM" exec true >/dev/null 2>&1; done
-per_call=$(( ( $(date +%s%N) - t0 ) / 10000000 ))
-echo "  (exec: ${per_call}ms per call, averaged over ten)"
-check_true "[ $per_call -lt 250 ]" "ten execs average ${per_call}ms each — the connection is reused" \
-    "exec costs ${per_call}ms per call, about what a fresh SSH handshake costs: the connection is NOT being reused"
+ruby "$REPO/tests/exec-cost.rb" "$VM" "$CONTENDER"
+check_eq "$?" 0 "exec meets its per-call budget and beats measured calls without SSH reuse"
 
 step "hold and reap"
 "$VM" hold
