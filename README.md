@@ -19,7 +19,7 @@ takes care of everything around it:
 - running the repository's own setup script inside it to install its tooling,
 - running commands as root in the guest and handing back their output and exit status,
 - a directory shared between host and guest for images and results,
-- **one VM at a time across every repository on the machine**,
+- **a machine-wide VM limit, one by default, with memory admission before every boot**,
 - making sure a VM that nobody is using does not stay up.
 
 It knows nothing about any filesystem. Everything filesystem-specific
@@ -403,7 +403,7 @@ chose.
 | `[cache] size` | string | none | **Declares a cache that outlives every boot**, e.g. `16G`. A disk of its own, mounted at `/cache` in the guest on every boot and kept when the boot stops, unlike everything else a run writes (see "Every run starts from the same disk"). For in-guest build state a run can rebuild but should not have to: point a toolchain's home or build directory under `/cache`. Its first boot gives it the filesystem the guest's root uses. Sparse, so it takes host space only as it fills. Changing the size replaces it with an empty one; `chore vm:destroy` deletes it with the machine. No `[cache]` section, no `/cache`. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
 | *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
-| `[vm] memory` | string | `4G` | Guest memory, e.g. `2G`, `2048M`. |
+| `[vm] memory` | string | `2G` | Guest memory, e.g. `3G`, `2048M`. Selected from real `guest-test` measurements at 2, 3 and 4 GiB; see [the measurement](docs/guest-memory-2026-11-03.md). |
 | `[vm] cpus` | integer | `4` | Guest CPUs, 1–64. |
 | `[vm] disk` | string | `32G` | Guest disk size, e.g. `16G`. |
 | `[vm] ssh_port` | integer | `50122` | Host port forwarded to the guest's SSH when it is free at boot; when another socket holds it, the boot forwards a free port the kernel hands out instead, and says so. |
@@ -431,7 +431,7 @@ relative, and must not leave the repository.
 | `chore vm:down` | Halt, **confirm** the VM stopped, release the slot. Fails if the VM is still running or its state cannot be read. Keeps the disk, which holds what setup installed and nothing a run wrote. |
 | `chore vm:status` | Exit 0 when running, 1 otherwise, and say which. |
 | `chore vm:hold` | Mark the VM as deliberately running (reaper and guest deadline stand down). |
-| `chore vm:reap` | Stop a VM nothing cleaned up, unless held. Meant for `lifecycle: after_all`. |
+| `chore vm:reap` | Stop this invocation's VM if nothing cleaned it up, unless held or in use. Meant for `lifecycle: after_all`; use `vm:down` to stop an older invocation's VM. |
 | `chore vm:destroy` | Delete the VM and its disk; the next boot provisions from scratch. |
 | `chore vm:config` | Print the resolved config, paths, machine identity and slot location. |
 | `chore vm:host:check` | Check the host; print the exact install command for anything missing. |
@@ -456,6 +456,7 @@ relative, and must not leave the repository.
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/<project>/`) and firmware links. |
 | `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | The slot lock. Must be the same for every repository on the machine. |
 | `FLTH_SLOT_WAIT` | `3600` | Seconds `up` waits for the slot before giving up. |
+| `FLTH_SLOT_COUNT` | `1` | Machine-wide concurrent VM limit, 1–64. Set it consistently for every consumer and shell on this host; `2` admits two consumers when host memory permits. |
 | `FLTH_SLOT_BOOT_GRACE` | `180` | Seconds a new slot holder is trusted before a VM must be running. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
 | `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
@@ -661,15 +662,29 @@ whole suite.
 
 ## The slot lock
 
-One VM runs at a time **across every repository on the machine**. VMs
-ask for gigabytes; two beside a compiler fill a laptop, and a full
-machine kills background work without saying why. The cost is stated
-rather than hidden: VM work in different repositories queues instead of
-overlapping.
+The limit applies **across every repository on the machine**: one VM by
+default. Set `export FLTH_SLOT_COUNT=2` consistently in the host's shells
+to allow two consumers at once; a third waits and names both holders.
+Reducing the setting drains occupied slots above the new limit before
+admitting another VM. Status and release still find those slots.
 
-- The lock is a directory under `FLTH_STATE_DIR` (`mkdir` is atomic)
+VMs ask for gigabytes; several beside a compiler once filled a laptop,
+and a full machine killed background work without saying why. Raising
+the count does not remove that protection. Admission, and every actual
+boot including provisioning and retries, checks available host memory:
+Linux's `MemAvailable`, or macOS's free, inactive and speculative pages
+at the page size reported by `vm_stat`. It requires the guest allocation
+plus **2048 MiB left for the host** and the allocations reserved by other
+booting guests. Settled running guests are already reflected in available
+memory. A reboot renews its reservation's boot grace. An unreadable memory
+probe or reservation refuses safely rather than assuming capacity.
+The refusal names the consumer and the memory requirement; contention
+names the holders and waits. Neither failure is silent.
+
+- Each slot is a directory under `FLTH_STATE_DIR` (`mkdir` is atomic)
   holding one record: machine identity, project name, time taken, and a
-  generation token.
+  generation token, with its memory reservation beside it. Slot one keeps
+  the existing `slot.lock` path; additional slots use `slot-2.lock`, etc.
 - `up` takes the slot **before booting, and only when booting**. `down`
   and `destroy` release it **only once the VM is confirmed stopped** — a
   halt that left it running, or a state that could not be read, keeps
@@ -694,9 +709,12 @@ In order of precision:
    that sources it, or `vm:test`'s own teardown — which brings the VM down
    unless it is held or another live session is using it. Fails loudly when
    the VM will not stop.
-2. **`reap`** — from `lifecycle: after_all`, on any later chore
-   invocation: stops a VM nothing accounted for (a bare `cargo test`, a
-   killed run). Fails soft, so an unrelated `chore build` is not turned red.
+2. **`reap`** — from `lifecycle: after_all`: stops only a VM booted by
+   that same chore invocation, identified by its process ID and start time.
+   Another invocation's idle VM is left alone, even when a lifecycle sweep
+   names several consumer configs. Fails soft, so an unrelated `chore build`
+   is not turned red. Use `vm:down` for an older run's VM; an explicit
+   `scripts/vm.sh reap` outside chore remains a manual leak-cleanup command.
    It leaves alone a VM a **live session** is using: `vm-session.sh` (and so
    `vm:test`, `vm:guest-test`, `vm.sh session` and any script that sources
    it) records its

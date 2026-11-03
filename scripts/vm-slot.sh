@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vm-slot.sh — one test VM at a time, across every repository.
+# vm-slot.sh — bounded test VMs, across every repository.
 #
 #   vm-slot.sh acquire          wait for the slot, then take it
 #   vm-slot.sh release          give it back, if this consumer holds it
@@ -8,15 +8,15 @@
 #   vm-slot.sh status           say who holds it and for how long
 #
 # WHY THIS EXISTS. A test VM asks for gigabytes. Two of them beside a
-# compiler fill a laptop, and a full machine does not fail cleanly: it
+# compiler can fill a laptop, and a full machine does not fail cleanly: it
 # kills background work with no message connecting the two. That is what
 # happened when several agents built fixtures in parallel.
 #
-# So the slot is ONE GLOBAL SLOT, not one per repository. The cost is
-# stated rather than hidden: VM work in different repositories no longer
-# overlaps, and a queued run waits for the one ahead. Slower on a good
-# day, much better on a bad one, because the failure it removes was
-# silent and the cost it adds is visible.
+# The limit is machine-wide, not per repository: one by default, or
+# FLTH_SLOT_COUNT for a host with room for more. Every admission checks
+# available host memory, reserves other booting guests' allocations and
+# leaves 2048 MiB for the host. A full machine refuses by consumer name;
+# an occupied limit waits visibly. Neither failure is silent.
 #
 # THE LOCK is a directory, because `mkdir` is atomic. Inside it, `holder`
 # is one line of four tab-separated fields:
@@ -35,6 +35,7 @@
 #   FLTH_STATE_DIR         where the lock lives (default
 #                          ${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness)
 #   FLTH_SLOT_WAIT         seconds `acquire` waits before giving up (3600)
+#   FLTH_SLOT_COUNT        machine-wide concurrent VM limit (1, at most 64)
 #   FLTH_SLOT_BOOT_GRACE   seconds a fresh holder is trusted without a
 #                          running VM (180)
 set -euo pipefail
@@ -49,10 +50,10 @@ HOLDER="$LOCK/holder"
 WAIT_SECS="${FLTH_SLOT_WAIT:-3600}"
 
 # THE SLOT IS TAKEN BEFORE THE VM EXISTS — necessarily, since the point
-# is to stop a second one booting. For the length of a boot there is a
+# is to keep boots within the host's limit. During a boot there is a
 # holder with no VM behind it; without a grace period a waiter would see
-# nothing running, break the lock, and boot the second VM this file
-# exists to prevent. Too long only delays reclaiming a dead lock; too
+# nothing running, break the lock, and exceed the configured limit.
+# Too long only delays reclaiming a dead lock; too
 # short reintroduces the race, so it errs long.
 BOOT_GRACE_SECS="${FLTH_SLOT_BOOT_GRACE:-180}"
 
@@ -69,6 +70,97 @@ slot_identify() {
     flth_load || exit 1
     HOLDER_IDENTITY="$(engine_identity)"
     HOLDER_NAME="$CFG_project_name"
+}
+
+slot_path() {
+    LOCK="$FLTH_STATE_DIR/slot.lock"
+    [ "$1" = 1 ] || LOCK="$FLTH_STATE_DIR/slot-$1.lock"
+    HOLDER="$LOCK/holder"
+}
+
+slot_paths() {
+    printf '%s\n' "$FLTH_STATE_DIR/slot.lock"
+    local candidate
+    for candidate in "$FLTH_STATE_DIR"/slot-[0-9]*.lock; do
+        [ -d "$candidate" ] && printf '%s\n' "$candidate"
+    done
+    return 0
+}
+
+slot_count() {
+    SLOT_COUNT="${FLTH_SLOT_COUNT:-1}"
+    case "$SLOT_COUNT" in
+        '' | 0* | *[!0-9]*)
+            echo '[vm-slot] FLTH_SLOT_COUNT must be an integer from 1 to 64' >&2
+            return 1 ;;
+    esac
+    if [ "${#SLOT_COUNT}" -gt 2 ] || [ "$SLOT_COUNT" -gt 64 ]; then
+        echo '[vm-slot] FLTH_SLOT_COUNT must be an integer from 1 to 64' >&2
+        return 1
+    fi
+}
+
+guest_memory_mib() {
+    case "$CFG_vm_memory" in
+        *G) echo "$(( ${CFG_vm_memory%G} * 1024 ))" ;;
+        *M) echo "${CFG_vm_memory%M}" ;;
+    esac
+}
+
+host_memory_mib() {
+    case "$(uname -s)" in
+        Linux)
+            awk '/^MemAvailable:/ {print int($2 / 1024); found=1} END {if (!found) exit 1}' /proc/meminfo ;;
+        Darwin)
+            local stats
+            stats="$(vm_stat)" || return 1
+            printf '%s\n' "$stats" | awk '
+                /page size of/ {for (field=1; field<=NF; field++) if ($field == "bytes)") size=$(field-1)}
+                /^Pages (free|inactive|speculative):/ {gsub(/\./, "", $NF); pages+=$NF; found++}
+                END {if (!size || found != 3) exit 1; print int(pages * size / 1048576)}' ;;
+        *) return 1 ;;
+    esac
+}
+
+memory_admit() {
+    local available requested pending=0 candidate snapshot identity since reservation
+    requested="$(guest_memory_mib)"
+    available="$(host_memory_mib)" || available=""
+    case "$available" in
+        '' | *[!0-9]*)
+            echo "[vm-slot] $HOLDER_NAME: host free memory could not be measured; refusing to start" >&2
+            return 1 ;;
+    esac
+    while IFS= read -r candidate; do
+        [ -d "$candidate" ] || continue
+        [ "$candidate" != "$LOCK" ] || continue
+        snapshot="$(read_holder "$candidate/holder" 2>/dev/null || true)"
+        if [ -z "$snapshot" ]; then
+            sleep 1
+            snapshot="$(read_holder "$candidate/holder" 2>/dev/null || true)"
+        fi
+        if [ -z "$snapshot" ]; then
+            echo "[vm-slot] $HOLDER_NAME: memory reservation is incomplete at $candidate; refusing to start" >&2
+            return 1
+        fi
+        identity="$(snapshot_field "$snapshot" 1)"
+        [ "$identity" != "$HOLDER_IDENTITY" ] || continue
+        since="$(snapshot_field "$snapshot" 3)"
+        if [ "$(( $(now) - since ))" -gt "$BOOT_GRACE_SECS" ] && engine_alive "$identity"; then
+            continue
+        fi
+        reservation="$(cat "$candidate/memory" 2>/dev/null || true)"
+        case "$reservation" in
+            '' | *[!0-9]*)
+                echo "[vm-slot] $HOLDER_NAME: memory reservation is unknown for $(snapshot_field "$snapshot" 2); refusing to start" >&2
+                return 1 ;;
+        esac
+        pending=$((pending + reservation))
+    done < <(slot_paths)
+    if [ "$available" -lt "$((requested + pending + 2048))" ]; then
+        echo "[vm-slot] $HOLDER_NAME: insufficient host memory: $available MiB available; $requested MiB guest + $pending MiB pending guests + 2048 MiB host reserve; refusing to start" >&2
+        return 1
+    fi
 }
 
 now() { date +%s; }
@@ -95,9 +187,9 @@ next_serial() { SERIAL=$((SERIAL + 1)); }
 # returns the whole line for every field: `123` would be a valid record
 # naming an identity called `123`.
 read_holder() {
-    [ -f "$HOLDER" ] || return 1
-    local line fields
-    IFS= read -r line < "$HOLDER" 2>/dev/null || return 1
+    local file="${1:-$HOLDER}" line fields
+    [ -f "$file" ] || return 1
+    IFS= read -r line < "$file" 2>/dev/null || return 1
     [ -n "$line" ] || return 1
     fields="$(printf '%s\n' "$line" | awk -F'\t' '{print NF}')"
     [ "$fields" = 4 ] || return 1
@@ -160,6 +252,7 @@ restore_lock() {
     local staged="$1" orphan
     if mkdir "$LOCK" 2>/dev/null; then
         mv "$staged/holder" "$HOLDER" 2>/dev/null || true
+        if [ -f "$staged/memory" ]; then mv "$staged/memory" "$LOCK/memory"; fi
         rm -rf "$staged"
         return 0
     fi
@@ -221,43 +314,86 @@ break_lock() {
 
 cmd_acquire() {
     slot_identify
+    slot_count || return 1
     mkdir -p "$FLTH_STATE_DIR"
-    local waited=0 announced=0 snapshot identity name since token age
+    local waited=0 announced=0 snapshot identity name since token age index holders candidate number
 
     while :; do
-        if mkdir "$LOCK" 2>/dev/null; then
-            next_serial
-            printf '%s\t%s\t%s\t%s\n' "$HOLDER_IDENTITY" "$HOLDER_NAME" "$(now)" \
-                "$(now)-$$-$SERIAL" > "$HOLDER"
-            [ "$announced" = 1 ] && echo "[vm-slot] got the slot after $(pretty_age "$waited")" >&2
-            return 0
-        fi
+        holders=""
+        index=1
+        while IFS= read -r candidate; do
+            [ -d "$candidate" ] || continue
+            number="${candidate##*/slot-}"
+            number="${number%.lock}"
+            case "$number" in '' | *[!0-9]*) continue ;; esac
+            if [ "$number" -gt "$SLOT_COUNT" ]; then
+                LOCK="$candidate"
+                HOLDER="$LOCK/holder"
+                snapshot="$(read_holder 2>/dev/null || true)"
+                if [ -n "$snapshot" ]; then
+                    identity="$(snapshot_field "$snapshot" 1)"
+                    age=$(( $(now) - $(snapshot_field "$snapshot" 3) ))
+                    if [ "$age" -gt "$BOOT_GRACE_SECS" ] && holder_is_dead "$identity"; then
+                        break_lock 'disabled slot has no running VM' "$(snapshot_field "$snapshot" 4)" || true
+                        continue
+                    fi
+                    name="$(snapshot_field "$snapshot" 2)"
+                else
+                    name="an incomplete reservation at $candidate"
+                fi
+                holders="$holders${holders:+, }$name (disabled slot)"
+                index=$((SLOT_COUNT + 1))
+            fi
+        done < <(slot_paths)
+        while [ "$index" -le "$SLOT_COUNT" ]; do
+            slot_path "$index"
+            index=$((index + 1))
+            if mkdir "$LOCK" 2>/dev/null; then
+                next_serial
+                token="$(now)-$$-$SERIAL"
+                guest_memory_mib > "$LOCK/memory"
+                printf '%s\t%s\t%s\t%s\n' "$HOLDER_IDENTITY" "$HOLDER_NAME" "$(now)" \
+                    "$token" > "$HOLDER"
+                if ! memory_admit; then
+                    delete_generation "$token" releasing || true
+                    return 1
+                fi
+                [ "$announced" = 1 ] && echo "[vm-slot] got the slot after $(pretty_age "$waited")" >&2
+                return 0
+            fi
 
-        # A lock with no complete record: a holder mid-write, or one that
-        # died between `mkdir` and `printf`. A moment for the first, then
-        # reclaim. The empty token matches only a lock that still has no
-        # record, so a replacement that arrived with one is left alone.
-        if ! read_holder >/dev/null 2>&1; then
-            sleep 1
+            # A lock with no complete record: a holder mid-write, or one that
+            # died between `mkdir` and `printf`. A moment for the first, then
+            # reclaim. The empty token matches only a lock that still has no
+            # record, so a replacement that arrived with one is left alone.
             if ! read_holder >/dev/null 2>&1; then
-                break_lock "no holder recorded" "" || true
+                sleep 1
+                if ! read_holder >/dev/null 2>&1; then
+                    break_lock "no holder recorded" "" || true
+                    index=$((index - 1))
+                    continue
+                fi
+            fi
+
+            # ONE SNAPSHOT, AND EVERY PART OF THE DECISION COMES FROM IT.
+            snapshot="$(read_holder 2>/dev/null || true)"
+            if [ -z "$snapshot" ]; then
+                index=$((index - 1))
                 continue
             fi
-        fi
+            identity="$(snapshot_field "$snapshot" 1)"
+            name="$(snapshot_field "$snapshot" 2)"
+            since="$(snapshot_field "$snapshot" 3)"
+            token="$(snapshot_field "$snapshot" 4)"
+            age=$(( $(now) - since ))
 
-        # ONE SNAPSHOT, AND EVERY PART OF THE DECISION COMES FROM IT.
-        snapshot="$(read_holder 2>/dev/null || true)"
-        [ -n "$snapshot" ] || continue
-        identity="$(snapshot_field "$snapshot" 1)"
-        name="$(snapshot_field "$snapshot" 2)"
-        since="$(snapshot_field "$snapshot" 3)"
-        token="$(snapshot_field "$snapshot" 4)"
-        age=$(( $(now) - since ))
-
-        if [ "$age" -gt "$BOOT_GRACE_SECS" ] && holder_is_dead "$identity"; then
-            break_lock "no VM is running for $name after $(pretty_age "$age")" "$token" || true
-            continue
-        fi
+            if [ "$age" -gt "$BOOT_GRACE_SECS" ] && holder_is_dead "$identity"; then
+                break_lock "no VM is running for $name after $(pretty_age "$age")" "$token" || true
+                index=$((index - 1))
+                continue
+            fi
+            holders="$holders${holders:+, }$name ($(pretty_age "$age"))"
+        done
 
         # THERE IS NO AGE-ALONE BREAK, AND THERE MUST NOT BE.
         #
@@ -275,13 +411,13 @@ cmd_acquire() {
         # person's decision, not a timer's.
 
         if [ "$announced" = 0 ]; then
-            echo "[vm-slot] waiting for the VM slot — held by $name for $(pretty_age "$age")" >&2
-            echo "[vm-slot] one VM runs at a time; this is a queue, not a failure" >&2
+            echo "[vm-slot] waiting for the VM slot — held by $holders" >&2
+            echo "[vm-slot] $SLOT_COUNT VM slot(s); this is a queue, not a failure" >&2
             announced=1
         fi
 
         if [ "$waited" -ge "$WAIT_SECS" ]; then
-            echo "[vm-slot] gave up after $(pretty_age "$waited") waiting for $name" >&2
+            echo "[vm-slot] gave up after $(pretty_age "$waited") waiting for $holders" >&2
             echo "[vm-slot] if $name is finished, run 'chore vm:down' there, or" >&2
             echo "[vm-slot] 'chore vm:slot:release-force' to take the slot from it." >&2
             return 1
@@ -293,6 +429,52 @@ cmd_acquire() {
 }
 
 cmd_release() {
+    local candidate
+    while IFS= read -r candidate; do
+        LOCK="$candidate"
+        HOLDER="$LOCK/holder"
+        release_slot "${1:-}"
+    done < <(slot_paths)
+    slot_path 1
+}
+
+cmd_check_memory() {
+    slot_identify
+    local candidate snapshot token
+    while IFS= read -r candidate; do
+        LOCK="$candidate"
+        HOLDER="$LOCK/holder"
+        snapshot="$(read_holder 2>/dev/null || true)"
+        if [ -n "$snapshot" ] && [ "$(snapshot_field "$snapshot" 1)" = "$HOLDER_IDENTITY" ]; then
+            next_serial
+            token="$(now)-$$-$SERIAL"
+            renew_holder "$snapshot" "$token" || {
+                echo "[vm-slot] $HOLDER_NAME: memory reservation changed before the boot; refusing to start" >&2
+                return 1
+            }
+            if [ "$(holder_field 4 2>/dev/null || true)" != "$token" ]; then
+                echo "[vm-slot] $HOLDER_NAME: the renewed memory reservation was displaced; refusing to start" >&2
+                return 1
+            fi
+            memory_admit
+            return "$?"
+        fi
+    done < <(slot_paths)
+    echo "[vm-slot] $HOLDER_NAME: no memory reservation owns this boot; refusing to start" >&2
+    return 1
+}
+
+renew_holder() (
+    local expected="$1" token="$2"
+    cd "$LOCK" || return 1
+    [ "$(read_holder ./holder 2>/dev/null || true)" = "$expected" ] || return 1
+    guest_memory_mib > "memory.next.$token" || return 1
+    mv "memory.next.$token" memory || return 1
+    printf '%s\t%s\t%s\t%s\n' "$(snapshot_field "$expected" 1)" "$(snapshot_field "$expected" 2)" "$(now)" "$token" > "holder.next.$token" || return 1
+    mv "holder.next.$token" holder || return 1
+)
+
+release_slot() {
     if [ "${1:-}" = "--force" ]; then
         rm -rf "$LOCK"
         return 0
@@ -318,6 +500,16 @@ cmd_release() {
 }
 
 cmd_status() {
+    local candidate
+    while IFS= read -r candidate; do
+        LOCK="$candidate"
+        HOLDER="$LOCK/holder"
+        status_slot
+    done < <(slot_paths)
+    slot_path 1
+}
+
+status_slot() {
     local snapshot age
     snapshot="$(read_holder 2>/dev/null || true)"
     if [ -z "$snapshot" ]; then
@@ -353,6 +545,7 @@ fi
 
 case "${1:-}" in
     acquire) cmd_acquire ;;
+    check-memory) cmd_check_memory ;;
     release) shift; cmd_release "${1:-}" ;;
     status) cmd_status ;;
     *)
