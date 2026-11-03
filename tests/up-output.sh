@@ -65,6 +65,18 @@ check_contains "$out" "a line on stderr" "and its stderr"
 check_contains "$out" "last line of the boot" "to the last line"
 kill "$(cat "$STUBDIR/daemon.pid")" 2>/dev/null
 
+# A consumer's first `vm.sh up` is a provisioning boot, which is the call #80
+# was found on.
+started="$(date +%s)"
+out="$(engine_up --persist 2>&1)"
+rc=$?
+took=$(( $(date +%s) - started ))
+check_eq "$rc" 0 "a provisioning boot succeeds"
+check_eq "$([ "$took" -lt "$HOLD_SECONDS" ] && echo returned || echo held)" returned \
+    "and a capture of its output ends when it does (took ${took}s)"
+check_contains "$out" "last line of the boot" "with all of what it printed"
+kill "$(cat "$STUBDIR/daemon.pid")" 2>/dev/null
+
 echo 3 > "$STUBDIR/up-exit"
 started="$(date +%s)"
 out="$(engine_up 2>&1)"

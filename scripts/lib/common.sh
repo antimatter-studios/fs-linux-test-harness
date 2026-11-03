@@ -10,7 +10,7 @@ FLTH_HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
 # shellcheck source=scripts/lib/config.sh
 . "$FLTH_HARNESS/scripts/lib/config.sh"
-# shellcheck source=engine.sh
+# shellcheck source=scripts/lib/engine.sh
 . "$FLTH_HARNESS/scripts/lib/engine.sh"
 
 # Machines, their disks and the firmware links are CACHE: regenerable,

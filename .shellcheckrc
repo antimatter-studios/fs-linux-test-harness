@@ -2,8 +2,11 @@
 # repository root under tests/run.sh, and then from SCRIPTDIR. SCRIPTDIR is the
 # directory of the script being checked, also inside a file that script
 # sources. A library that names a neighbour by its bare name can therefore read
-# a test of that name instead, so scripts/lib/common.sh names
-# scripts/lib/config.sh in full and never reads tests/config.sh.
+# a test of that name, or nothing, from a script outside scripts/lib. So a file
+# that a checked script reaches through another file is named in full from the
+# repository root: tests/slot.sh reaches scripts/lib/common.sh through
+# scripts/vm-slot.sh, and the files common.sh sources must not be read as
+# tests/config.sh or tests/engine-vagrant.sh.
 external-sources=true
 source-path=SCRIPTDIR
 

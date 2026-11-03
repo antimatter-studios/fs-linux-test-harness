@@ -61,5 +61,5 @@
 #                              process check with no engine call: the
 #                              reaper runs it on every chore invocation.
 
-# shellcheck source=engine-vagrant.sh
+# shellcheck source=scripts/lib/engine-vagrant.sh
 . "$FLTH_HARNESS/scripts/lib/engine-vagrant.sh"
