@@ -74,7 +74,12 @@ boot_or_stop() {
     fi
 }
 state() { "$VM" status >/dev/null 2>&1 && echo running || echo not-running; }
-slot_holder() { "$SLOT" status | sed -n 's/^held by \([^ ]*\) for.*/\1/p'; }
+slot_holder() { "$SLOT" status | awk '$1 == "held" && $2 == "by" && $3 == "flth-smoke" && $4 == "for" { print $3 }'; }
+slot_contender() {
+    local state="$CONTENDER/slot-state"
+    FLTH_STATE_DIR="$state" FLTH_SLOT_COUNT=1 "$SLOT" acquire || return
+    (cd "$CONTENDER" && FLTH_CONFIG='' FLTH_STATE_DIR="$state" FLTH_SLOT_COUNT=1 FLTH_SLOT_WAIT=0 "$VM" up)
+}
 
 qemu_process() {
     local identity
@@ -212,7 +217,7 @@ check_eq "$("$VM" run "cat $cache_guest/flth-smoke-kept-this" 2>/dev/null)" kept
 step "slot: a second consumer cannot boot"
 printf '[project]\nname = "flth-smoke-contender"\n[setup]\nscript = "setup.sh"\n' > "$CONTENDER/fs-linux-test-harness.toml"
 echo true > "$CONTENDER/setup.sh"
-out="$(cd "$CONTENDER" && FLTH_CONFIG='' FLTH_SLOT_WAIT=0 "$VM" up 2>&1)"
+out="$(slot_contender 2>&1)"
 rc=$?
 check_true '[ "$rc" -ne 0 ]' "the contender's up fails (exit $rc)" "the contender booted a second VM"
 check_contains "$out" "held by flth-smoke" "it is told who holds the slot"
