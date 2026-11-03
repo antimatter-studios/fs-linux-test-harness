@@ -73,7 +73,6 @@ check_eq "$ID" "$VAGRANT_DOTFILE_PATH" "the identity is the dotfile path, which 
 
 # --- firmware links, by host ---------------------------------------------
 
-# shellcheck disable=SC2329
 fw_for() {
     # fw_for <uname -s> <uname -m>
     printf '#!/bin/sh\ncase "$1" in -s) echo %s ;; -m) echo %s ;; esac\n' "$1" "$2" > "$BIN/uname"
@@ -94,7 +93,6 @@ rm -f "$BIN/uname"
 
 # --- engine_alive ---------------------------------------------------------
 
-# shellcheck disable=SC2329
 alive() { rc=0; engine_alive "$ID" || rc=$?; echo "$rc"; }
 printf '%s\n' "/usr/bin/qemu-system-aarch64 -machine virt -drive file=$ID/machines/default/qemu/vq_x/linked-box.img" > "$STUBDIR/ps"
 check_eq "$(alive)" 0 "a qemu-system process naming the machine's disk is alive"
@@ -112,7 +110,6 @@ printf 'init\n' > "$STUBDIR/ps"
 
 # --- engine_state ---------------------------------------------------------
 
-# shellcheck disable=SC2329
 state_for() { rm -f "$STUBDIR/status"; [ -n "$1" ] && echo "$1" > "$STUBDIR/status"; engine_state 2>/dev/null; }
 check_eq "$(state_for not_created)" absent "not_created is absent"
 check_eq "$(state_for stopped)" stopped "stopped (the stock provider and the macOS fork) is stopped"
@@ -244,7 +241,6 @@ export FLTH_CONFIG="$SANDBOX/cached/fs-linux-test-harness.toml"
 flth_load
 engine_prepare
 disk="$FLTH_MACHINE_DIR/cache.img"
-# shellcheck disable=SC2329
 size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
 check_eq "$FLTH_VM_CACHE_DISK" "$disk" "a declared cache is a disk in the machine directory, named to the Vagrantfile"
 check_eq "$(test -e "$disk" && echo made || echo none)" none "made by a boot, not by every command that evaluates the Vagrantfile"
@@ -273,7 +269,6 @@ check_eq "$(test -e "$disk" && echo kept || echo gone)" gone "destroy deletes th
 # is free and another free one when it is not, on every attempt, so a
 # retry routes around the busy port instead of failing on it again.
 command -v perl >/dev/null || { fail "perl is required to hold a port (it is in every macOS and Debian base install)"; finish engine-vagrant; }
-# shellcheck disable=SC2329
 bindable() { perl -MIO::Socket::INET -e 'exit(IO::Socket::INET->new(LocalAddr => "0.0.0.0", LocalPort => $ARGV[0], Proto => "tcp", Listen => 1) ? 0 : 1)' "$1"; }
 perl -MIO::Socket::INET -e 'my $s = IO::Socket::INET->new(LocalAddr => "0.0.0.0", LocalPort => 0, Proto => "tcp", Listen => 1) or die; open(my $f, ">", $ARGV[0]) or die; print $f $s->sockport, "\n"; close $f; sleep 60' "$SANDBOX/held-port" &
 holder=$!

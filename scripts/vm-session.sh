@@ -134,15 +134,18 @@ flth_session_end() {
 
 trap flth_session_end EXIT
 
+# Only the traps below call this. It stays outside the branch because ShellCheck
+# does not read a trap's command, and counts a function as used only when it is
+# still defined where the script ends, which that branch never reaches.
+_flth_session_forward() {
+    # _flth_session_forward <status to report> <signal>
+    _flth_session_signalled="$1"
+    [ -z "$_flth_session_child" ] || kill -"$2" "$_flth_session_child" 2>/dev/null || true
+}
+
 if [ "$_flth_session_run" = 1 ]; then
     _flth_session_child=
     _flth_session_signalled=0
-    # shellcheck disable=SC2329
-    _flth_session_forward() {
-        # _flth_session_forward <status to report> <signal>
-        _flth_session_signalled="$1"
-        [ -z "$_flth_session_child" ] || kill -"$2" "$_flth_session_child" 2>/dev/null || true
-    }
     trap '_flth_session_forward 129 HUP' HUP
     trap '_flth_session_forward 130 INT' INT
     trap '_flth_session_forward 143 TERM' TERM

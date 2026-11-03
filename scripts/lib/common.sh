@@ -8,7 +8,7 @@
 
 FLTH_HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
-# shellcheck source=config.sh
+# shellcheck source=scripts/lib/config.sh
 . "$FLTH_HARNESS/scripts/lib/config.sh"
 # shellcheck source=engine.sh
 . "$FLTH_HARNESS/scripts/lib/engine.sh"
