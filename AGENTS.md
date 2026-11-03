@@ -288,9 +288,17 @@ CI (`.github/workflows/ci.yml`):
 | `ci-ok` | the single required check: every job above ran and succeeded |
 
 The Linux aarch64 path is proven by `chore smoke` on an arm64 host by hand
-(hosted arm64 runners expose no KVM). **The macOS path has never been
-booted** (#8). Do not describe it as working. Hosted macOS runners cannot
-boot it (no nested virtualisation, so no HVF); `macos-host.yml`, outside
+(hosted arm64 runners expose no KVM). Apple Silicon smoke evidence was
+recorded on 2026-11-03: six `tests/smoke.sh` runs during the work on #84,
+using virtiofsd 1.14.0, `vagrant-qemu-christhomas` 0.6.0 and
+`vagrant-notify-forwarder-christhomas` 0.7.5 (#86, #89). With the #86 fix,
+two of three runs passed all 95 checks; the third failed only the exec
+cost check in #83 (299ms against its 250ms limit). All six passed both
+`O_DIRECT` checks. Describe that recorded result, not an unconditional
+pass: #83 still fails on some Mac smoke runs.
+
+Hosted macOS runners cannot boot it (no nested virtualisation, so no
+HVF); `macos-host.yml`, outside
 `ci-ok` and run only when the Vagrantfile, `host-tools.sh` or the Vagrant
 engine changes, proves the host setup installs and the Vagrantfile
 validates under the real forked provider on `macos-15`, and nothing more.

@@ -237,9 +237,10 @@ before 1.14.0 it decoded an arm64 guest's open flags with x86_64 values,
 and arm64's `O_DIRECT` is x86_64's `O_DIRECTORY`, so the host opened the
 image as a directory (christhomas/virtiofsd#3). virtiofsd v1.14.0 decodes
 them with the guest's own values, and `chore vm:host:check` refuses an
-older one. That fix is proven by the daemon's own tests on macOS CI
-runners; no Mac has yet run the smoke step below against it. CI here never
-sees the defect: CI's guest is x86_64 and shares over 9p.
+older one. In the six Apple Silicon smoke runs recorded on 2026-11-03
+with virtiofsd 1.14.0 during #84 and #86, both `O_DIRECT` checks passed
+(#89). CI here never sees the defect: CI's guest is x86_64 and shares
+over 9p.
 
 Each of these reads as a verdict on the image rather than on where it
 was kept. So **a tool that works on an image works on the guest's own disk**:
@@ -473,23 +474,25 @@ falling back.
 | Linux aarch64 | KVM | `cloud-image/debian-12` (arm64), pinned | stock `vagrant-qemu` | `FLTH_FIRMWARE_*` (Debian: AAVMF) | 9p |
 | Linux x86_64 | KVM | `cloud-image/debian-12` (amd64), pinned | stock `vagrant-qemu` | none (SeaBIOS) | 9p |
 
-**The macOS row has never been booted** (#8). The Linux x86_64 row is
-proven by CI's smoke job on every pull request, and the Linux aarch64 row
-by `chore smoke` on an arm64 host. Nobody has yet run `chore smoke` on a
-Mac, so the macOS row is carried over from the repositories this harness
-replaced, not observed. What is known without a boot: the published
-`vagrant-qemu-christhomas` reports `running`, `stopped` and `not_created`,
-the stock provider's states, and launches `qemu-system-aarch64` with the
-machine's disk under `VAGRANT_DOTFILE_PATH`, which is what `engine_alive`
-matches. That is read from the gem's source, not seen on a Mac. The
-`macos-host` workflow installs the host setup below on a real Apple Silicon
+**Apple Silicon smoke runs have been recorded.** On 2026-11-03,
+`tests/smoke.sh` ran six times during the work on #84, using
+virtiofsd 1.14.0, `vagrant-qemu-christhomas` 0.6.0 and
+`vagrant-notify-forwarder-christhomas` 0.7.5 (#86, #89). With the #86 fix,
+two of three runs passed all 95 checks; the third failed only the exec
+cost check tracked in #83 (299ms against its 250ms limit). All six runs
+passed both `O_DIRECT` checks. This records a working smoke path with
+those versions, not a promise that every Mac smoke run passes: #83 still
+fails on some runs.
+
+The Linux x86_64 row is proven by CI's smoke job on every pull request,
+and the Linux aarch64 row by `chore smoke` on an arm64 host. The
+`macos-host` workflow installs the host setup below on an Apple Silicon
 runner and validates the Vagrantfile under the real forked provider, but
 cannot boot: GitHub's macOS runners have no nested virtualisation, so no
-HVF. Treat the row as untested until `chore smoke` on a Mac is recorded.
-One defect on it is known: with virtiofsd before 1.14.0, which
+HVF. The Mac boot evidence above comes from the recorded host runs, not
+that workflow. With virtiofsd before 1.14.0, which
 `chore vm:host:check` now refuses, a file on either virtiofs share cannot
 be opened with `O_DIRECT` (#26; see "Where a tool works on an image").
-No Mac has yet confirmed 1.14.0 fixes it.
 
 **No host file events reach a macOS guest.** The forwarder plugin stays
 enabled, because the macOS boot needs it, but its guest receiver writes into
@@ -754,7 +757,8 @@ pull request are cancelled.
 The arm64 path (Linux aarch64 under KVM) is proven by `chore smoke` on an
 arm64 host rather than in hosted CI: GitHub's hosted arm64 runners do not
 expose KVM (checked by the manual `kvm-probe` workflow). The macOS path
-is to be proven by `chore smoke` on a Mac, and **has not been yet** (#8).
+has the Apple Silicon smoke evidence recorded under "The VM" (#84, #86,
+#89), with the remaining intermittent exec cost failure tracked in #83.
 
 GitHub's hosted macOS runners cannot boot it either: they are M1 virtual
 machines with no nested virtualisation, so HVF is unavailable. The
