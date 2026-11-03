@@ -15,13 +15,27 @@ set -euo pipefail
 mode="${1:-pass}"
 case "$mode" in pass | corrupt) ;; *) echo "usage: suite.sh [pass|corrupt]" >&2; exit 2 ;; esac
 
+# The size every check below holds the payload to. guest-suite.sh holds the same.
+# Two empty files compare equal, and an empty payload gives a corrupted run no
+# data block to flip, so a comparison alone can pass an empty one (#84).
+payload_size=1048576
+
+check_size() {
+    local size
+    size="$(wc -c < "$1" | tr -d ' ')"
+    [ "$size" = "$payload_size" ] && return 0
+    echo "suite: $(basename "$1") is $size bytes, expected $payload_size" >&2
+    exit 1
+}
+
 share="$FLTH_SHARE_HOST"
 rm -rf "$share/payload" "$share/results"
 mkdir -p "$share/payload/dir"
 
 # Input, made on the host.
-head -c 1048576 /dev/urandom > "$share/payload/payload.bin"
+head -c "$payload_size" /dev/urandom > "$share/payload/payload.bin"
 printf 'hello from the host\n' > "$share/payload/dir/hello.txt"
+check_size "$share/payload/payload.bin"
 
 guest_script="$("$FLTH_VM" put "$(dirname "$0")/guest-suite.sh")"
 set +e
@@ -46,5 +60,7 @@ fi
 [ "$(cat "$share/results/verdict")" = pass ] || { echo "suite: verdict is not pass" >&2; exit 1; }
 magic="$(od -An -tx1 -j1080 -N2 "$share/results/fs.img" | tr -d ' \n')"
 [ "$magic" = 53ef ] || { echo "suite: fs.img has no ext4 magic (got $magic)" >&2; exit 1; }
+check_size "$share/payload/payload.bin"
+check_size "$share/results/dumped.bin"
 cmp "$share/payload/payload.bin" "$share/results/dumped.bin"
 echo "suite: pass"

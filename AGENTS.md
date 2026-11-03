@@ -358,6 +358,11 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   box, with no firmware. A provisioning boot copies the disk's newest kernel
   to `machines/<project>/boot/` and later boots run it (#80). `tests/boot-kernel.sh`
   pins which boot runs what, and the last step of `tests/smoke.sh` proves it.
+- **On macOS nothing in the guest listens for host file events.** The forwarder
+  plugin stays enabled, because disabling it stops the boot, but its guest
+  receiver wrote into the files an event named and truncated one it read as
+  empty, which emptied a payload the host had just written (#84). The Vagrantfile
+  gives the plugin `vagrant/guest/notify-receiver-off.sh` instead.
 - **`deadline_minutes` is an idle timeout.** Every `run` and `exec` re-arms it
   as the call starts and ends, so a single call longer than it (a whole
   `guest-test` run is one call) is still cut off.

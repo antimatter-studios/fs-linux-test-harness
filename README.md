@@ -491,6 +491,13 @@ One defect on it is known: with virtiofsd before 1.14.0, which
 be opened with `O_DIRECT` (#26; see "Where a tool works on an image").
 No Mac has yet confirmed 1.14.0 fixes it.
 
+**No host file events reach a macOS guest.** The forwarder plugin stays
+enabled, because the macOS boot needs it, but its guest receiver writes into
+the files an event names and truncates one it reads as empty, which can empty a
+file the host has just written (#84). The harness replaces that receiver with
+one that exits, so `inotify` in the guest does not see the host's changes to a
+share.
+
 **The box is not published.** It is not in the public Vagrant registry,
 and its GitHub release is in a private repository, whose download URL
 answers 404 to Vagrant. `chore vm:host:check` says so and prints the

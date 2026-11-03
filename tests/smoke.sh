@@ -16,6 +16,7 @@
 #   apt-ready     a held dpkg lock is found and named, as dpkg sees it
 #   slot          a second consumer cannot boot while this one holds it
 #   run / share   exit status and output come back; files cross both ways
+#                 and nothing in the guest writes to what the host staged
 #   direct I/O    a file on either share opens with O_DIRECT, as an image
 #                 tool opens it (#26)
 #   exec          the per-call path: never boots, and costs milliseconds
@@ -184,6 +185,22 @@ check_eq "$guest_path" /share/host-file.txt "put answers the guest path"
 check_eq "$("$VM" run "cat $guest_path" 2>/dev/null)" "from host $$" "the guest reads the host's file"
 "$VM" run "echo from guest > /share/guest-file.txt" 2>/dev/null
 check_eq "$(cat "$("$VM" share)/guest-file.txt")" "from guest" "the host reads the guest's file"
+
+step "share: a file the host writes stays as the host wrote it (#84)"
+# The forwarder plugin's guest receiver opens every file an event names, writes
+# its first byte back and sets its times, and truncates one it reads as empty.
+# On a Mac that emptied a payload the host had just written. The oracle is the
+# file itself, on the host: an event for it has long been delivered after three
+# seconds, and a receiver would have moved a modification time set in the past.
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+check_eq "$("$VM" run 'pgrep -fc "notify-forwarder receive"' 2>/dev/null)" 0 "no forwarder receiver runs in the guest"
+left_alone="$("$VM" share)/.smoke-left-alone"
+head -c 65536 /dev/urandom > "$left_alone"
+touch -t 200001010000 "$left_alone"
+want="$(mtime "$left_alone") $(sum "$left_alone")"
+sleep 3
+check_eq "$(mtime "$left_alone") $(sum "$left_alone")" "$want" "nothing in the guest has written to a file the host wrote"
+rm -f "$left_alone"
 
 step "direct I/O: a file on either share opens with O_DIRECT (#26)"
 # Some image tools open their image with O_DIRECT (xfs_repair among them,
