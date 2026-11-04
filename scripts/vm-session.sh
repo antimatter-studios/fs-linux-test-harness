@@ -140,11 +140,29 @@ trap flth_session_end EXIT
 _flth_session_forward() {
     # _flth_session_forward <status to report> <signal>
     _flth_session_signalled="$1"
-    [ -z "$_flth_session_child" ] || kill -"$2" "$_flth_session_child" 2>/dev/null || true
+    [ -n "$_flth_session_child" ] || return 0
+    kill -"$2" -- "-$_flth_session_child" 2>/dev/null || true
+    [ -z "$_flth_session_killer" ] || return 0
+    local monitor=0
+    case "$-" in *m*) monitor=1 ;; esac
+    set -m
+    (
+        trap - EXIT
+        trap '' HUP INT TERM
+        ticks=0
+        while kill -0 -- "-$_flth_session_child" 2>/dev/null && [ "$ticks" -lt 50 ]; do
+            command -p sleep 0.1
+            ticks=$((ticks + 1))
+        done
+        kill -KILL -- "-$_flth_session_child" 2>/dev/null || true
+    ) >/dev/null 2>&1 &
+    _flth_session_killer=$!
+    [ "$monitor" = 1 ] || set +m
 }
 
 if [ "$_flth_session_run" = 1 ]; then
     _flth_session_child=
+    _flth_session_killer=
     _flth_session_signalled=0
     trap '_flth_session_forward 129 HUP' HUP
     trap '_flth_session_forward 130 INT' INT
@@ -153,6 +171,7 @@ if [ "$_flth_session_run" = 1 ]; then
     _flth_session_monitor=0
     case "$-" in *m*) _flth_session_monitor=1 ;; esac
     set -m
+    [ "$_flth_session_signalled" = 0 ] || exit "$_flth_session_signalled"
     # A background job is the only way to keep receiving signals while the
     # command runs. Job control keeps Bash 3.2 from ignoring INT and QUIT;
     # resetting a background job's traps does not restore them there. The
@@ -163,6 +182,13 @@ if [ "$_flth_session_run" = 1 ]; then
     ) 0<&0 &
     _flth_session_child=$!
     [ "$_flth_session_monitor" = 1 ] || set +m
+    if [ "$_flth_session_signalled" != 0 ]; then
+        case "$_flth_session_signalled" in
+            129) _flth_session_forward 129 HUP ;;
+            130) _flth_session_forward 130 INT ;;
+            143) _flth_session_forward 143 TERM ;;
+        esac
+    fi
 
     # `wait` returns early when a trapped signal arrives; the command is
     # still running then (or not yet reaped), so wait again until it is gone.
@@ -171,6 +197,11 @@ if [ "$_flth_session_run" = 1 ]; then
         _flth_session_status=$?
         kill -0 "$_flth_session_child" 2>/dev/null || break
     done
+    if [ -n "$_flth_session_killer" ]; then
+        while kill -0 "$_flth_session_killer" 2>/dev/null; do
+            wait "$_flth_session_killer" || true
+        done
+    fi
     [ "$_flth_session_signalled" = 0 ] || _flth_session_status="$_flth_session_signalled"
     exit "$_flth_session_status"
 else
