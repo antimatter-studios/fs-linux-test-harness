@@ -459,6 +459,8 @@ relative, and must not leave the repository.
 | `FLTH_SLOT_COUNT` | `1` | Machine-wide concurrent VM limit, 1–64. Set it consistently for every consumer and shell on this host; `2` admits two consumers when host memory permits. |
 | `FLTH_SLOT_BOOT_GRACE` | `180` | Seconds a new slot holder is trusted before a VM must be running. |
 | `FLTH_SLOT_ABSENT_GRACE` | the boot grace | Seconds a holder past its boot grace must be seen with no VM running before a waiter takes its slot. |
+| `FLTH_SHARED_ROOT` | unset | A host directory: suites use one guest shared with other consumers instead of a VM of their own. See [One guest for several consumers](#one-guest-for-several-consumers). |
+| `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | `8G`, `8`, `64G` | The size of that one guest. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
 | `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
 | `FLTH_FIRMWARE_CODE`, `FLTH_FIRMWARE_VARS` | `/usr/share/AAVMF/AAVMF_{CODE,VARS}.fd` | UEFI firmware for arm64 guests on a Linux host. |
@@ -817,6 +819,25 @@ names the holders and waits. Neither failure is silent.
   before and after an atomic move), a lock displaced by a race is kept as
   an orphan rather than deleted, and a half-written record is never
   mistaken for a holder.
+
+## One guest for several consumers
+
+Set `FLTH_SHARED_ROOT` and a consumer's suites use one long-running guest with
+every other consumer that set it, with no change to its tests.
+
+The guest stays up between runs, so a run does not pay for a boot or wait for the
+slot. A suite registers when its session begins and deregisters when it ends.
+
+- `chore vm:status` lists the suites using the guest.
+- `chore vm:down` stops the guest only when that list is empty. Otherwise it says
+  who is using it, leaves the guest up and succeeds.
+- A suite that was killed outright never deregisters. Its entry records its
+  process, and is dropped before anyone counts.
+- `chore vm:destroy` is refused while the list is not empty.
+- With nothing asking anything of it, the guest powers itself off after 480 minutes.
+
+Registering and the shutdown check take the same lock, so a suite that registers
+during a shutdown waits for it and then boots a new guest.
 
 ## What stops a VM
 

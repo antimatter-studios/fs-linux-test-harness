@@ -42,8 +42,44 @@ flth_load() {
     export FLTH_CONFIG
     flth_config_load "$FLTH_CONFIG" || return 1
     FLTH_SHARE_HOST="$FLTH_ROOT/$CFG_share_dir"
-    FLTH_MACHINE_DIR="$FLTH_CACHE_DIR/machines/$CFG_project_name"
+    FLTH_MACHINE_NAME="$CFG_project_name"
+    flth_shared_load || return 1
+    FLTH_MACHINE_DIR="$FLTH_CACHE_DIR/machines/$FLTH_MACHINE_NAME"
     FLTH_HOLD="$FLTH_MACHINE_DIR/keep-running"
+}
+
+# THE SHARED GUEST (#153). One setting, FLTH_SHARED_ROOT, and a consumer's suites
+# use the one guest every consumer that set it uses, instead of a VM of its own.
+# The machine is therefore nobody's: it is named for its guest release, and what a
+# consumer's [vm] section says about memory, CPUs, disk and the deadline describes
+# the private VM it would otherwise have. A host with other needs says so here.
+FLTH_SHARED_MEMORY_DEFAULT=8G
+FLTH_SHARED_CPUS_DEFAULT=8
+FLTH_SHARED_DISK_DEFAULT=64G
+FLTH_SHARED_SSH_PORT=50200
+FLTH_SHARED_DEADLINE_MINUTES=480
+
+flth_shared() { [ -n "${FLTH_SHARED_ROOT:-}" ]; }
+
+# shellcheck disable=SC2034  # read by the scripts that source this
+flth_shared_load() {
+    flth_shared || return 0
+    case "$FLTH_SHARED_ROOT" in
+        /*) ;;
+        *) flth_config_error "FLTH_SHARED_ROOT must be an absolute path, got $FLTH_SHARED_ROOT"; return 1 ;;
+    esac
+    case "$FLTH_SHARED_ROOT" in
+        *[!A-Za-z0-9._/\ -]*)
+            flth_config_error "FLTH_SHARED_ROOT may use only letters, digits, spaces, '.', '_', '-' and '/', got $FLTH_SHARED_ROOT"
+            return 1 ;;
+    esac
+    FLTH_MACHINE_NAME="shared-$CFG_vm_guest"
+    CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
+    CFG_vm_cpus="${FLTH_SHARED_CPUS:-$FLTH_SHARED_CPUS_DEFAULT}"
+    CFG_vm_disk="${FLTH_SHARED_DISK:-$FLTH_SHARED_DISK_DEFAULT}"
+    CFG_vm_ssh_port="$FLTH_SHARED_SSH_PORT"
+    CFG_vm_deadline_minutes="$FLTH_SHARED_DEADLINE_MINUTES"
+    flth_config_validate "$FLTH_CONFIG"
 }
 
 # The guest path of the shared directory. Fixed, not configurable: every
