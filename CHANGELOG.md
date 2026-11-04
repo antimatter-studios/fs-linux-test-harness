@@ -9,6 +9,43 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## v0.5.8 — 2026-11-04
+
+### Added
+
+- **`vm.sh reload` (`chore vm:reload`) restarts a running VM in place and keeps
+  its slot.** `vm-slot.sh renew` does the same for a consumer that runs its own
+  `vagrant reload`, as `vm-slot.sh renew && vagrant reload`.
+
+### Changed
+
+- **A dead holder is reclaimed later.** A waiter now takes the slot of a holder
+  past its boot grace only once its VM has been seen absent, with no gap, for
+  `FLTH_SLOT_ABSENT_GRACE`, which defaults to the boot grace of 180 seconds.
+  Until then the holder's memory is waited for.
+
+### Fixed
+
+- A memory-admission refusal stops `vm.sh up` before setup or any later guest work, whether the refused boot provisions the disk or runs it disposably, and releases the stopped machine’s slot and up lock.
+- Failed preparation, provisioning, setup and guest-command construction steps propagate their status instead of continuing while the up wrapper captures failures.
+
+- **A restart in place no longer loses a VM its slot.** An in-place reload of a
+  VM past its boot grace looked like an abandoned holder, so a rival took the
+  slot and the host ran more VMs than `FLTH_SLOT_COUNT`. A restart the harness
+  is told about now keeps its slot. One it is not told about keeps it for the
+  absence window only, and a VM down for longer can still return past the limit.
+- **A provisioning boot keeps its slot between its stop and the next boot**,
+  however long its setup script ran.
+
+- **A signal to a session no longer stops the daemons of a VM that stays up.**
+  `vagrant up` runs in a process group of its own, so `virtiofsd` and
+  `notify-forwarder` survive a signal to the command that booted the VM, and
+  `/share` and `/repo` keep working in the guest. The regression came with
+  v0.5.7. A signal or KILL during a boot still stops the boot and what it started.
+- **`vm.sh down` and `vm.sh destroy` stop the forwarder's host watchers on macOS.**
+  The provider's halt never ran the plugin's stop hook, so each boot left them
+  running.
+
 ## v0.5.7 — 2026-11-04
 
 ### Fixed
