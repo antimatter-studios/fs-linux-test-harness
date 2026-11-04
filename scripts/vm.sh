@@ -19,9 +19,10 @@
 #   vm.sh destroy          delete the VM and its disk, release the slot
 #   vm.sh config           print the resolved configuration
 #
-# NOT IN THE USAGE, AND NO CHORE TASK, ON PURPOSE: `session-begin <pid>`
-# and `session-end <pid>` are vm-session.sh's plumbing, the calls that make
-# a session visible to the reaper. A person has no reason to run them, so
+# NOT IN THE USAGE, AND NO CHORE TASK, ON PURPOSE: `session-begin <pid>`,
+# `session-end <pid>` and `boot-finished` are vm-session.sh's plumbing, the calls
+# that make a session visible to the reaper and tell it whether there is a VM it
+# may keep. A person has no reason to run them, so
 # they stay out of the list above, which is what tests/generic.sh reads as
 # the public commands every one of which needs a task in vm.chores.yml.
 #
@@ -164,20 +165,28 @@ echo applied"
 UP_LOCK_WAIT_SECS="${FLTH_UP_LOCK_WAIT_SECS:-2700}"
 
 up_lock_take() {
-    local lock="$FLTH_MACHINE_DIR/up.lock" waited=0 owner
+    local waited=0 owner
     mkdir -p "$FLTH_MACHINE_DIR"
-    until mkdir "$lock" 2>/dev/null; do
-        owner="$(cat "$lock/pid" 2>/dev/null || true)"
-        if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-            rm -rf "$lock"
-            continue
-        fi
+    until up_lock_try; do
         if [ "$waited" -ge "$UP_LOCK_WAIT_SECS" ]; then
+            owner="$(cat "$FLTH_MACHINE_DIR/up.lock/pid" 2>/dev/null || true)"
             echo "vm: another up of this machine (pid ${owner:-unknown}) has held it for ${waited}s; not booting beside it." >&2
             exit 1
         fi
         sleep 1
         waited=$((waited + 1))
+    done
+}
+
+# Take the lock if no live process holds it.
+up_lock_try() {
+    local lock="$FLTH_MACHINE_DIR/up.lock" owner
+    until mkdir "$lock" 2>/dev/null; do
+        owner="$(cat "$lock/pid" 2>/dev/null || true)"
+        if [ -z "$owner" ] || kill -0 "$owner" 2>/dev/null; then
+            return 1
+        fi
+        rm -rf "$lock"
     done
     echo "$$" > "$lock/pid"
     trap 'rm -rf "$FLTH_MACHINE_DIR/up.lock"' EXIT
@@ -189,6 +198,73 @@ up_lock_take() {
 up_lock_drop() {
     rm -rf "$FLTH_MACHINE_DIR/up.lock"
     trap - EXIT
+}
+
+# A BOOT THAT DID NOT FINISH IS NOT A VM (#134). QEMU daemonizes early in a boot
+# and the shares are mounted late, so a signal between the two ends the boot and
+# leaves a guest with /share and /repo never mounted. It answers ssh and its state
+# reads running, so a run against it exits 0 having seen empty directories. Measured
+# on an Apple Silicon host with FLTH_KEEP_VM=1.
+#
+# So a marker exists from before a boot starts until the engine says it finished,
+# and is written and removed under the up lock. A marker with no live process
+# holding that lock is a boot that stopped short, however it stopped: a signal, a
+# KILL or three failed attempts. Nothing keeps what it left: a session's end and the
+# reaper stop it whatever would have kept a VM, and `up` replaces it.
+unfinished_boot_marker() { printf '%s/boot-unfinished\n' "$FLTH_MACHINE_DIR"; }
+
+boot_vm() {
+    : > "$(unfinished_boot_marker)" || return
+    boot_engine "$@" || return
+    rm -f "$(unfinished_boot_marker)"
+}
+
+boot_stopped_short() {
+    local owner
+    [ -f "$(unfinished_boot_marker)" ] || return 1
+    owner="$(cat "$FLTH_MACHINE_DIR/up.lock/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+# Stop what a boot that stopped short left. Returns 1 with nothing done when no boot
+# stopped short, or when an `up` has taken the machine, which then replaces the
+# guest itself. The lock keeps an `up` from booting while this stops it.
+stop_unfinished_boot() {
+    local alive=0
+    boot_stopped_short || return 1
+    up_lock_try || return 1
+    if [ ! -f "$(unfinished_boot_marker)" ]; then
+        up_lock_drop
+        return 1
+    fi
+    engine_alive "$(engine_identity)" || alive=$?
+    if [ "$alive" -eq 1 ]; then
+        rm -f "$(unfinished_boot_marker)"
+        "$SLOT" release
+    else
+        echo "[vm] stopping $CFG_project_name: its boot did not finish, so it has no shares and nothing keeps it." >&2
+        vm_down
+    fi
+    up_lock_drop
+}
+
+# Every caller but `run` and `up`, which replace the guest: nothing is run on it.
+refuse_unfinished_boot() {
+    [ -f "$(unfinished_boot_marker)" ] || return 0
+    echo "vm: $CFG_project_name's last boot did not finish, or is still running, so its guest has no shares." >&2
+    echo "    Nothing ran. 'chore vm:up' replaces it." >&2
+    exit 1
+}
+
+# vm-session.sh asks before it keeps a VM for FLTH_KEEP_VM=1.
+vm_boot_finished() {
+    if boot_stopped_short; then
+        return 1
+    fi
+    return 0
 }
 
 # THE MACHINE IS NAMED FOR THE PROJECT AND THE GUEST'S /repo IS ONE WORKTREE.
@@ -231,6 +307,11 @@ vm_up() {
 vm_up_locked() {
     local state
     state="$(engine_state)" || return
+    if [ "$state" = running ] && [ -f "$(unfinished_boot_marker)" ]; then
+        echo "[vm] $CFG_project_name's last boot did not finish, so its guest has no shares: replacing it." >&2
+        vm_down
+        state="$(engine_state)" || return
+    fi
     case "$state" in
         running)
             # No host-tool check on this path: `run` comes through here on
@@ -274,7 +355,7 @@ vm_up_locked() {
         [ "$(cat "$(base_record)" 2>/dev/null || true)" != "$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" ]; then
         provision_disk || return
     fi
-    boot_engine || return
+    boot_vm || return
     apply_setup boot || return
     forget_disk_if_setup_ran
 }
@@ -428,7 +509,7 @@ provision_disk() {
     hash="$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" || return
     echo "[vm] provisioning boot: applying $CFG_setup_script to the machine's disk..." >&2
     : > "$(provisioning_marker)" || return
-    boot_engine --persist || return
+    boot_vm --persist || return
     apply_setup "$PROVISION_MODE" || return
     if ! engine_keep_kernel; then
         echo "vm: the newest kernel on the disk could not be kept for the next boot, so the disk is not" >&2
@@ -481,7 +562,7 @@ release_if_confirmed_stopped() {
     state="$(engine_state)"
     case "$state" in
         stopped | absent)
-            rm -f "$(provisioning_marker)"
+            rm -f "$(provisioning_marker)" "$(unfinished_boot_marker)"
             "$SLOT" release
             return 0
             ;;
@@ -564,6 +645,9 @@ vm_hold() {
 vm_reap() {
     local others invocation owner mounted
     if ! engine_alive "$(engine_identity)"; then
+        return 0
+    fi
+    if stop_unfinished_boot; then
         return 0
     fi
     if mounted="$(mounted_elsewhere)"; then
@@ -691,6 +775,9 @@ vm_session_begin() {
 vm_session_end() {
     local pid="$1" others
     rm -f "$(sessions_dir)/$pid"
+    if stop_unfinished_boot; then
+        return 0
+    fi
     if [ -f "$FLTH_HOLD" ]; then
         echo "[vm] left running: it was held with 'chore vm:hold'. 'chore vm:down' stops it." >&2
         return 0
@@ -811,7 +898,7 @@ vm_reload_locked() {
         echo "    'chore vm:status', then 'chore vm:down' or 'chore vm:destroy'." >&2
         exit 1
     fi
-    boot_engine || return 1
+    boot_vm || return 1
     apply_setup boot
     forget_disk_if_setup_ran
     if [ -f "$FLTH_HOLD" ]; then
@@ -837,6 +924,9 @@ vm_status() {
             local mounted
             if mounted="$(mounted_elsewhere)"; then
                 echo "vm: its guest has $mounted mounted at $FLTH_REPO_GUEST, and this is $FLTH_ROOT"
+            fi
+            if boot_stopped_short; then
+                echo "vm: its last boot did not finish, so its guest has no shares. 'chore vm:up' replaces it."
             fi
             ;;
         *) echo "vm: $CFG_project_name is not running ($state)"; exit 1 ;;
@@ -921,6 +1011,7 @@ vm_exec() {
     fi
     refuse_other_worktree
     refuse_provisioning_boot
+    refuse_unfinished_boot
     guest_run "$*"
 }
 
@@ -998,7 +1089,7 @@ case "$command" in
         shift
         exec "$(dirname "$SELF")/vm-session.sh" "$@"
         ;;
-    up | run | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end) ;;
+    up | run | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | boot-finished) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -1042,6 +1133,7 @@ case "$command" in
     reap) vm_reap ;;
     destroy) vm_destroy ;;
     config) vm_config ;;
+    boot-finished) vm_boot_finished ;;
     session-begin | session-end)
         if [ $# -ne 1 ] || ! [[ "$1" =~ ^[1-9][0-9]*$ ]]; then
             flth_die "usage: vm.sh $command <pid>"

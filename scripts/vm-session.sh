@@ -64,7 +64,8 @@
 # for several runs back to back, where booting each time is the slow
 # part. It says so on the way out, so a VM left running is always one
 # somebody asked for. A VM held with `chore vm:up` (or `vm:hold`) is left
-# running too: a session's end is not `vm:down`.
+# running too: a session's end is not `vm:down`. Neither keeps what a boot left
+# when it did not finish: that guest has no shares, so it is brought down.
 #
 # The consumer is resolved when the session begins, not when the trap
 # fires: the script may have changed directory by then.
@@ -113,7 +114,7 @@ flth_session_end() {
     # Cleared first: a failing `down` must not re-enter this.
     trap - EXIT
 
-    if [ "${FLTH_KEEP_VM:-0}" = "1" ]; then
+    if [ "${FLTH_KEEP_VM:-0}" = "1" ] && "$_flth_session_scripts/vm.sh" boot-finished; then
         echo "[vm] FLTH_KEEP_VM=1 — leaving the VM running, as asked." >&2
         exit "$code"
     fi
