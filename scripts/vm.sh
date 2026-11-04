@@ -114,14 +114,14 @@ sha256_of() {
 apply_setup() {
     local mode="$1" script hash host_stamp guest force=0 payload out rc
     script="$FLTH_ROOT/$CFG_setup_script"
-    hash="$(sha256_of "$script")"
+    hash="$(sha256_of "$script")" || return
     host_stamp="$FLTH_MACHINE_DIR/setup.sha256"
 
     if [ "$mode" = auto ] && [ "$(cat "$host_stamp" 2>/dev/null || true)" = "$hash" ]; then
         return 0
     fi
     [ "$mode" = force ] && force=1
-    payload="$(base64 < "$script")"
+    payload="$(base64 < "$script")" || return
     SETUP_APPLIED=0
 
     guest="set -euo pipefail
@@ -147,7 +147,7 @@ echo applied"
         echo "    The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
         exit 1
     fi
-    printf '%s\n' "$hash" > "$host_stamp"
+    printf '%s\n' "$hash" > "$host_stamp" || return
     [ "$out" = applied ] && SETUP_APPLIED=1
     return 0
 }
@@ -220,21 +220,24 @@ vm_up() {
     local rc=0
     up_lock_take
     vm_up_locked || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        release_if_confirmed_stopped || true
+    fi
     up_lock_drop
     return "$rc"
 }
 
 vm_up_locked() {
     local state
-    state="$(engine_state)"
+    state="$(engine_state)" || return
     case "$state" in
         running)
             # No host-tool check on this path: `run` comes through here on
             # every call, and a VM that is up needs nothing installed.
             refuse_other_worktree
             refuse_provisioning_boot
-            apply_setup auto
-            forget_disk_if_setup_ran
+            apply_setup auto || return
+            forget_disk_if_setup_ran || return
             return 0
             ;;
         unknown)
@@ -248,8 +251,8 @@ vm_up_locked() {
             ;;
         absent)
             # A machine that does not exist has no disk to carry anything.
-            rm -f "$(base_record)"
-            engine_forget_kernel
+            rm -f "$(base_record)" || return
+            engine_forget_kernel || return
             ;;
     esac
     require_host_tools
@@ -261,17 +264,17 @@ vm_up_locked() {
         echo "vm: could not get the VM slot; not booting a second VM." >&2
         exit 1
     }
-    record_boot_invocation
+    record_boot_invocation || return
     # Not running, so not on a provisioning boot, whatever a marker says.
-    rm -f "$(provisioning_marker)"
+    rm -f "$(provisioning_marker)" || return
 
     echo "[vm] booting $CFG_project_name (a first boot downloads the box and provisions)..." >&2
     if [ "$PROVISION_MODE" = force ] || ! engine_kernel_known ||
         [ "$(cat "$(base_record)" 2>/dev/null || true)" != "$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" ]; then
-        provision_disk
+        provision_disk || return
     fi
-    boot_engine
-    apply_setup boot
+    boot_engine || return
+    apply_setup boot || return
     forget_disk_if_setup_ran
 }
 
@@ -371,8 +374,9 @@ report_lost_guest() {
 
 # A call into the guest. Keeps its status, and reports when that is ssh's own.
 guest_run() {
-    local rc=0
-    engine_run "$(guest_call "$1")" || rc=$?
+    local rc=0 script
+    script="$(guest_call "$1")" || return
+    engine_run "$script" || rc=$?
     [ "$rc" -ne 255 ] || report_lost_guest
     return "$rc"
 }
@@ -391,19 +395,19 @@ boot_engine() {
             release_if_confirmed_stopped || true
             return 1
         fi
-        mkdir -p "$FLTH_MACHINE_DIR"
-        printf '%s\n' "$FLTH_ROOT" > "$(mounted_worktree_record)"
+        mkdir -p "$FLTH_MACHINE_DIR" || return
+        printf '%s\n' "$FLTH_ROOT" > "$(mounted_worktree_record)" || return
         if engine_up "$@"; then
             return 0
         fi
-        show_console
+        show_console || true
         if [ "$attempt" -ge "$BOOT_ATTEMPTS" ]; then
             echo "vm: the VM would not boot after $BOOT_ATTEMPTS attempts." >&2
             release_if_confirmed_stopped || true
             exit 1
         fi
         echo "[vm] boot failed, retrying in ${BOOT_RETRY_WAIT}s (attempt $attempt of $BOOT_ATTEMPTS)..." >&2
-        sleep "$BOOT_RETRY_WAIT"
+        sleep "$BOOT_RETRY_WAIT" || return
         # A half-started machine holds what the next attempt needs.
         engine_down --force >/dev/null 2>&1 || true
         attempt=$((attempt + 1))
@@ -420,11 +424,11 @@ boot_engine() {
 # because whatever a run wrote would be kept.
 provision_disk() {
     local hash
-    hash="$(sha256_of "$FLTH_ROOT/$CFG_setup_script")"
+    hash="$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" || return
     echo "[vm] provisioning boot: applying $CFG_setup_script to the machine's disk..." >&2
-    : > "$(provisioning_marker)"
-    boot_engine --persist
-    apply_setup "$PROVISION_MODE"
+    : > "$(provisioning_marker)" || return
+    boot_engine --persist || return
+    apply_setup "$PROVISION_MODE" || return
     if ! engine_keep_kernel; then
         echo "vm: the newest kernel on the disk could not be kept for the next boot, so the disk is not" >&2
         echo "    recorded as provisioned. The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
@@ -438,7 +442,7 @@ provision_disk() {
         echo "    on the disk; nothing is booted over it. 'chore vm:status', then 'chore vm:down' or 'chore vm:destroy'." >&2
         exit 1
     fi
-    rm -f "$(provisioning_marker)"
+    rm -f "$(provisioning_marker)" || return
     printf '%s\n' "$hash" > "$(base_record)"
 }
 
@@ -457,7 +461,9 @@ refuse_provisioning_boot() {
 # it, whatever the record said: drop the record, and the next cold boot
 # provisions.
 forget_disk_if_setup_ran() {
-    [ "$SETUP_APPLIED" = 1 ] && rm -f "$(base_record)"
+    if [ "$SETUP_APPLIED" = 1 ]; then
+        rm -f "$(base_record)" || return
+    fi
     return 0
 }
 
