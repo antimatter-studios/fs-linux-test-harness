@@ -357,10 +357,13 @@ prints `PASS  <name> (N checks)` and sets the exit status.
 - **Vagrant is only ever driven through `scripts/vm.sh`.** The Vagrantfile
   reads `FLTH_*` variables that `engine_prepare` exports, and it stops at the
   first missing one if run by hand.
-- **One VM per project, shared by every checkout and worktree of it.** The
-  machine directory is keyed by `[project] name`. Two worktrees running
-  sessions at once share one guest: the reaper leaves it alone while any
-  session's process is alive, and the last session out brings it down.
+- **One VM per project, and its guest mounts one worktree.** The machine
+  directory is keyed by `[project] name`, so every checkout and worktree of a
+  project shares it, while `/repo` is the worktree that booted it. A command
+  from another worktree fails naming that worktree, and its session or reap
+  leaves the VM running (`tests/vm-worktree.sh`, #112). Sessions from one
+  worktree share the guest: the reaper leaves it alone while any session's
+  process is alive, and the last session out brings it down.
 - **A run's writes are gone when its boot stops.** Every boot is
   disposable (QEMU `snapshot=on`) except the provisioning boot that
   applies a changed setup script, which is stopped and confirmed stopped

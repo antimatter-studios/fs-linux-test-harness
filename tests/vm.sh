@@ -377,7 +377,7 @@ vm reap 2>/dev/null
 check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "a marker whose pid now belongs to another process does not protect the VM"
 rm -rf "$MACHINE/sessions"; free_slot
 
-# Two sessions on one machine (two worktrees of one project share it):
+# Two sessions on one machine:
 # the first to finish leaves the VM to the one still running.
 stub_state absent
 work '"$FLTH_VM" run true; ( cd "'"$C"'" && bash -c "set -e; . \"'"$STUB_HARNESS"'/scripts/vm-session.sh\"; true" ) 2> inner.txt; cat "$FLTH_TEST_STUB/state" > during.txt'
