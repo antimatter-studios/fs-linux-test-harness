@@ -275,15 +275,28 @@ vm_boot_finished() {
 # Every worktree of a repository shares a machine, and its guest mounts the one
 # that booted it, so a command from another worktree would run against the wrong
 # files while reporting success or an unrelated failure (#112). Each boot records
-# its worktree. A guest with no record came from a harness that kept none, so
-# which worktree it mounts is unknown and it is joined as before.
+# its worktree and the running VM process's identity. A record from another
+# boot, or one whose boot cannot be identified, says nothing about the guest's
+# current mount and is treated like no record.
 mounted_worktree_record() { printf '%s\n' "$FLTH_MACHINE_DIR/mounted-worktree"; }
+mounted_worktree_boot_record() { printf '%s\n' "$FLTH_MACHINE_DIR/mounted-worktree-boot"; }
 
 # Print the worktree the guest has mounted, when that is not this one.
 mounted_elsewhere() {
-    local mounted
+    local mounted recorded current pending owner
     mounted="$(cat "$(mounted_worktree_record)" 2>/dev/null || true)"
     [ -n "$mounted" ] && [ "$mounted" != "$FLTH_ROOT" ] || return 1
+    recorded="$(cat "$(mounted_worktree_boot_record)" 2>/dev/null || true)"
+    if [ -n "$recorded" ]; then
+        current="$(engine_boot_identity)" || return 1
+        [ "$recorded" = "$current" ] || return 1
+    else
+        pending="$(cat "$FLTH_MACHINE_DIR/up.lock/mounted-worktree" 2>/dev/null || true)"
+        [ "$pending" = "$mounted" ] || return 1
+        owner="$(cat "$FLTH_MACHINE_DIR/up.lock/pid" 2>/dev/null || true)"
+        case "$owner" in '' | *[!0-9]*) return 1 ;; esac
+        kill -0 "$owner" 2>/dev/null || return 1
+    fi
     printf '%s\n' "$mounted"
 }
 
@@ -488,16 +501,21 @@ guest_run() {
 # and the shortest job limit around a first boot in the family, 45 minutes. The
 # time an attempt takes counts, so a catalog that fails slowly is bounded too.
 boot_engine() {
-    local attempt=1 box_spent=0 box_wait="$BOX_RETRY_FIRST_WAIT" failure started
+    local attempt=1 box_spent=0 box_wait="$BOX_RETRY_FIRST_WAIT" failure started identity
     while :; do
         if ! "$SLOT" check-memory; then
             release_if_confirmed_stopped || true
             return 1
         fi
         mkdir -p "$FLTH_MACHINE_DIR" || return
+        rm -f "$(mounted_worktree_boot_record)" || return
         printf '%s\n' "$FLTH_ROOT" > "$(mounted_worktree_record)" || return
+        printf '%s\n' "$FLTH_ROOT" > "$FLTH_MACHINE_DIR/up.lock/mounted-worktree" || return
         started="$SECONDS"
         if engine_up "$@"; then
+            if identity="$(engine_boot_identity)" && [ -n "$identity" ]; then
+                printf '%s\n' "$identity" > "$(mounted_worktree_boot_record)" || return
+            fi
             return 0
         fi
         if failure="$(engine_box_failure)"; then

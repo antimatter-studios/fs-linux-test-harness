@@ -14,6 +14,10 @@
 #   engine_identity            print a path unique to this machine. The
 #                              slot records it, and a running VM's
 #                              process names it on its command line.
+#   engine_boot_identity       print the running VM process's PID and start
+#                              time, stable across callers' locales and
+#                              timezones. Exit 1 when absent, 2 when the
+#                              process table could not be read.
 #   engine_state               print exactly one of:
 #                                running   the VM is up
 #                                stopped   it exists and is not running
