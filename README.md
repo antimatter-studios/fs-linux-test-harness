@@ -720,6 +720,15 @@ So does `vm.sh reap`. If it is still there, `vm.sh up` and `vm.sh run` replace i
 `vm.sh exec` refuses it and `vm.sh status` says so. A boot that another process is
 still running is left alone.
 
+**A signal stops the guest command too.** A command started through `vm.sh run`
+or `vm.sh exec` runs in the guest in a process group of its own, and the call's
+stdin stays open while the host side lives. When that ends, by a signal, by KILL
+or by a lost connection, a watcher in the guest sends TERM to that group and to
+the descendants it finds through their parents, and KILL after about five seconds
+to what is left. The VM stays up and other calls in that guest keep running. A
+call that ended on its own stops nothing, so what it left in the background stays;
+so does a daemon that has already left the command's process tree and group.
+
 **A guest that goes away fails the call.** The client keeps the
 connection alive (`ServerAliveInterval=15`, `ServerAliveCountMax=8`), so
 a VM halted underneath a running command — by its own deadline, by a

@@ -33,6 +33,9 @@
 #   hold / reap   a held VM survives the reaper; a leaked one does not
 #   signal        a VM that stays up after a session is signalled keeps /share
 #                 and /repo, and the command's descendants still end (#130)
+#                 A signal also stops the guest command that session started, what
+#                 it moved to another process group, and nothing of another
+#                 session's (#139)
 #   poweroff      a guest that powers itself off leaves no forwarder when its
 #                 session ends (#135)
 #   test          a passing suite passes and tears down; a CORRUPTED one
@@ -503,6 +506,44 @@ check_eq "$(cat "$signal_dir/repo")" present "$repo_guest still answers in the g
 bounded 120 "$VM" run "timeout -s KILL 30 sh -c 'echo from the guest > /share/signal-back'" > /dev/null 2>&1
 check_eq "$(cat "$signal_share/signal-back" 2>/dev/null)" "from the guest" "and a write to /share still reaches the host"
 rm -f "${signal_share:?}/signal-marker" "${signal_share:?}/signal-back"
+
+step "signal: it stops the guest command it started, and only that (#139)"
+# The oracle is the guest's own process table. Full command lines, so that no
+# shell naming one of these in its arguments can answer. `timeout` moves itself and
+# its child to a process group of their own, and is not the shell's last command,
+# so the shell does not exec it.
+guest_runs() { bounded 120 "$VM" run "pgrep -c -x -f '$1'" 2>/dev/null | tr -d ' \n'; }
+guest_call_session() {
+    FLTH_KEEP_VM=1 perl -e 'alarm shift; exec @ARGV or exit 127' 600 "$VM" session bash -c '"$1" run "$2"' \
+        flth-guest-call "$VM" "$1" >> "$signal_dir/guest-call.log" 2>&1 &
+    guest_call=$!
+}
+wait_guest_runs() {
+    # wait_guest_runs <full command line> <count>: bounded, in seconds
+    local attempt=0
+    while [ "$attempt" -lt 60 ] && [ "$(guest_runs "$1")" != "$2" ]; do
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    [ "$attempt" -lt 60 ]
+}
+guest_call_session 'timeout 900 sleep 1001; echo after'
+signalled_call=$guest_call
+guest_call_session 'sleep 1002'
+other_call=$guest_call
+check_true 'wait_guest_runs "sleep 1001" 1' "the first session's command is running in the guest" "the first session's command never showed in the guest"
+check_true 'wait_guest_runs "sleep 1002" 1' "the second session's too" "the second session's command never showed in the guest"
+kill -TERM "$signalled_call" 2>/dev/null
+wait "$signalled_call"
+check_eq "$?" 143 "a signalled session exits 143"
+check_true 'wait_guest_runs "sleep 1001" 0' "its guest command has ended in the guest" "its guest command is still running in the guest"
+check_eq "$(guest_runs "timeout 900 sleep 1001")" 0 "and so has the timeout that moved it to another group"
+check_eq "$(guest_runs "sleep 1002")" 1 "the second session's command is still running"
+check_eq "$(state)" running "the VM stays up"
+kill -TERM "$other_call" 2>/dev/null
+wait "$other_call"
+check_true 'wait_guest_runs "sleep 1002" 0' "a signal to the second session stops its command" "the second session's command outlived its signal"
+
 bounded 600 "$VM" down
 check_eq "$?" 0 "the VM it left stops"
 check_eq "$(state)" not-running "and is down"
