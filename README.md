@@ -841,6 +841,11 @@ In order of precision:
    ends while another is still using the same machine, it leaves the VM to
    that one, and the last out brings it down. A session or reap from another
    worktree of the project leaves the VM to the worktree its guest has mounted.
+   A worktree record is trusted only for the QEMU process that booted it,
+   identified by its PID and start time. A record from an earlier boot, a
+   legacy record without a boot identity, or an identity that cannot be read
+   is treated as unknown: it cannot refuse a command or name an old worktree
+   in `status`. A boot still in progress is protected by its live `up` lock.
 3. **The guest's own deadline** — scheduled inside the guest at every boot
    (`[vm] deadline_minutes`), confirmed from logind's record, and re-armed
    by every `run` and `exec` as the call starts and as it ends (at most once

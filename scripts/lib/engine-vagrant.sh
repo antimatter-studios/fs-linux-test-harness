@@ -88,6 +88,21 @@ engine_identity() {
     printf '%s\n' "$FLTH_MACHINE_DIR/vagrant"
 }
 
+engine_boot_identity() {
+    local identity processes
+    identity="$(engine_identity)"
+    [ -n "$identity" ] || return 1
+    processes="$(LC_ALL=C TZ=UTC ps -eo pid=,lstart=,args= 2>/dev/null)" || return 2
+    [ -n "$processes" ] || return 2
+    printf '%s\n' "$processes" | awk -v want="$identity/" '
+        { count = split($7, parts, "/") }
+        !found && parts[count] ~ /^qemu-system-/ && index($0, want) > 0 {
+            print $1, $2, $3, $4, $5, $6
+            found = 1
+        }
+        END { exit !found }'
+}
+
 # Run vagrant, waiting out another process's lock on the machine. Output
 # goes to stdout; Vagrant's own stderr is shown only when the command
 # finally fails.
@@ -376,6 +391,7 @@ engine_box_failure() {
     fi
 }
 
+# shellcheck disable=SC2120
 engine_up() {
     local tmp disposable=1 port dir kernel="" initrd=""
     [ "${1:-}" = --persist ] && disposable=0

@@ -409,6 +409,8 @@ check_eq "$("$VM" run 'echo back' 2>/dev/null)" back "the guest carries on when 
 
 step "reload: the VM restarts in place and keeps its slot"
 boot_before="$("$VM" run 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)"
+worktree_machine="$("$VM" config | sed -n 's/^machine=//p')"
+worktree_boot="$(cat "$worktree_machine/mounted-worktree-boot" 2>/dev/null)"
 "$VM" reload
 check_eq "$?" 0 "reload stops the VM and boots it again"
 check_eq "$(state)" running "the VM is back"
@@ -416,6 +418,22 @@ check_eq "$(slot_holder)" flth-smoke "and holds the slot it held before"
 boot_after="$("$VM" run 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)"
 check_true '[ -n "$boot_after" ] && [ "$boot_after" != "$boot_before" ]' "the guest really rebooted" \
     "the guest's boot id did not change across the reload ($boot_before, $boot_after)"
+
+step "worktree: a record left by a previous boot is unknown (#120)"
+check_true '[ -n "$worktree_boot" ]' "the previous boot had a worktree identity" "the previous boot had no worktree identity"
+current_worktree_boot="$(cat "$worktree_machine/mounted-worktree-boot" 2>/dev/null)"
+check_true '[ -n "$current_worktree_boot" ] && [ "$current_worktree_boot" != "$worktree_boot" ]' \
+    "the host identifies the guest's new boot" "the host did not identify a new boot"
+printf '%s\n' "$CONTENDER/old-worktree" > "$worktree_machine/mounted-worktree"
+printf '%s\n' "$worktree_boot" > "$worktree_machine/mounted-worktree-boot"
+check_eq "$("$VM" exec 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)" "$boot_after" \
+    "a stale record does not refuse a legitimate command to the rebooted guest"
+check_eq "$("$VM" run "test -d $repo_guest && echo mounted" 2>/dev/null)" mounted \
+    "run also reaches the guest despite the stale record"
+check_true '! "$VM" status 2>&1 | grep -F "$CONTENDER/old-worktree"' \
+    "status does not name the previous boot's worktree" "status still names the previous boot's worktree"
+printf '%s\n' "$CONSUMER" > "$worktree_machine/mounted-worktree"
+printf '%s\n' "$current_worktree_boot" > "$worktree_machine/mounted-worktree-boot"
 
 step "hold and reap"
 "$VM" hold
