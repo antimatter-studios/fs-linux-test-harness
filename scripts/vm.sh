@@ -709,6 +709,9 @@ vm_session_end() {
     local alive=0 mounted
     engine_alive "$(engine_identity)" || alive=$?
     if [ "$alive" -eq 1 ]; then
+        # A guest that powered itself off also ends here, and no halt will run
+        # for it, so what its boot left on the host stops now (#135).
+        engine_stop_host_daemons
         "$SLOT" release
         return 0
     fi

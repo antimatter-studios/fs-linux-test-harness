@@ -19,6 +19,9 @@
 #     descendant of the command still ends, within the session's own bound;
 #   - on the path that brings it down, and at a normal end, nothing is left,
 #     although the provider's halt does not stop the forwarders itself;
+#   - a guest that powered itself off leaves no forwarder when its session ends;
+#   - both ways the plugin records a watcher are read, and a pid in that record
+#     that is no forwarder is left alone;
 #   - a boot still running when the signal arrives is still stopped, through a
 #     Vagrant that ignores TERM too, and nothing it started is left behind.
 set -uo pipefail
@@ -64,7 +67,13 @@ case "$1" in
         echo "$!" > "$STUB/notify-forwarder.pid"
         echo "$!" >> "$STUB/forwarders"
         mkdir -p "$VAGRANT_DOTFILE_PATH/machines/default/qemu"
-        echo "$!" >> "$VAGRANT_DOTFILE_PATH/machines/default/qemu/notify_watcher_host_pid"
+        if [ -e "$STUB/record-identity" ]; then
+            # From plugin 0.7.7: a pid, then what the plugin compares before it signals.
+            echo "$! {\"identity\":\"Wed Nov  4 12:00:00 2026 notify-forwarder-stub\"}" \
+                >> "$VAGRANT_DOTFILE_PATH/machines/default/qemu/notify_watcher_host_pid"
+        else
+            echo "$!" >> "$VAGRANT_DOTFILE_PATH/machines/default/qemu/notify_watcher_host_pid"
+        fi
         # A process outside the terminal's foreground group that reads the
         # terminal is stopped, so a boot must not be holding one as its stdin.
         if [ /dev/fd/0 -ef /dev/null ]; then echo null; else echo other; fi > "$STUB/stdin"
@@ -127,6 +136,13 @@ else
     "$VM" up || exit 7
 fi
 [ "${HOLD_AFTER_UP:-0}" = 0 ] || "$VM" hold || exit 8
+if [ "${POWERS_OFF:-0}" != 0 ]; then
+    # What the host sees of a guest that powers itself off: QEMU is gone, and
+    # nothing asked Vagrant to stop anything.
+    qemu="$(cat "$STUB/qemu.pid")"
+    kill -KILL "$qemu"
+    while kill -0 "$qemu" 2>/dev/null; do sleep 0.05; done
+fi
 [ "${ENDS_ITSELF:-0}" = 0 ] || exit 0
 sleep 300 &
 echo "$!" > "$CASE/descendant"
@@ -362,6 +378,62 @@ else
 fi
 kill -KILL "$unrelated" 2>/dev/null
 wait "$unrelated" 2>/dev/null
+
+# --- The record as plugin 0.7.7 writes it: "<pid> {json}", one watcher a line. A
+# line the harness cannot read must not lose the watcher: it removes the record
+# afterwards, so the plugin's own hook has nothing left to stop (#82).
+
+record="$FLTH_CACHE_DIR/machines/session-vm-daemons/vagrant/machines/default/qemu/notify_watcher_host_pid"
+for action in down destroy; do
+    ( exec -a notify-forwarder-stub sleep 300 ) &
+    recorded=$!
+    sleep 300 &
+    unrelated=$!
+    mkdir -p "${record%/*}"
+    {
+        printf '%s {"identity":"Wed Nov  4 12:00:00 2026 notify-forwarder-stub"}\n' "$recorded"
+        printf '%s {"identity":"Wed Nov  4 12:00:00 2026 notify-forwarder-stub"}\n' "$unrelated"
+    } >> "$record"
+    (cd "$ONE" && "$VM" "$action") > /dev/null 2>&1
+    if wait_until 30 dead "$recorded"; then
+        ok "$action: a watcher recorded with its identity is stopped"
+    else
+        bad "$action: a watcher recorded with its identity outlived it"
+    fi
+    if alive "$unrelated"; then
+        ok "$action: an unrelated process recorded with an identity is left alone"
+    else
+        bad "$action: an unrelated process recorded with an identity was stopped"
+    fi
+    kill -KILL "$recorded" "$unrelated" 2>/dev/null
+    wait "$recorded" 2>/dev/null
+    wait "$unrelated" 2>/dev/null
+done
+
+# --- A guest that powers itself off: the session finds no QEMU and halts nothing,
+# so nothing else stops what the boot left running (#135).
+
+export ENDS_ITSELF=1 POWERS_OFF=1
+for format in pid identity; do
+    label="powered off, $format record"
+    if [ "$format" = identity ]; then : > "$STUB/record-identity"; fi
+    start_session "powered-off-$format" "$ONE"
+    wait "$SESSION"
+    check_eq "$?" 0 "$label: the session keeps the command's status"
+    if dead "$(pid_of qemu)"; then
+        ok "$label: QEMU had gone before the session ended"
+    else
+        bad "$label: QEMU is still running"
+    fi
+    if wait_until 30 forwarders_gone; then
+        ok "$label: no forwarder is left"
+    else
+        bad "$label: a forwarder outlived the session"
+    fi
+    rm -f "${STUB:?}/record-identity"
+    clean_up
+done
+unset ENDS_ITSELF POWERS_OFF
 
 # --- A boot still running when the signal arrives is stopped, and nothing it
 # started is left: there is no VM for it to serve.

@@ -41,6 +41,8 @@
 #                              NOT trusted; callers confirm with
 #                              engine_state.
 #   engine_destroy             delete the VM, its disk and its cache
+#   engine_stop_host_daemons   stop what a boot left running on the host
+#                              beside a VM that has already gone
 #   engine_keep_kernel         on a provisioning boot, before it stops:
 #                              make the next boot run the newest kernel
 #                              on the disk, on a host whose guest does

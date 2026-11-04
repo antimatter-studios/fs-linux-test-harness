@@ -62,7 +62,8 @@ jobs:
           sw_vers
           brew install --cask hashicorp/tap/hashicorp-vagrant
           brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd
-          vagrant plugin install vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas
+          vagrant plugin install vagrant-qemu-christhomas
+          vagrant plugin install vagrant-notify-forwarder-christhomas --plugin-version 0.7.7
           vagrant --version
           vagrant plugin list
 

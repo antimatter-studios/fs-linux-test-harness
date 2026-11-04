@@ -357,7 +357,7 @@ Vagrant.configure("2") do |config|
   if host == :macos_arm64
     config.notify_forwarder.enable = true
     # BUT NOTHING IN THE GUEST MAY WRITE TO THE SHARES (#84). The plugin's guest
-    # receiver (notify-forwarder v1.1.0, src/inject_utimes.cc) answers an event
+    # receiver at notify-forwarder v1.1.0 (src/inject_utimes.cc) answers an event
     # by opening the named file read-write: it writes the first byte of a file
     # back, and it writes a byte to a file it reads as empty and truncates it to
     # 0. A file the host is still writing is empty for a moment, so that
@@ -369,6 +369,15 @@ Vagrant.configure("2") do |config|
     # guest, so the plugin is given a receiver that exits. Its `binaries` setting
     # is the way in: the receiver starts after provisioning, so no provisioner can
     # stop it, and disabling the plugin stops the boot (above).
+    #
+    # IT STAYS OFF WITH v1.2.1, WHICH PLUGIN 0.7.7 INSTALLS (#87). v1.2.1 no longer
+    # writes data: it opens the file write-only and sets and removes an extended
+    # attribute, and 0 of 168 payloads and 0 of 992 captured streams came back wrong
+    # with it running, against 11 and 35 with v1.1.0 in the same guest. But nothing
+    # here needs host events, it would still change every file an event names
+    # through the share, and as the plugin starts it on a boot it would do nothing:
+    # the service starts before the shares are mounted and holds the directories
+    # under them (vagrant-notify-forwarder#33).
     receiver_off = File.expand_path("guest/notify-receiver-off.sh", __dir__)
     config.notify_forwarder.binaries = {
       [:linux, :arm64] => ["file://#{URI::DEFAULT_PARSER.escape(receiver_off)}", Digest::SHA256.file(receiver_off).hexdigest],

@@ -163,6 +163,8 @@ engine_guest_answers() {
 
 engine_overlay_dir() { printf '%s\n' "$STUB"; }
 
+engine_stop_host_daemons() { return 0; }
+
 engine_alive() {
     [ -f "$STUB/ps_unreadable" ] && return 2
     [ "$(cat "$STUB/state")" = running ]

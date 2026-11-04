@@ -31,6 +31,8 @@
 #   hold / reap   a held VM survives the reaper; a leaked one does not
 #   signal        a VM that stays up after a session is signalled keeps /share
 #                 and /repo, and the command's descendants still end (#130)
+#   poweroff      a guest that powers itself off leaves no forwarder when its
+#                 session ends (#135)
 #   test          a passing suite passes and tears down; a CORRUPTED one
 #                 FAILS with a non-zero exit and still tears down;
 #                 FLTH_KEEP_VM=1 keeps the VM
@@ -102,6 +104,24 @@ check_artifacts_gone() {
         [ ! -e "$artifact" ] || remaining="$remaining $artifact"
     done
     check_eq "$remaining" '' "$action removes unused virtiofs socket pidfiles"
+}
+
+# A process naming this consumer's directory and the forwarder: on a Mac the watcher
+# and, from plugin 0.7.7, the process supervising it. The stock provider on Linux
+# starts neither. A stop takes a few seconds, so this waits for the count to reach 0.
+forwarders_left() {
+    ps -axww -o command= |
+        awk -v want="$CONSUMER" 'index($0, want) > 0 && /[n]otify-forwarder/ { n++ } END { print n + 0 }'
+}
+check_no_forwarders() {
+    local left attempt=0
+    left="$(forwarders_left)"
+    while [ "$left" != 0 ] && [ "$attempt" -lt 10 ]; do
+        sleep 1
+        attempt=$((attempt + 1))
+        left="$(forwarders_left)"
+    done
+    check_eq "$left" 0 "$1 leaves no forwarder naming the consumer running"
 }
 
 repo_guest="$(sed -n 's/^FLTH_REPO_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
@@ -485,6 +505,23 @@ bounded 600 "$VM" down
 check_eq "$?" 0 "the VM it left stops"
 check_eq "$(state)" not-running "and is down"
 
+step "poweroff: a guest that powers itself off leaves no forwarder (#135)"
+poweroff_session='
+    "$1" up || exit
+    "$1" exec "systemctl poweroff" > /dev/null 2>&1
+    attempt=0
+    while [ "$attempt" -lt 120 ] && "$1" status > /dev/null 2>&1; do
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    "$1" status > /dev/null 2>&1 && exit 9
+    exit 0
+'
+bounded 1800 "$VM" session bash -c "$poweroff_session" flth-poweroff "$VM"
+check_eq "$?" 0 "a session whose guest powered itself off ends cleanly"
+check_eq "$(state)" not-running "and the VM is down"
+check_no_forwarders "a session ended on a powered-off guest"
+
 step "test: FLTH_KEEP_VM=1"
 FLTH_KEEP_VM=1 "$VM" test
 check_eq "$?" 0 "the suite passes"
@@ -502,11 +539,13 @@ step "down"
 check_eq "$?" 0 "vm.sh down succeeds"
 check_eq "$(state)" not-running "the VM is confirmed stopped"
 check_true '[ "$(slot_holder)" != flth-smoke ]' "and the slot released" "down left the slot held"
+check_no_forwarders "vm.sh down"
 
 step "destroy"
 "$VM" destroy
 check_eq "$?" 0 "vm.sh destroy succeeds"
 check_contains "$("$VM" status 2>&1)" "(absent)" "the VM no longer exists"
+check_no_forwarders "vm.sh destroy"
 check_true '[ ! -e "$machine/cache.img" ]' "and its cache went with it" "destroy left $machine/cache.img behind"
 check_artifacts_gone "$memory" destroy
 
@@ -546,6 +585,7 @@ fi
 "$VM" destroy
 check_eq "$?" 0 "the abrupt-stop guest is destroyed"
 check_artifacts_gone "$memory" 'destroy after abrupt stop'
+check_no_forwarders "vm.sh destroy after an abrupt stop"
 
 step "kernel: the next boot runs the kernel a provisioning boot installed (#80)"
 # The oracles are the guest's own: dpkg says which kernel the setup's package
