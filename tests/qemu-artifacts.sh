@@ -15,7 +15,40 @@ fi
 exit "$(cat "$ARTIFACT_TEST/exit" 2>/dev/null || echo 0)"
 STUB
 chmod +x "$ARTIFACT_TEST/bin/vagrant"
-export PATH="$ARTIFACT_TEST/bin:$PATH"
+
+# The helper keeps a file it cannot prove unused, and says nothing when the
+# file is merely open. Each ps and lsof call therefore passes through a recorder
+# that notes the answer, so a run whose first cleanup kept the fixture can say
+# why after the sandbox has gone (#129). With every answer clear and nothing on
+# stderr, the check that is left is the helper's stamp comparison.
+export ARTIFACT_ANSWERS="$ARTIFACT_TEST/answers"
+mkdir -p "$ARTIFACT_TEST/record"
+cat > "$ARTIFACT_TEST/record/lsof" <<'STUB'
+#!/usr/bin/env bash
+name="${0##*/}"
+PATH="${PATH#"$ARTIFACT_TEST/record:"}"
+out="$ARTIFACT_TEST/out.$$"
+err="$ARTIFACT_TEST/err.$$"
+"$name" "$@" >"$out" 2>"$err"
+status=$?
+{
+    printf '%s %s: status %s\n' "$name" "$*" "$status"
+    cat "$err"
+    if [ "$name" = lsof ] && [ -s "$out" ]; then
+        cat "$out"
+        sed -n 's/^p//p' "$out" | while read -r holder; do
+            ps -o pid=,comm= -p "$holder"
+        done
+    fi
+} >>"$ARTIFACT_ANSWERS" 2>&1
+cat "$out"
+cat "$err" >&2
+rm "$out" "$err"
+exit "$status"
+STUB
+cp "$ARTIFACT_TEST/record/lsof" "$ARTIFACT_TEST/record/ps"
+chmod +x "$ARTIFACT_TEST/record/lsof" "$ARTIFACT_TEST/record/ps"
+export PATH="$ARTIFACT_TEST/record:$ARTIFACT_TEST/bin:$PATH"
 artifacts="$FLTH_STATE_DIR/tmp"
 memory="$artifacts/vagrant-qemu-vq_abandoned-mem"
 pidfile="$artifacts/vqemu-vq_abandoned-virtiofs0.sock.pid"
@@ -23,8 +56,16 @@ for action in halt destroy up; do
     : > "$memory"
     printf '99999999\n' > "$pidfile"
     if [ "$action" = up ]; then ln -s "$memory" "$ARTIFACT_TEST/stale"; fi
+    : > "$ARTIFACT_ANSWERS"
     engine_vagrant "$action" >/dev/null 2>"$SANDBOX/err"
-    check_eq "$?" 0 "$action succeeds after reclaiming abandoned artifacts"
+    status=$?
+    check_eq "$status" 0 "$action succeeds after reclaiming abandoned artifacts"
+    if [ "$status" != 0 ]; then
+        printf 'the helper printed:\n'
+        cat "$SANDBOX/err"
+        printf 'ps and lsof answered:\n'
+        cat "$ARTIFACT_ANSWERS"
+    fi
     check_eq "$([ -e "$memory" ] && echo present || echo gone)" gone "$action removes unused shared memory"
     check_eq "$([ -e "$pidfile" ] && echo present || echo gone)" gone "$action removes the stale socket pidfile"
     if [ -L "$ARTIFACT_TEST/stale" ]; then rm "$ARTIFACT_TEST/stale"; fi
@@ -33,8 +74,11 @@ done
 : > "$memory"
 exec 9<>"$memory"
 printf '99999999\n' > "$pidfile"
+: > "$ARTIFACT_ANSWERS"
 engine_vagrant halt >/dev/null 2>"$SANDBOX/err"
 check_eq "$([ -e "$memory" ] && echo present || echo gone)" present "an open memory file is never unlinked"
+check_contains "$(cat "$ARTIFACT_ANSWERS")" "/${memory##*/}" "the record names the open memory file"
+check_contains "$(cat "$ARTIFACT_ANSWERS")" "$$ " "the record names the process holding it"
 check_eq "$([ -e "$pidfile" ] && echo present || echo gone)" present "its related pidfile stays while the memory is open"
 exec 9>&-
 engine_vagrant up >/dev/null 2>"$SANDBOX/err"
@@ -76,8 +120,10 @@ echo 'cannot inspect open files' >&2
 exit 1
 STUB
 chmod +x "$ARTIFACT_TEST/bin/lsof"
+: > "$ARTIFACT_ANSWERS"
 engine_vagrant halt >/dev/null 2>"$SANDBOX/err"
 check_eq "$([ -e "$memory" ] && echo present || echo gone)" present "an open-file inspection error keeps the memory"
+check_contains "$(cat "$ARTIFACT_ANSWERS")" "cannot inspect open files" "the record keeps lsof's own error"
 rm "$ARTIFACT_TEST/bin/lsof"
 engine_vagrant up >/dev/null 2>"$SANDBOX/err"
 check_eq "$([ -e "$memory" ] && echo present || echo gone)" gone "a later start retries cleanup after inspection recovers"
