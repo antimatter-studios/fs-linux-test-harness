@@ -9,6 +9,32 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## v0.5.7 — 2026-11-04
+
+### Fixed
+
+- **A dead holder no longer reserves pending memory.** Once its boot grace
+  has expired and no VM is running for it, a holder's recorded reservation
+  no longer blocks admission into a free lower slot. An unreadable process
+  table still keeps the reservation counted.
+
+- **An acquire waits beside a holder with no memory file.** A holder from a
+  harness before v0.5.5 writes no reservation, and memory admission refused to
+  start beside one during its boot grace. Admission and the check before each
+  boot now wait until that holder settles or goes, and a holder past its grace
+  with no VM reserves nothing. A reservation that is present but malformed is
+  still refused.
+
+- **A command from another worktree no longer joins a guest that has the first
+  one mounted.** Every worktree of a project shares a machine, and its guest
+  mounts the worktree that booted it. `up`, `run`, `exec`, `put`, `hold`,
+  `provision` and what runs through them now fail naming both worktrees, a
+  session or reap from another worktree leaves that VM running, and `status`
+  names the worktree the guest has mounted.
+
+- A signal to a command session, whether delivered to its process or its process group, reaches the command's process group before VM teardown. Processes remaining in that group receive SIGKILL after a five-second grace period, even if the command itself has already exited.
+- Cancellation recorded before a session launches its command prevents that command from starting.
+
 ## v0.5.6 — 2026-11-03
 
 ### Fixed
