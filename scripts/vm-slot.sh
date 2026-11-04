@@ -167,7 +167,9 @@ memory_admit() {
             past_grace=1
             alive=0
             engine_alive "$identity" || alive=$?
-            [ "$alive" != 0 ] || continue
+            case "$alive" in
+                0 | 1) continue ;;
+            esac
         fi
         if [ ! -e "$candidate/memory" ]; then
             # Past grace with no VM, nothing is booting and nothing is
