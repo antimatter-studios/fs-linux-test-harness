@@ -10,6 +10,8 @@
 #   guest-run.sh tree <id> <repo> <share> <cache> <share dir>
 #                                                   give the run its own copy of its tree
 #   guest-run.sh end <id>                           stop the run and delete its root
+#   guest-run.sh setup <repo> <share> <cache> <command...>
+#                                                   run a consumer's setup with its tree
 #
 # A RUN IS A RANDOM ROOT ON THE GUEST'S OWN DISK AND A PRIVATE MOUNT NAMESPACE, in
 # which that root's directories are mounted where a suite already looks: /tmp,
@@ -49,16 +51,40 @@ prepare() {
     fi
 }
 
-# Inside the new namespace. The share first, because <repo> may be under /repo.
-bind() {
-    local root="$1" repo="$2" share="$3" cache="$4"
+# Inside a new namespace. The share first, because <repo> may be under /repo.
+bind_tree() {
+    local repo="$1" share="$2" cache="$3"
     [ "$share" = /share ] || mount --bind "$share" /share
     [ "$repo" = /repo ] || mount --bind "$repo" /repo
+    [ "$cache" = - ] || mount --bind "$cache" /cache
+}
+
+bind() {
+    local root="$1"
+    bind_tree "$2" "$3" "$4"
     mount --bind "$root/tmp" /tmp
     mount --bind "$root/var-tmp" /var/tmp
     mount --bind "$root/var-cache" /var/cache
     mount --bind "$root/mnt" /mnt
-    [ "$cache" = - ] || mount --bind "$cache" /cache
+}
+
+# A CONSUMER'S SETUP SCRIPT reads its own tree at /repo, and what it installs belongs
+# to the whole guest, so it has this consumer's /repo and /share and nothing else of a
+# run's. Its namespace goes when it ends.
+setup() {
+    local repo="$1" share="$2" cache="$3"
+    shift 3
+    if [ "$cache" != - ]; then
+        mkdir -p "$cache" /cache
+    fi
+    exec unshare --mount --propagation private bash "$0" setup-inner "$repo" "$share" "$cache" "$@"
+}
+
+setup_inner() {
+    local repo="$1" share="$2" cache="$3"
+    shift 3
+    bind_tree "$repo" "$share" "$cache"
+    exec "$@"
 }
 
 # The first call of a run makes it. A suite's first calls can arrive together.
@@ -164,6 +190,7 @@ end() {
 command="$1"
 shift
 case "$command" in
-    prepare | bind | enter | tree | end) "$command" "$@" ;;
+    prepare | bind | enter | tree | end | setup) "$command" "$@" ;;
+    setup-inner) setup_inner "$@" ;;
     *) echo "guest-run: unknown command $command" >&2; exit 2 ;;
 esac

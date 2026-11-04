@@ -206,6 +206,16 @@ engine_up 2>/dev/null
 check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=1" "a plain up boots disposable: the run's writes are discarded"
 : > "$STUBDIR/log"
 engine_up --persist 2>/dev/null
+
+# A SHARED MACHINE'S DISK NEVER KEEPS VAGRANT'S KEY (#153), so a later boot must not
+# offer it. A private machine's does, so its copy stays.
+key="$VAGRANT_DOTFILE_PATH/machines/default/qemu/private_key"
+mkdir -p "$(dirname "$key")"
+: > "$key"
+engine_up 2>/dev/null
+check_eq "$([ -f "$key" ] && echo kept)" kept "a private machine's boot keeps Vagrant's key"
+FLTH_SHARED_ROOT=/somewhere engine_up 2>/dev/null
+check_eq "$([ -f "$key" ] && echo kept)" "" "a shared machine's boot forgets it"
 check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=0" "up --persist boots a machine whose writes reach its disk"
 check_eq "${FLTH_VM_DISPOSABLE:-unset}" 1 "and only that boot: the next Vagrant call is back to disposable"
 

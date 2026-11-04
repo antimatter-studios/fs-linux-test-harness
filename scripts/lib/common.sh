@@ -73,6 +73,23 @@ flth_shared_load() {
             flth_config_error "FLTH_SHARED_ROOT may use only letters, digits, spaces, '.', '_', '-' and '/', got $FLTH_SHARED_ROOT"
             return 1 ;;
     esac
+    if ! FLTH_SHARED_ROOT="$(cd "$FLTH_SHARED_ROOT" 2>/dev/null && pwd -P)"; then
+        flth_config_error "FLTH_SHARED_ROOT is not a directory"
+        return 1
+    fi
+    export FLTH_SHARED_ROOT
+    case "$FLTH_ROOT/" in
+        "${FLTH_SHARED_ROOT%/}"/*) ;;
+        *)
+            flth_config_error "$FLTH_ROOT is not under FLTH_SHARED_ROOT ($FLTH_SHARED_ROOT), the host directory" \
+                "the shared guest can see. Set it to a directory holding every consumer that shares the guest."
+            return 1 ;;
+    esac
+    # Where this tree is in what the guest sees, and the /cache it asks for: that
+    # is a directory of the guest's in a run, not a disk of the machine's.
+    FLTH_SHARED_RELATIVE="${FLTH_ROOT#"${FLTH_SHARED_ROOT%/}"/}"
+    FLTH_SHARED_CACHE="$CFG_cache_size"
+    CFG_cache_size=""
     FLTH_MACHINE_NAME="shared-$CFG_vm_guest"
     CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
     CFG_vm_cpus="${FLTH_SHARED_CPUS:-$FLTH_SHARED_CPUS_DEFAULT}"

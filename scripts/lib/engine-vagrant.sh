@@ -24,7 +24,10 @@ ENGINE_VAGRANT_LOCK_WAIT=2
 
 engine_prepare() {
     export VAGRANT_CWD="$ENGINE_VAGRANT_DIR"
-    export FLTH_REPO_DIR="$FLTH_ROOT"
+    # A shared guest sees the host directory that holds every tree using it, in
+    # both mounts, each with its own security model. A run then mounts its own
+    # tree and share over them (lib/guest-run.sh), so that is all it can see.
+    export FLTH_REPO_DIR="${FLTH_SHARED_ROOT:-$FLTH_ROOT}"
     export VAGRANT_DOTFILE_PATH="$FLTH_MACHINE_DIR/vagrant"
     export FLTH_VM_NAME="$FLTH_MACHINE_NAME"
     export FLTH_VM_MEMORY="$CFG_vm_memory"
@@ -33,7 +36,7 @@ engine_prepare() {
     export FLTH_VM_SSH_PORT="$CFG_vm_ssh_port"
     export FLTH_VM_DEADLINE_MINUTES="$CFG_vm_deadline_minutes"
     export FLTH_VM_GUEST="$CFG_vm_guest"
-    export FLTH_SHARE_DIR="$FLTH_SHARE_HOST"
+    export FLTH_SHARE_DIR="${FLTH_SHARED_ROOT:-$FLTH_SHARE_HOST}"
     # Every Vagrant command evaluates the Vagrantfile, which requires it;
     # only `up` acts on it, and engine_up --persist overrides it there.
     export FLTH_VM_DISPOSABLE=1
@@ -416,6 +419,15 @@ engine_up() {
     export FLTH_VM_SSH_PORT="$port"
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
+    # A SHARED GUEST'S DISK NEVER KEEPS VAGRANT'S KEY. Vagrant replaces the box's key
+    # with one of its own on a machine's first boot and connects with it from then on.
+    # A private machine keeps that on its provisioning boot. A shared machine has none,
+    # so the key went with the overlay and every later boot failed with `Authentication
+    # failure` until its timeout (measured on an Apple Silicon host, #153). Forgetting
+    # the machine's copy makes each boot a first boot to Vagrant.
+    if [ -n "${FLTH_SHARED_ROOT:-}" ]; then
+        rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
+    fi
     # QEMU starts the log afresh, but a boot that fails before QEMU starts
     # must not leave the last boot's console to be shown as its own.
     rm -f "$(engine_console_log)"
