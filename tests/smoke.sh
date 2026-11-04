@@ -29,6 +29,8 @@
 #                 call with what stopped it, not a bare 255 (#105)
 #   reload        the guest really reboots in place and keeps its slot (#122)
 #   hold / reap   a held VM survives the reaper; a leaked one does not
+#   signal        a VM that stays up after a session is signalled keeps /share
+#                 and /repo, and the command's descendants still end (#130)
 #   test          a passing suite passes and tears down; a CORRUPTED one
 #                 FAILS with a non-zero exit and still tears down;
 #                 FLTH_KEEP_VM=1 keeps the VM
@@ -433,6 +435,55 @@ check_true '[ "$rc" -ne 0 ]' "vm.sh test exits non-zero ($rc) when the suite fin
 check_eq "$(cat "$results/verdict" 2>/dev/null)" fail "the verdict collected on the host is fail"
 check_contains "$(cat "$results/cmp.log" 2>/dev/null)" differ "because the content check found the flipped byte"
 check_eq "$(state)" not-running "the VM is torn down after a failure too"
+
+step "signal: a VM that stays up keeps its shares (#130)"
+# Each call has a limit of its own: a dead share holds whatever reads it, in the
+# guest and in the ssh waiting on it, for as long as anyone lets it. Answers go to
+# a file: an ssh outliving its limit would hold a capture's pipe open.
+bounded() { local limit="$1"; shift; perl -e 'alarm shift; exec @ARGV or exit 127' "$limit" "$@"; }
+signal_dir="$CONTENDER/signal"
+mkdir -p "$signal_dir"
+# Not through `bounded`: a function run in the background is a subshell, and $! has
+# to be the session itself for the signal below to reach it.
+FLTH_KEEP_VM=1 perl -e 'alarm shift; exec @ARGV or exit 127' 1800 "$VM" session bash -c '
+    "$1" up || exit
+    sleep 600 &
+    echo "$!" > "$2/descendant"
+    : > "$2/ready"
+    wait
+' flth-signal "$VM" "$signal_dir" > "$signal_dir/session.log" 2>&1 &
+signal_session=$!
+while [ ! -e "$signal_dir/ready" ] && kill -0 "$signal_session" 2>/dev/null; do
+    sleep 1
+done
+check_true '[ -e "$signal_dir/ready" ]' "the session's command boots the VM" "the session ended before its command had booted the VM"
+kill -TERM "$signal_session" 2>/dev/null
+wait "$signal_session"
+check_eq "$?" 143 "a signalled session exits 143"
+signal_descendant="$(cat "$signal_dir/descendant" 2>/dev/null)"
+# By state, not `kill -0`: an ended process nothing has reaped yet still answers it.
+case "$(ps -o stat= -p "${signal_descendant:-0}" 2>/dev/null)" in
+    '' | *Z*) signal_survived=0 ;;
+    *) signal_survived=1 ;;
+esac
+if [ -n "$signal_descendant" ] && [ "$signal_survived" = 0 ]; then
+    ok "the command's descendant has ended"
+else
+    bad "the command's descendant survived the session"
+fi
+check_eq "$(state)" running "the VM stays up, as FLTH_KEEP_VM=1 asks"
+signal_share="$("$VM" share)"
+printf 'from the host\n' > "$signal_share/signal-marker"
+bounded 120 "$VM" run 'timeout -s KILL 30 cat /share/signal-marker' > "$signal_dir/share" 2>/dev/null
+check_eq "$(cat "$signal_dir/share")" "from the host" "/share still answers in the guest"
+bounded 120 "$VM" run "timeout -s KILL 30 test -f $repo_guest/fs-linux-test-harness.toml && echo present" > "$signal_dir/repo" 2>/dev/null
+check_eq "$(cat "$signal_dir/repo")" present "$repo_guest still answers in the guest"
+bounded 120 "$VM" run "timeout -s KILL 30 sh -c 'echo from the guest > /share/signal-back'" > /dev/null 2>&1
+check_eq "$(cat "$signal_share/signal-back" 2>/dev/null)" "from the guest" "and a write to /share still reaches the host"
+rm -f "${signal_share:?}/signal-marker" "${signal_share:?}/signal-back"
+bounded 600 "$VM" down
+check_eq "$?" 0 "the VM it left stops"
+check_eq "$(state)" not-running "and is down"
 
 step "test: FLTH_KEEP_VM=1"
 FLTH_KEEP_VM=1 "$VM" test

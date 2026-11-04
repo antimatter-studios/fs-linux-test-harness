@@ -299,9 +299,10 @@ engine_forget_kernel() {
 # grows, and what it leaves running holds only the file. The stock provider
 # on Linux starts nothing that keeps them.
 #
-# Vagrant stays in the foreground, so an interrupt reaches it as it always
-# did. Stopping when this process is gone keeps the follower from outliving
-# a killed `up`, which would be the same fault again.
+# Vagrant is waited for here, and scripts/qemu-artifacts.rb passes it an
+# interrupt: it runs in a process group of its own (#130). Stopping when this
+# process is gone keeps the follower from outliving a killed `up`, which would
+# be the same fault again.
 engine_vagrant_up() {
     local log="$FLTH_MACHINE_DIR/vagrant-up.log" follower rc=0
     if [ "$(uname -s)" != Darwin ]; then
@@ -362,18 +363,43 @@ engine_up() {
     engine_ssh_config >/dev/null
 }
 
+# A HALT DOES NOT STOP THE FORWARDER'S WATCHERS, SO THIS DOES (#130). The macOS
+# forwarder plugin records each `notify-forwarder watch` it starts in the machine's
+# data directory and stops them from a hook before Vagrant's GracefulHalt, which
+# the macOS provider's halt does not use: measured on an Apple Silicon host, every
+# boot left its watchers running after `vagrant halt`. They were out of reach of a
+# signal once a boot had its own process group, so nothing else stops them.
+#
+# A recorded pid can belong to something else by now, so only a process that says
+# it is a forwarder is signalled. The stock provider on Linux records none.
+engine_vagrant_stop_forwarders() {
+    local record pid
+    for record in "$VAGRANT_DOTFILE_PATH"/machines/*/*/notify_watcher_host_pid; do
+        [ -f "$record" ] || continue
+        while read -r pid; do
+            case "$pid" in '' | *[!0-9]*) continue ;; esac
+            case "$(ps -o args= -p "$pid" 2>/dev/null)" in
+                *notify-forwarder*) kill -TERM "$pid" 2>/dev/null || true ;;
+            esac
+        done < "$record"
+        rm -f "$record"
+    done
+}
+
 engine_down() {
     if [ "${1:-}" = "--force" ]; then
         engine_vagrant halt -f >&2
     else
         engine_vagrant halt >&2
     fi
+    engine_vagrant_stop_forwarders
     engine_ssh_close
 }
 
 # The cache goes with the machine: destroy is the reset, and a cache is
 # something a run can rebuild.
 engine_destroy() {
+    engine_vagrant_stop_forwarders
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     engine_vagrant destroy -f >&2 || return
