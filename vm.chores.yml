@@ -77,6 +77,10 @@ tasks:
     desc: Re-apply the setup script to the VM's disk on a provisioning boot, even if it is unchanged
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" provision']
 
+  reload:
+    desc: Restart the running VM in place, keeping its machine-wide slot
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" reload']
+
   test:
     desc: 'Boot, run the [test] command, tear down: chore vm:test [-- args]'
     # Tears down afterwards, and a teardown that fails fails the task.

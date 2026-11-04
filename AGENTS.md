@@ -356,7 +356,10 @@ prints `PASS  <name> (N checks)` and sets the exit status.
 
 - **Vagrant is only ever driven through `scripts/vm.sh`.** The Vagrantfile
   reads `FLTH_*` variables that `engine_prepare` exports, and it stops at the
-  first missing one if run by hand.
+  first missing one if run by hand. A `vagrant reload` from anywhere else is
+  invisible to the slot apart from its missing process: see "The slot lock" in
+  the README for what covers it (`vm.sh reload`, `vm-slot.sh renew`, and the
+  absence window that is all that is left without them, #122).
 - **One VM per project, and its guest mounts one worktree.** The machine
   directory is keyed by `[project] name`, so every checkout and worktree of a
   project shares it, while `/repo` is the worktree that booted it. A command

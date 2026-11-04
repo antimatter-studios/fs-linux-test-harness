@@ -5,6 +5,8 @@
 #   vm-slot.sh acquire          wait for the slot, then take it
 #   vm-slot.sh release          give it back, if this consumer holds it
 #   vm-slot.sh release --force  free it whoever holds it
+#   vm-slot.sh renew            before this VM stops and starts again: keep
+#                               its slot through the restart
 #   vm-slot.sh status           say who holds it and for how long
 #
 # WHY THIS EXISTS. A test VM asks for gigabytes. Two of them beside a
@@ -31,6 +33,16 @@
 # so a recorded PID is dead within milliseconds. What holds the slot is a
 # running VM, so that is what liveness is measured against.
 #
+# A RESTART LOOKS LIKE A DEATH. For a moment during a stop and start in place
+# no VM process exists, and the process table cannot say why. Two things keep
+# that moment from freeing the slot (#122). A restart the harness knows about
+# renews the lease first (`vm.sh reload`, or `renew` before a consumer's own
+# `vagrant reload`), which is a fresh boot grace and a new token. A restart it
+# cannot see is covered only by time: a holder past its grace is not abandoned
+# until its VM has been seen absent, with no gap, for FLTH_SLOT_ABSENT_GRACE.
+# One that stays down longer than that still loses its slot, and a rival can
+# then boot beside it when it returns. Nothing here can see or stop that VM.
+#
 # Environment:
 #   FLTH_STATE_DIR         where the lock lives (default
 #                          ${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness)
@@ -38,6 +50,8 @@
 #   FLTH_SLOT_COUNT        machine-wide concurrent VM limit (1, at most 64)
 #   FLTH_SLOT_BOOT_GRACE   seconds a fresh holder is trusted without a
 #                          running VM (180)
+#   FLTH_SLOT_ABSENT_GRACE seconds a holder past that must be seen with no
+#                          running VM before it is abandoned (the boot grace)
 set -euo pipefail
 
 # shellcheck source=scripts/lib/common.sh
@@ -56,6 +70,10 @@ WAIT_SECS="${FLTH_SLOT_WAIT:-3600}"
 # Too long only delays reclaiming a dead lock; too
 # short reintroduces the race, so it errs long.
 BOOT_GRACE_SECS="${FLTH_SLOT_BOOT_GRACE:-180}"
+
+# As long as a boot by default, because a restart the harness cannot see ends
+# in one. Too long only delays reclaiming a dead lock.
+ABSENT_GRACE_SECS="${FLTH_SLOT_ABSENT_GRACE:-$BOOT_GRACE_SECS}"
 
 POLL_SECS=5
 
@@ -122,8 +140,8 @@ host_memory_mib() {
     esac
 }
 
-# Status 1 refuses. Status ADMIT_WAIT means the answer is not known yet, and
-# ADMIT_WAITING_ON names the holder it depends on.
+# Status 1 refuses. Status ADMIT_WAIT means the answer is not known yet,
+# ADMIT_WAITING_ON names the holder it depends on and ADMIT_WAIT_REASON says why.
 #
 # A HOLDER WITH NO `memory` FILE IS NOT A MALFORMED ONE. `cmd_acquire` writes
 # `memory` before `holder`, so a complete record with no reservation beside it
@@ -133,12 +151,19 @@ host_memory_mib() {
 # yet in available memory, so the caller waits: the holder settles, stops or
 # goes within its grace. A reservation that is present and unreadable is
 # refused, since waiting will not repair it.
+#
+# A HOLDER PAST ITS GRACE WITH NO VM MAY BE RESTARTING. Until its absence has
+# settled, its reservation may be needed again or may be gone. It is counted
+# only to decide whether to wait: a guest that may not exist is no reason to
+# refuse, and memory that covers it as well is no reason to wait.
 ADMIT_WAIT=2
 ADMIT_WAITING_ON=""
+ADMIT_WAIT_REASON=""
 
 memory_admit() {
-    local available requested pending=0 candidate snapshot identity since reservation alive past_grace
+    local available requested pending=0 unsettled=0 unsettled_name="" candidate snapshot identity since reservation alive
     ADMIT_WAITING_ON=""
+    ADMIT_WAIT_REASON=""
     requested="$(guest_memory_mib)"
     available="$(host_memory_mib)" || available=""
     case "$available" in
@@ -162,21 +187,19 @@ memory_admit() {
         [ "$identity" != "$HOLDER_IDENTITY" ] || continue
         since="$(snapshot_field "$snapshot" 3)"
         alive=""
-        past_grace=0
         if [ "$(( $(now) - since ))" -gt "$BOOT_GRACE_SECS" ]; then
-            past_grace=1
             alive=0
             engine_alive "$identity" || alive=$?
             case "$alive" in
-                0 | 1) continue ;;
+                0) continue ;;
+                1) if absence_settled "$candidate" "$snapshot"; then continue; fi ;;
             esac
         fi
         if [ ! -e "$candidate/memory" ]; then
-            # Past grace with no VM, nothing is booting and nothing is
-            # allocated. Anything else is still unknown.
-            if [ "$past_grace" = 0 ] || [ "$alive" != 1 ]; then
-                ADMIT_WAITING_ON="$(snapshot_field "$snapshot" 2)"
-            fi
+            # Nothing settled past its grace reaches here, so its allocation
+            # is still unknown.
+            ADMIT_WAITING_ON="$(snapshot_field "$snapshot" 2)"
+            ADMIT_WAIT_REASON='has no memory reservation recorded'
             continue
         fi
         reservation="$(cat "$candidate/memory" 2>/dev/null || true)"
@@ -185,11 +208,20 @@ memory_admit() {
                 echo "[vm-slot] $HOLDER_NAME: memory reservation is unknown for $(snapshot_field "$snapshot" 2); refusing to start" >&2
                 return 1 ;;
         esac
+        if [ "$alive" = 1 ]; then
+            unsettled=$((unsettled + reservation))
+            unsettled_name="$(snapshot_field "$snapshot" 2)"
+            continue
+        fi
         pending=$((pending + reservation))
     done < <(slot_paths)
     if [ "$available" -lt "$((requested + pending + 2048))" ]; then
         echo "[vm-slot] $HOLDER_NAME: insufficient host memory: $available MiB available; $requested MiB guest + $pending MiB pending guests + 2048 MiB host reserve; refusing to start" >&2
         return 1
+    fi
+    if [ "$available" -lt "$((requested + pending + unsettled + 2048))" ]; then
+        ADMIT_WAITING_ON="$unsettled_name"
+        ADMIT_WAIT_REASON='has no VM running and may be restarting'
     fi
     [ -z "$ADMIT_WAITING_ON" ] || return "$ADMIT_WAIT"
 }
@@ -273,6 +305,54 @@ holder_is_dead() {
     [ "$rc" -eq 1 ]
 }
 
+# Status 0 when the VM of the holder in lock $1, snapshot $2, already seen not
+# running, has stayed so for the whole window. Every call is an observation.
+#
+# The record sits in the lock, so every waiter shares it and it goes with the
+# generation: token, first seen absent, last seen absent. It starts again on
+# another token, since a renewal is a restart somebody knows about, and after a
+# gap longer than the window, since an absence nobody watched is not known to be
+# one absence. A waiter that retries within the window still gets an answer.
+absence_settled() {
+    local lock="$1" token at first record seen_first seen_last
+    [ "$ABSENT_GRACE_SECS" -gt 0 ] || return 0
+    token="$(snapshot_field "$2" 4)"
+    at="$(now)"
+    first="$at"
+    record="$(cat "$lock/absent" 2>/dev/null || true)"
+    if [ "$(snapshot_field "$record" 1)" = "$token" ]; then
+        seen_first="$(snapshot_field "$record" 2)"
+        seen_last="$(snapshot_field "$record" 3)"
+        case "$seen_first" in '' | *[!0-9]*) seen_last="" ;; esac
+        case "$seen_last" in
+            '' | *[!0-9]*) ;;
+            *) [ "$((at - seen_last))" -gt "$ABSENT_GRACE_SECS" ] || first="$seen_first" ;;
+        esac
+    fi
+    next_serial
+    {
+        printf '%s\t%s\t%s\n' "$token" "$first" "$at" > "$lock/absent.$$.$SERIAL" &&
+            mv "$lock/absent.$$.$SERIAL" "$lock/absent"
+    } 2>/dev/null || true
+    [ "$((at - first))" -ge "$ABSENT_GRACE_SECS" ]
+}
+
+# Whether the holder in $LOCK, snapshot $1, may be taken from: past its boot
+# grace, with no VM running, for long enough to rule out a restart. A VM seen
+# running ends any absence on record. This consumer's own holder needs no window:
+# it is asking because its own VM is not up, and it has only one machine to boot.
+holder_is_abandoned() {
+    local snapshot="$1" identity rc=0
+    [ "$(( $(now) - $(snapshot_field "$snapshot" 3) ))" -gt "$BOOT_GRACE_SECS" ] || return 1
+    identity="$(snapshot_field "$snapshot" 1)"
+    engine_alive "$identity" || rc=$?
+    case "$rc" in
+        0) rm -f "$LOCK/absent"; return 1 ;;
+        1) [ "$identity" = "$HOLDER_IDENTITY" ] || absence_settled "$LOCK" "$snapshot" ;;
+        *) return 1 ;;
+    esac
+}
+
 # Return a lock that was moved aside to the live path, or keep it as an
 # orphan if the path has been taken meanwhile.
 #
@@ -347,7 +427,7 @@ cmd_acquire() {
     slot_identify
     slot_count || return 1
     mkdir -p "$FLTH_STATE_DIR"
-    local waited=0 announced=0 snapshot identity name since token age index holders candidate number
+    local waited=0 announced=0 snapshot name since token age index holders candidate number
 
     while :; do
         holders=""
@@ -362,9 +442,7 @@ cmd_acquire() {
                 HOLDER="$LOCK/holder"
                 snapshot="$(read_holder 2>/dev/null || true)"
                 if [ -n "$snapshot" ]; then
-                    identity="$(snapshot_field "$snapshot" 1)"
-                    age=$(( $(now) - $(snapshot_field "$snapshot" 3) ))
-                    if [ "$age" -gt "$BOOT_GRACE_SECS" ] && holder_is_dead "$identity"; then
+                    if holder_is_abandoned "$snapshot"; then
                         break_lock 'disabled slot has no running VM' "$(snapshot_field "$snapshot" 4)" || true
                         continue
                     fi
@@ -396,7 +474,7 @@ cmd_acquire() {
                 # The slot goes back for the wait, which can outlast this
                 # process's own boot grace and let another waiter break it.
                 name="$ADMIT_WAITING_ON"
-                holders="$name (no memory reservation recorded)"
+                holders="$name ($ADMIT_WAIT_REASON)"
                 break
             fi
 
@@ -419,13 +497,12 @@ cmd_acquire() {
                 index=$((index - 1))
                 continue
             fi
-            identity="$(snapshot_field "$snapshot" 1)"
             name="$(snapshot_field "$snapshot" 2)"
             since="$(snapshot_field "$snapshot" 3)"
             token="$(snapshot_field "$snapshot" 4)"
             age=$(( $(now) - since ))
 
-            if [ "$age" -gt "$BOOT_GRACE_SECS" ] && holder_is_dead "$identity"; then
+            if holder_is_abandoned "$snapshot"; then
                 break_lock "no VM is running for $name after $(pretty_age "$age")" "$token" || true
                 index=$((index - 1))
                 continue
@@ -502,7 +579,7 @@ cmd_check_memory() {
                 memory_admit || admit=$?
                 [ "$admit" = "$ADMIT_WAIT" ] || return "$admit"
                 if [ "$announced" = 0 ]; then
-                    echo "[vm-slot] $HOLDER_NAME: waiting before the boot — $ADMIT_WAITING_ON has no memory reservation recorded" >&2
+                    echo "[vm-slot] $HOLDER_NAME: waiting before the boot — $ADMIT_WAITING_ON $ADMIT_WAIT_REASON" >&2
                     announced=1
                 fi
                 if [ "$waited" -ge "$WAIT_SECS" ]; then
@@ -515,6 +592,34 @@ cmd_check_memory() {
         fi
     done < <(slot_paths)
     echo "[vm-slot] $HOLDER_NAME: no memory reservation owns this boot; refusing to start" >&2
+    return 1
+}
+
+# Before this VM stops to start again. The boot after the stop renews again
+# (check-memory), but the stop itself can come long after the lease was taken,
+# and a waiter must not find an old lease and no VM. A waiter that has already
+# read the old record holds a token that no longer frees anything.
+#
+# Refused when no slot holds this VM: restarting then would run outside the limit.
+cmd_renew() {
+    slot_identify
+    local candidate snapshot token
+    while IFS= read -r candidate; do
+        LOCK="$candidate"
+        HOLDER="$LOCK/holder"
+        snapshot="$(read_holder 2>/dev/null || true)"
+        if [ -n "$snapshot" ] && [ "$(snapshot_field "$snapshot" 1)" = "$HOLDER_IDENTITY" ]; then
+            next_serial
+            token="$(now)-$$-$SERIAL"
+            if ! renew_holder "$snapshot" "$token" ||
+                [ "$(holder_field 4 2>/dev/null || true)" != "$token" ]; then
+                echo "[vm-slot] $HOLDER_NAME: no reservation could be renewed: it changed as this tried" >&2
+                return 1
+            fi
+            return 0
+        fi
+    done < <(slot_paths)
+    echo "[vm-slot] $HOLDER_NAME: no reservation holds this VM, so a restart would run outside the limit" >&2
     return 1
 }
 
@@ -581,7 +686,7 @@ status_slot() {
         if [ "$age" -le "$BOOT_GRACE_SECS" ]; then
             echo "  ...no VM yet, but it is within the $(pretty_age "$BOOT_GRACE_SECS") boot window"
         else
-            echo "  ...but no VM is running for it; the next acquire will take the slot"
+            echo "  ...but no VM is running for it; a waiter takes the slot once it has stayed absent for $(pretty_age "$ABSENT_GRACE_SECS")"
         fi
     fi
     return 0
@@ -601,9 +706,10 @@ case "${1:-}" in
     acquire) cmd_acquire ;;
     check-memory) cmd_check_memory ;;
     release) shift; cmd_release "${1:-}" ;;
+    renew) cmd_renew ;;
     status) cmd_status ;;
     *)
-        echo "usage: vm-slot.sh {acquire|release [--force]|status}" >&2
+        echo "usage: vm-slot.sh {acquire|release [--force]|renew|status}" >&2
         exit 2
         ;;
 esac
