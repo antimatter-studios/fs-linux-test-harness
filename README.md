@@ -452,7 +452,7 @@ relative, and must not leave the repository.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FLTH_CONFIG` | search upward | Path of the consumer's config. |
-| `FLTH_KEEP_VM` | unset | `1`: `vm:test`, `vm:guest-test`, `vm.sh session` and every script that sources `vm-session.sh` leave the VM running. |
+| `FLTH_KEEP_VM` | unset | `1`: `vm:test`, `vm:guest-test`, `vm.sh session` and every script that sources `vm-session.sh` leave the VM running, if its boot finished. |
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/<project>/`) and firmware links. |
 | `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | The slot lock. Must be the same for every repository on the machine. |
 | `FLTH_SLOT_WAIT` | `3600` | Seconds `up` waits for the slot before giving up. |
@@ -683,6 +683,14 @@ for the VM is outside the group of the command that booted it, as QEMU is. A
 signal to a session ends the command's descendants and leaves a VM that stays up
 with its shares; `vm.sh down` and `vm.sh destroy` stop those daemons. A signal or KILL that reaches
 `vm.sh up` while the boot is still running stops the boot and what it started.
+
+**A boot that did not finish is not a VM to keep.** QEMU starts early in a boot
+and the shares are mounted late, so a boot stopped between the two leaves a guest
+with no `/share` and no `/repo`. A session's end stops that guest whatever would
+have kept a VM: `FLTH_KEEP_VM=1`, a hold, another live session or another worktree.
+So does `vm.sh reap`. If it is still there, `vm.sh up` and `vm.sh run` replace it,
+`vm.sh exec` refuses it and `vm.sh status` says so. A boot that another process is
+still running is left alone.
 
 **A guest that goes away fails the call.** The client keeps the
 connection alive (`ServerAliveInterval=15`, `ServerAliveCountMax=8`), so

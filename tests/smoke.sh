@@ -27,6 +27,8 @@
 #                 repository the harness mounts there
 #   lost guest    a guest paused or powered off under a running call ends that
 #                 call with what stopped it, not a bare 255 (#105)
+#   boot signal   a session signalled during a boot leaves no guest, although
+#                 FLTH_KEEP_VM=1 asks, and the next call has its shares (#134)
 #   reload        the guest really reboots in place and keeps its slot (#122)
 #   hold / reap   a held VM survives the reaper; a leaked one does not
 #   signal        a VM that stays up after a session is signalled keeps /share
@@ -496,6 +498,30 @@ check_eq "$?" 255 "a call under a guest that powers itself off ends with ssh's o
 lost="$(cat "$CONTENDER/poweroff.err")"
 check_contains "$lost" "what stopped it: the guest powered itself off" "and says so, from the console"
 check_contains "$lost" "[console]" "with the tail of the console"
+
+step "boot signal: a boot that a signal stopped is not a VM to keep (#134)"
+boot_signal_dir="$CONTENDER/boot-signal"
+mkdir -p "$boot_signal_dir"
+FLTH_KEEP_VM=1 perl -e 'alarm shift; exec @ARGV or exit 127' 1800 "$VM" session bash -c '
+    "$1" up || exit
+    : > "$2/booted"
+    sleep 600
+' flth-boot-signal "$VM" "$boot_signal_dir" > "$boot_signal_dir/session.log" 2>&1 &
+boot_signal_session=$!
+# The process table, not `status`: the signal has to land between QEMU starting
+# and the shares being mounted, and `status` asks Vagrant until QEMU is up.
+until ps -eo args= | awk -v want="$machine/vagrant/" '$1 ~ /qemu-system-/ && index($0, want) { found = 1 } END { exit !found }' ||
+    ! kill -0 "$boot_signal_session" 2>/dev/null; do
+    sleep 0.2
+done
+check_true '[ ! -e "$boot_signal_dir/booted" ]' "the signal lands during the boot" "the boot finished before the signal, so this says nothing"
+kill -TERM "$boot_signal_session" 2>/dev/null
+wait "$boot_signal_session"
+check_eq "$?" 143 "a session signalled during a boot exits 143"
+check_eq "$(state)" not-running "and leaves no guest without its shares, although FLTH_KEEP_VM=1 asks"
+check_true '[ "$(slot_holder)" != flth-smoke ]' "and gives the slot back" "it kept the slot"
+bounded 1800 "$VM" run "timeout -s KILL 30 findmnt -n /share > /dev/null && timeout -s KILL 30 findmnt -n $repo_guest > /dev/null && echo mounted" > "$boot_signal_dir/run" 2>/dev/null
+check_eq "$(cat "$boot_signal_dir/run")" mounted "the next run boots a guest with /share and $repo_guest mounted"
 
 step "down"
 "$VM" down
