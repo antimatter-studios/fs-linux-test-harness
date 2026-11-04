@@ -130,6 +130,10 @@ FLTH_GUEST_HOLD_MARKER="/run/fs-linux-test-harness-held"
 # seconds. On tmpfs with the hold marker, for the same reason.
 FLTH_GUEST_REARM_STAMP="/run/fs-linux-test-harness-rearmed"
 
+# shellcheck disable=SC2034  # read by vm.sh
+# Where lib/guest-run.sh goes on a shared guest, for the length of a boot.
+FLTH_GUEST_RUNS="/run/fs-linux-test-harness-runs"
+
 # flth_run_holding_stdin <text> <command...>
 #
 # Run a command whose stdin is <text> and then stays open for as long as this
