@@ -722,7 +722,9 @@ at the page size reported by `vm_stat`. It requires the guest allocation
 plus **2048 MiB left for the host** and the allocations reserved by other
 booting guests. Settled running guests are already reflected in available
 memory. A reboot renews its reservation's boot grace. An unreadable memory
-probe or reservation refuses safely rather than assuming capacity.
+probe or reservation refuses safely rather than assuming capacity. A
+holder with no reservation at all, from a harness before v0.5.5, is waited
+for instead, until its VM has settled past the boot grace or it has gone.
 The refusal names the consumer and the memory requirement; contention
 names the holders and waits. Neither failure is silent.
 

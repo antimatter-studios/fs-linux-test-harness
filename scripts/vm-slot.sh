@@ -122,8 +122,23 @@ host_memory_mib() {
     esac
 }
 
+# Status 1 refuses. Status ADMIT_WAIT means the answer is not known yet, and
+# ADMIT_WAITING_ON names the holder it depends on.
+#
+# A HOLDER WITH NO `memory` FILE IS NOT A MALFORMED ONE. `cmd_acquire` writes
+# `memory` before `holder`, so a complete record with no reservation beside it
+# comes from a harness before v0.5.5, or from a lock being released as this
+# reads it. Consumers move their pins one at a time, so that holder is ordinary
+# during a move. Its allocation is unknown and, while it may be booting, is not
+# yet in available memory, so the caller waits: the holder settles, stops or
+# goes within its grace. A reservation that is present and unreadable is
+# refused, since waiting will not repair it.
+ADMIT_WAIT=2
+ADMIT_WAITING_ON=""
+
 memory_admit() {
-    local available requested pending=0 candidate snapshot identity since reservation
+    local available requested pending=0 candidate snapshot identity since reservation alive past_grace
+    ADMIT_WAITING_ON=""
     requested="$(guest_memory_mib)"
     available="$(host_memory_mib)" || available=""
     case "$available" in
@@ -146,7 +161,20 @@ memory_admit() {
         identity="$(snapshot_field "$snapshot" 1)"
         [ "$identity" != "$HOLDER_IDENTITY" ] || continue
         since="$(snapshot_field "$snapshot" 3)"
-        if [ "$(( $(now) - since ))" -gt "$BOOT_GRACE_SECS" ] && engine_alive "$identity"; then
+        alive=""
+        past_grace=0
+        if [ "$(( $(now) - since ))" -gt "$BOOT_GRACE_SECS" ]; then
+            past_grace=1
+            alive=0
+            engine_alive "$identity" || alive=$?
+            [ "$alive" != 0 ] || continue
+        fi
+        if [ ! -e "$candidate/memory" ]; then
+            # Past grace with no VM, nothing is booting and nothing is
+            # allocated. Anything else is still unknown.
+            if [ "$past_grace" = 0 ] || [ "$alive" != 1 ]; then
+                ADMIT_WAITING_ON="$(snapshot_field "$snapshot" 2)"
+            fi
             continue
         fi
         reservation="$(cat "$candidate/memory" 2>/dev/null || true)"
@@ -161,6 +189,7 @@ memory_admit() {
         echo "[vm-slot] $HOLDER_NAME: insufficient host memory: $available MiB available; $requested MiB guest + $pending MiB pending guests + 2048 MiB host reserve; refusing to start" >&2
         return 1
     fi
+    [ -z "$ADMIT_WAITING_ON" ] || return "$ADMIT_WAIT"
 }
 
 now() { date +%s; }
@@ -354,12 +383,19 @@ cmd_acquire() {
                 guest_memory_mib > "$LOCK/memory"
                 printf '%s\t%s\t%s\t%s\n' "$HOLDER_IDENTITY" "$HOLDER_NAME" "$(now)" \
                     "$token" > "$HOLDER"
-                if ! memory_admit; then
-                    delete_generation "$token" releasing || true
-                    return 1
+                admit=0
+                memory_admit || admit=$?
+                if [ "$admit" = 0 ]; then
+                    [ "$announced" = 1 ] && echo "[vm-slot] got the slot after $(pretty_age "$waited")" >&2
+                    return 0
                 fi
-                [ "$announced" = 1 ] && echo "[vm-slot] got the slot after $(pretty_age "$waited")" >&2
-                return 0
+                delete_generation "$token" releasing || true
+                [ "$admit" = "$ADMIT_WAIT" ] || return 1
+                # The slot goes back for the wait, which can outlast this
+                # process's own boot grace and let another waiter break it.
+                name="$ADMIT_WAITING_ON"
+                holders="$name (no memory reservation recorded)"
+                break
             fi
 
             # A lock with no complete record: a holder mid-write, or one that
@@ -440,24 +476,40 @@ cmd_release() {
 
 cmd_check_memory() {
     slot_identify
-    local candidate snapshot token
+    local candidate snapshot token admit waited=0 announced=0
     while IFS= read -r candidate; do
         LOCK="$candidate"
         HOLDER="$LOCK/holder"
         snapshot="$(read_holder 2>/dev/null || true)"
         if [ -n "$snapshot" ] && [ "$(snapshot_field "$snapshot" 1)" = "$HOLDER_IDENTITY" ]; then
-            next_serial
-            token="$(now)-$$-$SERIAL"
-            renew_holder "$snapshot" "$token" || {
-                echo "[vm-slot] $HOLDER_NAME: memory reservation changed before the boot; refusing to start" >&2
-                return 1
-            }
-            if [ "$(holder_field 4 2>/dev/null || true)" != "$token" ]; then
-                echo "[vm-slot] $HOLDER_NAME: the renewed memory reservation was displaced; refusing to start" >&2
-                return 1
-            fi
-            memory_admit
-            return "$?"
+            # This keeps its slot while it waits, and each pass renews the
+            # boot grace, so no waiter breaks a lock whose boot has not begun.
+            while :; do
+                next_serial
+                token="$(now)-$$-$SERIAL"
+                renew_holder "$snapshot" "$token" || {
+                    echo "[vm-slot] $HOLDER_NAME: memory reservation changed before the boot; refusing to start" >&2
+                    return 1
+                }
+                snapshot="$(read_holder 2>/dev/null || true)"
+                if [ "$(snapshot_field "$snapshot" 4)" != "$token" ]; then
+                    echo "[vm-slot] $HOLDER_NAME: the renewed memory reservation was displaced; refusing to start" >&2
+                    return 1
+                fi
+                admit=0
+                memory_admit || admit=$?
+                [ "$admit" = "$ADMIT_WAIT" ] || return "$admit"
+                if [ "$announced" = 0 ]; then
+                    echo "[vm-slot] $HOLDER_NAME: waiting before the boot — $ADMIT_WAITING_ON has no memory reservation recorded" >&2
+                    announced=1
+                fi
+                if [ "$waited" -ge "$WAIT_SECS" ]; then
+                    echo "[vm-slot] gave up after $(pretty_age "$waited") waiting for $ADMIT_WAITING_ON" >&2
+                    return 1
+                fi
+                sleep "$POLL_SECS"
+                waited=$((waited + POLL_SECS))
+            done
         fi
     done < <(slot_paths)
     echo "[vm-slot] $HOLDER_NAME: no memory reservation owns this boot; refusing to start" >&2
