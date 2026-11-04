@@ -697,6 +697,13 @@ signal to a session ends the command's descendants and leaves a VM that stays up
 with its shares; `vm.sh down` and `vm.sh destroy` stop those daemons. A signal or KILL that reaches
 `vm.sh up` while the boot is still running stops the boot and what it started.
 
+TERM, INT, and HUP sent to a bare `vm.sh up`, or its process group, also stop
+an unfinished guest before `up` releases its boot lock and exits. This does not
+need a session or a later harness call: an early guest has not yet armed its own
+poweroff deadline. A boot that ignores the signal is killed after five seconds.
+KILL cannot run that cleanup; the unfinished-boot marker still lets a later
+session end, `reap`, `up`, or `run` deal with the guest it left.
+
 **A boot that did not finish is not a VM to keep.** QEMU starts early in a boot
 and the shares are mounted late, so a boot stopped between the two leaves a guest
 with no `/share` and no `/repo`. A session's end stops that guest whatever would
