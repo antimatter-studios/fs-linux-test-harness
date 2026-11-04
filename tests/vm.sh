@@ -406,8 +406,12 @@ check_eq "$(slot_holder)" "" "and releases the slot"
 # --- guest-test: the suite, run inside the guest -------------------------
 
 # The stub engine runs the guest script on the host and records it, so
-# what the guest is asked to run is checked exactly.
-guest_script() { tail -1 "$FLTH_TEST_STUB/scripts"; }
+# what the guest is asked to run is checked exactly. The command is the quoted
+# argument of the line that starts it, read back as the guest's shell reads it.
+guest_script() {
+    sed -n "s/^\"\$BASH\" -c '\(.*\)' < \/dev\/null &\$/\1/p" "$FLTH_TEST_STUB/scripts" |
+        tail -1 | sed "s/'\\\\''/'/g"
+}
 
 stub_state absent; free_slot
 mkdir -p "$FLTH_TEST_STUB/guest-repo"

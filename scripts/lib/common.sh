@@ -93,3 +93,30 @@ FLTH_GUEST_HOLD_MARKER="/run/fs-linux-test-harness-held"
 # When a call last re-armed the guest's poweroff deadline, in epoch
 # seconds. On tmpfs with the hold marker, for the same reason.
 FLTH_GUEST_REARM_STAMP="/run/fs-linux-test-harness-rearmed"
+
+# flth_run_holding_stdin <text> <command...>
+#
+# Run a command whose stdin is <text> and then stays open for as long as this
+# process lives, with no end-of-file while it does. The write end is held by this
+# process alone, not by the command or by a helper, so the kernel closes it however
+# this process ends, KILL included, and the command then reads end-of-file. A
+# signal needs no trap here and leaves nothing behind on the host.
+#
+# A FIFO because Bash 3.2 has no other way to hold one end of a pipe while the
+# command's status stays readable. It is unlinked as soon as both ends are open.
+# The text is written in the background: it can be longer than a pipe holds.
+flth_run_holding_stdin() {
+    local text="$1" fifo rc=0 writer
+    shift
+    fifo="$FLTH_MACHINE_DIR/held-stdin.$$.$RANDOM"
+    mkfifo "$fifo" || return 1
+    exec 8<> "$fifo"
+    exec 7< "$fifo"
+    rm -f "$fifo"
+    ( printf '%s\n' "$text" >&8 ) 7<&- &
+    writer=$!
+    "$@" <&7 7<&- 8>&- || rc=$?
+    exec 7<&- 8>&-
+    wait "$writer" 2>/dev/null || true
+    return "$rc"
+}

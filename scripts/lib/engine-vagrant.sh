@@ -499,17 +499,21 @@ engine_ssh_close() {
 # for its own failures, but a script may exit 255 too, and re-running a
 # script that already ran is not a retry. So a 255 refreshes the settings
 # and retries only when they changed (a VM rebooted onto another port).
-engine_run() {
-    local script="$1" cfg before rc=0
+engine_run() { engine_run_through engine_ssh "$1"; }
+
+engine_run_held() { engine_run_through engine_ssh_held "$1"; }
+
+engine_run_through() {
+    local send="$1" script="$2" cfg before rc=0
     cfg="$(engine_ssh_config)" || return 1
-    engine_ssh "$cfg" "$script" || rc=$?
+    "$send" "$cfg" "$script" || rc=$?
     if [ "$rc" -eq 255 ]; then
         before="$(cat "$cfg")"
         engine_ssh_config --refresh >/dev/null || return "$rc"
         if [ "$(cat "$cfg")" != "$before" ]; then
             rc=0
             engine_ssh_close
-            engine_ssh "$cfg" "$script" || rc=$?
+            "$send" "$cfg" "$script" || rc=$?
         fi
     fi
     return "$rc"
@@ -526,6 +530,18 @@ engine_ssh() {
     control="$(engine_ssh_control)"
     engine_ssh_open "$cfg" "$control"
     printf 'export FLTH_GUEST=1\n%s\n' "$script" |
+        ssh -F "$cfg" -o "ControlPath=$control" "${ENGINE_SSH_ALIVE[@]}" default -T 'sudo bash -s'
+}
+
+# The channel's stdin is the guest's one sign that the host side has gone. With no
+# terminal sshd sends the guest no signal when a channel closes: it closes the
+# pipes. A client that ends, and a caller that ends leaving the client alive, both
+# end in end-of-file there.
+engine_ssh_held() {
+    local cfg="$1" script="$2" control
+    control="$(engine_ssh_control)"
+    engine_ssh_open "$cfg" "$control"
+    flth_run_holding_stdin "$(printf 'export FLTH_GUEST=1\n%s' "$script")" \
         ssh -F "$cfg" -o "ControlPath=$control" "${ENGINE_SSH_ALIVE[@]}" default -T 'sudo bash -s'
 }
 

@@ -458,7 +458,7 @@ report_lost_guest() {
 guest_run() {
     local rc=0 script
     script="$(guest_call "$1")" || return
-    engine_run "$script" || rc=$?
+    engine_run_held "$script" || rc=$?
     [ "$rc" -ne 255 ] || report_lost_guest
     return "$rc"
 }
@@ -973,9 +973,28 @@ vm_test() {
 #
 # It never fails the call: a guest whose timer could not be re-armed
 # keeps the one it had, which is the behaviour before this existed.
+#
+# A SIGNAL ON THE HOST STOPS THE COMMAND IN THE GUEST (#139). The command runs in a
+# process group of its own, and the call's stdin stays open while the host side
+# lives (engine_run_held). A watcher in the guest reads it. End-of-file with the
+# command still running means the host side has gone, by a signal or a lost
+# connection, and nobody can receive the result: the watcher sends TERM to that
+# group and to the command's descendants, which `timeout` or job control can have
+# moved to groups of their own, and KILL to what is left after 50 ticks of 0.1
+# seconds. The guest finds these with `ps`, from the group's id and the parent of
+# each process. Other calls are other groups, so they are not touched. A command
+# that ends on its own ends the watcher, so what it left in the background stays.
+#
+# Everything is one compound command because `bash -s` reads its script from the
+# stdin the watcher reads: the shell has to have read all of it first. The command
+# goes in as a quoted string, and its stdin is empty, as it was when the script's
+# end was the end of stdin. `set -m` makes the group; it also keeps INT and QUIT
+# from being ignored in the background job.
 REARM_WINDOW_SECS=60
 guest_call() {
+    local single="'" escaped="'\\''"
     cat <<EOF
+{
 flth_rearm() {
     local now last=0
     [ -f $FLTH_GUEST_HOLD_MARKER ] && return 0
@@ -987,9 +1006,57 @@ flth_rearm() {
     shutdown --no-wall -h +$CFG_vm_deadline_minutes >/dev/null 2>&1 ||
         echo "vm: could not re-arm the guest's poweroff deadline; the previous one stands" >&2
 }
+flth_members() {
+    ps -A -o pid=,ppid=,pgid=,stat= | awk -v group="\$1" -v known="\$2" '
+        BEGIN { n = split(known, seen, " "); for (i = 1; i <= n; i++) keep[seen[i]] = 1 }
+        { pid[NR] = \$1; parent[NR] = \$2; state[NR] = \$4; if (\$3 == group) keep[\$1] = 1 }
+        END {
+            do {
+                grew = 0
+                for (i = 1; i <= NR; i++)
+                    if (!(pid[i] in keep) && (parent[i] in keep)) { keep[pid[i]] = 1; grew = 1 }
+            } while (grew)
+            for (i = 1; i <= NR; i++)
+                if ((pid[i] in keep) && state[i] !~ /^Z/) printf "%s ", pid[i]
+        }'
+}
+flth_stop() {
+    local members ticks=0
+    members="\$(flth_members "\$1" "")"
+    [ -n "\$members" ] || return 0
+    kill -TERM -- "-\$1" \$members
+    while [ "\$ticks" -lt 50 ]; do
+        members="\$(flth_members "\$1" "\$members")"
+        [ -n "\$members" ] || return 0
+        command -p sleep 0.1
+        ticks=\$((ticks + 1))
+    done
+    ticks=0
+    while [ -n "\$members" ] && [ "\$ticks" -lt 50 ]; do
+        kill -KILL -- "-\$1" \$members
+        command -p sleep 0.1
+        members="\$(flth_members "\$1" "\$members")"
+        ticks=\$((ticks + 1))
+    done
+}
 flth_rearm
 trap flth_rearm EXIT
-$1
+set -m
+"\$BASH" -c '${1//$single/$escaped}' < /dev/null &
+flth_command=\$!
+set +m
+(
+    trap '' HUP
+    while read -r flth_line; do :; done
+    trap '' TERM
+    flth_stop "\$flth_command"
+) <&0 > /dev/null 2>&1 &
+flth_watcher=\$!
+wait "\$flth_command"
+flth_status=\$?
+{ kill -TERM "\$flth_watcher"; wait "\$flth_watcher"; } 2> /dev/null
+exit "\$flth_status"
+}
 EOF
 }
 

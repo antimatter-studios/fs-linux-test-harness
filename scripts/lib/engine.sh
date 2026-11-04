@@ -55,6 +55,10 @@
 #   engine_run <script>        run a bash script as root in the guest;
 #                              exit with the script's status. stdout is
 #                              the script's stdout.
+#   engine_run_held <script>   the same for a script that ends itself with
+#                              `exit`. After the script, its stdin stays open
+#                              until the caller or the connection has gone,
+#                              however it went, and then reads end-of-file.
 #   engine_copy <host-file>    make a host file visible to the guest;
 #                              print its guest path
 #   engine_alive <identity>    exit 0 when a VM process for that identity

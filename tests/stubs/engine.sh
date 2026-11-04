@@ -128,16 +128,25 @@ engine_forget_kernel() { return 0; }
 # Runs the script HERE, with the guest's fixed paths — the setup stamp,
 # the hold marker, the repository mount, the cache — redirected into the stub
 # directory, so the real logic executes against a tree a test can make.
-engine_run() {
-    stub_log run
-    printf '%s\n' "$1" >> "$STUB/scripts"
+stub_guest_paths() {
     printf '%s\n' "$1" |
         sed -e "s|/var/lib/fs-linux-test-harness|$STUB/guest-lib|g" \
             -e "s|/run/fs-linux-test-harness-held|$STUB/guest-held|g" \
             -e "s|/run/fs-linux-test-harness-rearmed|$STUB/guest-rearmed|g" \
             -e "s|/repo|$STUB/guest-repo|g" \
-            -e "s|/cache\\([/ ']\\)|$STUB/guest-cache\\1|g" -e "s|/cache\$|$STUB/guest-cache|" |
-        "$FLTH_TEST_GUEST_BASH" -s
+            -e "s|/cache\\([/ ']\\)|$STUB/guest-cache\\1|g" -e "s|/cache\$|$STUB/guest-cache|"
+}
+
+engine_run() {
+    stub_log run
+    printf '%s\n' "$1" >> "$STUB/scripts"
+    stub_guest_paths "$1" | "$FLTH_TEST_GUEST_BASH" -s
+}
+
+engine_run_held() {
+    stub_log run
+    printf '%s\n' "$1" >> "$STUB/scripts"
+    flth_run_holding_stdin "$(stub_guest_paths "$1")" "$FLTH_TEST_GUEST_BASH" -s
 }
 
 engine_copy() {

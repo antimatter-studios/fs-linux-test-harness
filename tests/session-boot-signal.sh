@@ -42,7 +42,15 @@ ln -s "$BASH" "$BIN/bash"
 printf '#!/bin/sh\nexit 1\n' > "$BIN/pgrep"
 cat > "$BIN/ssh" <<'STUB'
 #!/bin/sh
-case "$(cat)" in
+# Up to the end of the script, not of stdin: `vm.sh run` and `vm.sh exec` hold
+# stdin open while they live, and end their script with this line.
+script=""
+while IFS= read -r line; do
+    script="$script$line
+"
+    [ "$line" != 'exit "$flth_status"' ] || break
+done
+case "$script" in
     *share-probe*)
         if [ -e "$STUB/shares" ]; then echo shares-mounted; else echo shares-missing; fi
         ;;
