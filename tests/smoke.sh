@@ -27,6 +27,7 @@
 #                 repository the harness mounts there
 #   lost guest    a guest paused or powered off under a running call ends that
 #                 call with what stopped it, not a bare 255 (#105)
+#   reload        the guest really reboots in place and keeps its slot (#122)
 #   hold / reap   a held VM survives the reaper; a leaked one does not
 #   test          a passing suite passes and tears down; a CORRUPTED one
 #                 FAILS with a non-zero exit and still tears down;
@@ -378,6 +379,16 @@ check_contains "$lost" "free on the host's disk holding the overlay" "and what i
 check_eq "$(cat "$CONTENDER/lost.out")" "" "and none of that is on stdout"
 monitor cont >/dev/null
 check_eq "$("$VM" run 'echo back' 2>/dev/null)" back "the guest carries on when QEMU lets it"
+
+step "reload: the VM restarts in place and keeps its slot"
+boot_before="$("$VM" run 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)"
+"$VM" reload
+check_eq "$?" 0 "reload stops the VM and boots it again"
+check_eq "$(state)" running "the VM is back"
+check_eq "$(slot_holder)" flth-smoke "and holds the slot it held before"
+boot_after="$("$VM" run 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)"
+check_true '[ -n "$boot_after" ] && [ "$boot_after" != "$boot_before" ]' "the guest really rebooted" \
+    "the guest's boot id did not change across the reload ($boot_before, $boot_after)"
 
 step "hold and reap"
 "$VM" hold

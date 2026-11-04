@@ -8,6 +8,7 @@
 #   vm.sh put <file>       copy a file into the shared directory; print its guest path
 #   vm.sh share            print the host path of the shared directory
 #   vm.sh provision        boot if needed, re-run the setup script unconditionally
+#   vm.sh reload           restart the running VM in place, keeping its slot
 #   vm.sh test [args...]   boot, run the consumer's [test] command, tear down
 #   vm.sh guest-test [args...]  boot, run the [test] guest_command INSIDE the guest, tear down
 #   vm.sh session <cmd...> run a command on the host inside a session: the VM comes down when it ends
@@ -58,7 +59,7 @@ LOST_GUEST_TRIES=5
 LOST_GUEST_RETRY_WAIT=3
 
 usage() {
-    sed -n '3,19p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '3,20p' "$SELF" | sed 's/^# \{0,1\}//'
 }
 
 # Say what the host is missing before trying to boot. Without this the
@@ -432,6 +433,10 @@ provision_disk() {
     fi
     # Graceful halt flushes the guest's caches; this makes sure of it.
     engine_run sync >/dev/null 2>&1 || true
+    # The setup can have outlived the boot grace, and a waiter must not find an
+    # old lease and no VM between this stop and the next boot. A failure here
+    # stops nothing: the next boot refuses to start without a reservation.
+    "$SLOT" renew || true
     engine_down || true
     if [ "$(engine_state)" != stopped ]; then
         echo "vm: the provisioning boot could not be confirmed stopped, so its writes are not known to be" >&2
@@ -732,6 +737,79 @@ vm_provision() {
     fi
 }
 
+# The live sessions this call is not itself running inside.
+other_sessions() {
+    local ancestors=" " pid="$PPID" parent depth=0 session
+    while [ "$pid" -gt 1 ] && [ "$depth" -lt 64 ]; do
+        ancestors="$ancestors$pid "
+        parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || break
+        case "$parent" in '' | *[!0-9]*) break ;; esac
+        pid="$parent"
+        depth=$((depth + 1))
+    done
+    while IFS= read -r session; do
+        case "$ancestors" in *" $session "*) ;; *) printf '%s\n' "$session" ;; esac
+    done < <(live_sessions)
+}
+
+# RESTART THE VM IN PLACE AND KEEP ITS SLOT (#122). The engine's own restart is
+# not used: the harness has to renew the lease before the stop and confirm the
+# stop before the boot, and `down` then `up` would give the slot away between
+# them. The boot is an ordinary disposable one. The VM's owner does not change,
+# so a reap treats it as it did before.
+vm_reload() {
+    local rc=0
+    up_lock_take
+    vm_reload_locked || rc=$?
+    up_lock_drop
+    return "$rc"
+}
+
+vm_reload_locked() {
+    local state others
+    state="$(engine_state)"
+    case "$state" in
+        running) ;;
+        stopped | absent)
+            echo "vm: $CFG_project_name is not running, so there is nothing to reload. 'chore vm:up' boots it." >&2
+            exit 1
+            ;;
+        *)
+            echo "vm: could not read the VM's state; not restarting it until it can be read." >&2
+            exit 1
+            ;;
+    esac
+    refuse_other_worktree
+    refuse_provisioning_boot
+    others="$(other_sessions)"
+    if [ -n "$others" ]; then
+        echo "vm: not reloading: another invocation is using the VM (pid ${others//$'\n'/, })." >&2
+        echo "    Run it again once that has finished." >&2
+        exit 1
+    fi
+    require_host_tools
+    "$SLOT" renew || {
+        echo "vm: the VM was left running: restarting it would not keep it within the VM limit." >&2
+        exit 1
+    }
+    engine_down || true
+    if [ "$(engine_state 2>/dev/null)" = running ]; then
+        echo "vm: the graceful halt left the VM running; forcing it down." >&2
+        engine_down --force || true
+    fi
+    if [ "$(engine_state)" != stopped ]; then
+        echo "vm: the VM could not be confirmed stopped, so nothing is booted beside it, and the slot is kept." >&2
+        echo "    'chore vm:status', then 'chore vm:down' or 'chore vm:destroy'." >&2
+        exit 1
+    fi
+    boot_engine || return 1
+    apply_setup boot
+    forget_disk_if_setup_ran
+    if [ -f "$FLTH_HOLD" ]; then
+        vm_hold
+    fi
+}
+
 vm_destroy() {
     rm -f "$FLTH_HOLD" "$FLTH_MACHINE_DIR/setup.sha256" "$(base_record)"
     engine_destroy || true
@@ -911,7 +989,7 @@ case "$command" in
         shift
         exec "$(dirname "$SELF")/vm-session.sh" "$@"
         ;;
-    up | run | exec | put | share | provision | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end) ;;
+    up | run | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -946,6 +1024,7 @@ case "$command" in
         ;;
     share) echo "$FLTH_SHARE_HOST" ;;
     provision) vm_provision ;;
+    reload) vm_reload ;;
     test) vm_test "$@" ;;
     guest-test) vm_guest_test "$@" ;;
     down) vm_down ;;

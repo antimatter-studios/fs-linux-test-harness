@@ -458,6 +458,7 @@ relative, and must not leave the repository.
 | `FLTH_SLOT_WAIT` | `3600` | Seconds `up` waits for the slot before giving up. |
 | `FLTH_SLOT_COUNT` | `1` | Machine-wide concurrent VM limit, 1–64. Set it consistently for every consumer and shell on this host; `2` admits two consumers when host memory permits. |
 | `FLTH_SLOT_BOOT_GRACE` | `180` | Seconds a new slot holder is trusted before a VM must be running. |
+| `FLTH_SLOT_ABSENT_GRACE` | the boot grace | Seconds a holder past its boot grace must be seen with no VM running before a waiter takes its slot. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
 | `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
 | `FLTH_FIRMWARE_CODE`, `FLTH_FIRMWARE_VARS` | `/usr/share/AAVMF/AAVMF_{CODE,VARS}.fd` | UEFI firmware for arm64 guests on a Linux host. |
@@ -736,9 +737,21 @@ names the holders and waits. Neither failure is silent.
   and `destroy` release it **only once the VM is confirmed stopped** — a
   halt that left it running, or a state that could not be read, keeps
   the slot.
-- A waiter breaks a lock only when the holder's VM is not running **and**
-  the holder is older than the boot grace (a slot is necessarily taken
-  before its VM exists). An unreadable process table is not a dead holder.
+- A waiter breaks a lock only when the holder is older than the boot grace
+  (a slot is necessarily taken before its VM exists) **and** its VM has been
+  seen not running, with no gap, for `FLTH_SLOT_ABSENT_GRACE`. An unreadable
+  process table is not a dead holder. Until that absence has settled, the
+  holder's memory is waited for rather than refused or ignored.
+- **A VM restarted in place has no process for a moment**, which is what an
+  abandoned one looks like. `vm.sh reload` (`chore vm:reload`) renews the lease
+  before the stop, renews it again before the boot, and keeps the slot throughout.
+  A consumer running the engine itself, which the harness does not wrap, says
+  so first: `vm-slot.sh renew && vagrant reload`.
+- **A restart nobody announced is protected by time alone.** The harness never
+  sees a bare `vagrant reload`, only the missing process, so it has the absence
+  window and nothing more. A VM that stays down longer than the window loses
+  its slot, a rival can take it, and the VM then returns beside that rival, past
+  the limit. Nothing here can stop it: renew first.
 - **There is no age-alone break.** A live holder is never robbed, however
   long it has held the slot; a waiter gives up after `FLTH_SLOT_WAIT` and
   names the remedy (`chore vm:down` there, or `chore vm:slot:release-force`).

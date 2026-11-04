@@ -47,6 +47,9 @@ new_sandbox() {
     export FLTH_CACHE_DIR="$SANDBOX/cache"
     export FLTH_STATE_DIR="$SANDBOX/state"
     unset FLTH_CONFIG FLTH_KEEP_VM FLTH_SLOT_WAIT FLTH_SLOT_BOOT_GRACE FLTH_SLOT_COUNT
+    # A dead holder is reclaimed on sight unless a test asks for the window it
+    # is held to on a real machine: tests/slot-reload.sh does.
+    export FLTH_SLOT_ABSENT_GRACE=0
     export FLTH_TEST_MEMINFO="$SANDBOX/meminfo"
     printf 'MemAvailable:   67108864 kB\n' > "$FLTH_TEST_MEMINFO"
     mkdir -p "$SANDBOX/memory-bin"

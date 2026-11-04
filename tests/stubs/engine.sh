@@ -18,6 +18,10 @@
 #   guest_answers  present: engine_guest_answers says the guest answers
 #   ends_on_probe  present: the VM stops when the guest is first probed, as one
 #                  shutting down does just after it drops its connections
+#   gate_up        present: a successful up writes gate_up.reached and waits for
+#                  this file to go, with the VM not yet running
+#   gate_down      present: a down writes gate_down.reached and waits for this
+#                  file to go, with the VM already stopped
 #
 # THE DISK. The guest's setup-stamp directory is $STUB/guest-lib
 # for the length of a boot, and $STUB/disk is what the machine's disk
@@ -35,6 +39,17 @@ STUB="${FLTH_TEST_STUB:?the stub engine needs FLTH_TEST_STUB}"
 
 stub_log() { printf '%s\n' "$*" >> "$STUB/calls"; }
 stub_read() { cat "$STUB/$1" 2>/dev/null || printf '%s\n' "$2"; }
+
+# Holds a call at a known point, so a test can race it without guessing a delay.
+stub_gate() {
+    local tries=0
+    [ -f "$STUB/$1" ] || return 0
+    : > "$STUB/$1.reached"
+    while [ -f "$STUB/$1" ] && [ "$tries" -lt 600 ]; do
+        /bin/sleep 0.1
+        tries=$((tries + 1))
+    done
+}
 
 engine_prepare() {
     stub_log prepare
@@ -72,6 +87,7 @@ engine_up() {
         mkdir -p "$STUB/cache"
         ln -s "$STUB/cache" "$STUB/guest-cache"
     fi
+    stub_gate gate_up
     # A boot takes time, and until it ends the VM is not running.
     /bin/sleep "$(stub_read up_delay 0)"
     stub_read after_up running > "$STUB/state"
@@ -94,6 +110,7 @@ engine_down() {
         stub_read after_down stopped > "$STUB/state"
     fi
     case "$(cat "$STUB/state")" in stopped | absent) stub_boot_ended ;; esac
+    stub_gate gate_down
 }
 
 engine_destroy() {
