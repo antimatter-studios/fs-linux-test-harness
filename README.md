@@ -497,11 +497,24 @@ that workflow. With virtiofsd before 1.14.0, which
 be opened with `O_DIRECT` (#26; see "Where a tool works on an image").
 
 **No host file events reach a macOS guest.** The forwarder plugin stays
-enabled, because the macOS boot needs it, but its guest receiver writes into
-the files an event names and truncates one it reads as empty, which can empty a
-file the host has just written (#84). The harness replaces that receiver with
-one that exits, so `inotify` in the guest does not see the host's changes to a
-share.
+enabled, because the macOS boot needs it, but the harness replaces its guest
+receiver with one that exits, so `inotify` in the guest does not see the host's
+changes to a share. The receiver up to notify-forwarder v1.1.0 writes into the
+files an event names and truncates one it reads as empty, which can empty a file
+the host has just written (#84). v1.2.1, from plugin 0.7.7, no longer writes data,
+and the replacement stays for the reasons recorded in `vagrant/Vagrantfile` (#87).
+Measured on 2026-11-04 on an Apple Silicon host, in one guest:
+
+| Receiver | Payloads the host wrote that ended wrong | Streams the guest wrote that read back wrong |
+|---|---|---|
+| v1.1.0 | 11 of 168 empty | 35 of 992 |
+| v1.2.1, started after the shares are mounted | 0 of 168 | 0 of 992 |
+| none | 0 of 168 | 0 of 992 |
+
+**A macOS boot's forwarder processes end with it.** `vm.sh down` and `vm.sh
+destroy` stop them, and so does the end of a session on a guest that powered
+itself off (#82, #135). Plugin 0.7.7 runs one watcher per machine in place of two,
+and stops it itself, or within about 15 seconds of its guest no longer answering.
 
 **The box is not published.** It is not in the public Vagrant registry,
 and its GitHub release is in a private repository, whose download URL
@@ -808,7 +821,8 @@ person working in the guest: the VM stays up, and keeps the slot, until
 ```sh
 brew install --cask hashicorp/tap/hashicorp-vagrant
 brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd   # virtiofsd 1.14.0 or newer
-vagrant plugin install vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas
+vagrant plugin install vagrant-qemu-christhomas
+vagrant plugin install vagrant-notify-forwarder-christhomas --plugin-version 0.7.7
 # the box (christhomas/vagrant-rpi-bookworm-arm64) needs no step: the first
 # boot fetches it from its public GitHub release (#8)
 ```

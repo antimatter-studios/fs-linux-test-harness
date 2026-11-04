@@ -364,19 +364,25 @@ engine_up() {
 }
 
 # A HALT DOES NOT STOP THE FORWARDER'S WATCHERS, SO THIS DOES (#130). The macOS
-# forwarder plugin records each `notify-forwarder watch` it starts in the machine's
-# data directory and stops them from a hook before Vagrant's GracefulHalt, which
-# the macOS provider's halt does not use: measured on an Apple Silicon host, every
-# boot left its watchers running after `vagrant halt`. They were out of reach of a
-# signal once a boot had its own process group, so nothing else stops them.
+# forwarder plugin records each process it starts in the machine's data directory.
+# Before 0.7.7 it stops them from a hook before Vagrant's GracefulHalt, which the
+# macOS provider's halt does not use: measured on an Apple Silicon host, every boot
+# left its watchers running after `vagrant halt`. They were out of reach of a signal
+# once a boot had its own process group, so nothing else stops them. From 0.7.7 its
+# hook does run, and a watcher ends about 15 seconds after its guest stops answering;
+# this still runs, because a host may hold either version.
 #
-# A recorded pid can belong to something else by now, so only a process that says
-# it is a forwarder is signalled. The stock provider on Linux records none.
+# A line of the record is a pid, followed from 0.7.7 by what the plugin compares
+# before it signals. This removes the record, so a line it could not read would be a
+# watcher nothing can stop any more. A recorded pid can belong to something else by
+# now, so only a process that says it is a forwarder is signalled; the process
+# recorded from 0.7.7 is a supervisor that names the forwarder in its arguments, and
+# stops it on TERM. The stock provider on Linux records none.
 engine_vagrant_stop_forwarders() {
     local record pid
     for record in "$VAGRANT_DOTFILE_PATH"/machines/*/*/notify_watcher_host_pid; do
         [ -f "$record" ] || continue
-        while read -r pid; do
+        while read -r pid _; do
             case "$pid" in '' | *[!0-9]*) continue ;; esac
             case "$(ps -o args= -p "$pid" 2>/dev/null)" in
                 *notify-forwarder*) kill -TERM "$pid" 2>/dev/null || true ;;
@@ -385,6 +391,8 @@ engine_vagrant_stop_forwarders() {
         rm -f "$record"
     done
 }
+
+engine_stop_host_daemons() { engine_vagrant_stop_forwarders; }
 
 engine_down() {
     if [ "${1:-}" = "--force" ]; then

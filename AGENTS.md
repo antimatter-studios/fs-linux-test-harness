@@ -389,7 +389,12 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   plugin stays enabled, because disabling it stops the boot, but its guest
   receiver wrote into the files an event named and truncated one it read as
   empty, which emptied a payload the host had just written (#84). The Vagrantfile
-  gives the plugin `vagrant/guest/notify-receiver-off.sh` instead.
+  gives the plugin `vagrant/guest/notify-receiver-off.sh` instead, and says why
+  that stays with notify-forwarder v1.2.1, which no longer writes data (#87).
+- **The forwarder's record has two forms.** `notify_watcher_host_pid` holds a pid
+  a line up to plugin 0.7.5, and a pid and its identity from 0.7.7. A host may have
+  either, so `engine_vagrant_stop_forwarders` reads both, and the session end stops
+  them on a guest that powered itself off, where no halt runs (#135).
 - **`deadline_minutes` is an idle timeout.** Every `run` and `exec` re-arms it
   as the call starts and ends, so a single call longer than it (a whole
   `guest-test` run is one call) is still cut off.
