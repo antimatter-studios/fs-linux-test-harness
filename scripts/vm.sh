@@ -297,14 +297,97 @@ refuse_other_worktree() {
     exit 1
 }
 
+up_forward() {
+    up_signalled="$1"
+    [ -n "$up_child" ] || return 0
+    kill -"$2" -- "-$up_child" 2>/dev/null || true
+    [ -z "$up_killer" ] || return 0
+    local monitor=0
+    case "$-" in *m*) monitor=1 ;; esac
+    set -m
+    (
+        trap - EXIT
+        trap '' HUP INT TERM
+        exec 6>&-
+        ticks=0
+        while kill -0 -- "-$up_child" 2>/dev/null && [ "$ticks" -lt 50 ]; do
+            command -p sleep 0.1
+            ticks=$((ticks + 1))
+        done
+        kill -KILL -- "-$up_child" 2>/dev/null || true
+    ) >/dev/null 2>&1 &
+    up_killer=$!
+    [ "$monitor" = 1 ] || set +m
+}
+
 vm_up() {
-    local rc=0
+    local rc=0 up_child='' up_killer='' up_signalled=0 monitor=0 watcher
     up_lock_take
-    vm_up_locked || rc=$?
+    trap 'up_forward 129 HUP' HUP
+    trap 'up_forward 130 INT' INT
+    trap 'up_forward 143 TERM' TERM
+    mkfifo "$FLTH_MACHINE_DIR/up.lock/owner" || return
+    exec 6<> "$FLTH_MACHINE_DIR/up.lock/owner"
+    exec 5< "$FLTH_MACHINE_DIR/up.lock/owner"
+    rm -f "$FLTH_MACHINE_DIR/up.lock/owner"
+    case "$-" in *m*) monitor=1 ;; esac
+    set -m
+    if [ "$up_signalled" = 0 ]; then
+        (
+            trap - EXIT INT QUIT
+            exec 6>&-
+            set +m
+            (
+                trap 'exit 0' TERM
+                read -r _ || {
+                    trap '' HUP INT TERM
+                    kill -TERM 0 2>/dev/null || true
+                    command -p sleep 5
+                    kill -KILL 0 2>/dev/null || true
+                }
+            ) <&5 >/dev/null 2>&1 &
+            watcher=$!
+            exec 5<&-
+            vm_up_locked || rc=$?
+            kill -TERM "$watcher" 2>/dev/null || true
+            wait "$watcher" 2>/dev/null || true
+            exit "$rc"
+        ) 0<&0 &
+        up_child=$!
+    fi
+    exec 5<&-
+    [ "$monitor" = 1 ] || set +m
+    if [ "$up_signalled" != 0 ] && [ -n "$up_child" ]; then
+        case "$up_signalled" in
+            129) up_forward 129 HUP ;;
+            130) up_forward 130 INT ;;
+            143) up_forward 143 TERM ;;
+        esac
+    fi
+    if [ -n "$up_child" ]; then
+        while :; do
+            wait "$up_child" || rc=$?
+            kill -0 "$up_child" 2>/dev/null || break
+        done
+    fi
+    if [ -n "$up_killer" ]; then
+        while kill -0 "$up_killer" 2>/dev/null; do
+            wait "$up_killer" || true
+        done
+    fi
+    exec 6>&-
+    trap '' HUP INT TERM
+    if [ "$up_signalled" != 0 ]; then
+        rc="$up_signalled"
+        if [ -f "$(unfinished_boot_marker)" ]; then
+            vm_down
+        fi
+    fi
     if [ "$rc" -ne 0 ]; then
         release_if_confirmed_stopped || true
     fi
     up_lock_drop
+    trap - HUP INT TERM
     return "$rc"
 }
 

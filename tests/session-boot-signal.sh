@@ -327,7 +327,7 @@ stopped_up() {
     up_pid=$!
     set +m
     wait_for_boot_to_stop_short no-session
-    kill -TERM -- "-$up_pid" 2>/dev/null
+    kill -KILL -- "-$up_pid" 2>/dev/null
     wait "$up_pid" 2>/dev/null
     wait_until 100 dead "$(pid_of vagrant)" || true
     rm -f "$STUB/boot"
