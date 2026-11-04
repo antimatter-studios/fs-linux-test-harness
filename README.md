@@ -678,6 +678,12 @@ This mitigates the provider leak tracked in
 [vagrant-qemu#9](https://github.com/antimatter-studios/vagrant-qemu/issues/9);
 it does not change the separate notify-forwarder lifecycle.
 
+**A boot runs in a process group of its own.** What `vagrant up` leaves running
+for the VM is outside the group of the command that booted it, as QEMU is. A
+signal to a session ends the command's descendants and leaves a VM that stays up
+with its shares; `vm.sh down` and `vm.sh destroy` stop those daemons. A signal or KILL that reaches
+`vm.sh up` while the boot is still running stops the boot and what it started.
+
 **A guest that goes away fails the call.** The client keeps the
 connection alive (`ServerAliveInterval=15`, `ServerAliveCountMax=8`), so
 a VM halted underneath a running command — by its own deadline, by a
