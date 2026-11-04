@@ -619,6 +619,20 @@ For a guest whose kernel could not mount its root, it reads:
 
 The file stays after a boot, failed or not, until the next one starts.
 
+**A box that cannot be fetched is not a failed boot.** No VM started, so
+there is no console to read and the three attempts above do not apply.
+When Vagrant reports that the box catalog or the box's download failed with
+a 5xx, a 408, 425 or 429, or no answer at all, `up` waits 30, 60 and then 120
+seconds between tries, for 15 minutes at most, keeping the slot. It then fails
+naming the catalog and what it answered:
+
+```text
+vm: the box could not be fetched: the box catalog https://vagrantcloud.com/cloud-image/debian-12 answered HTTP 503, and was still failing after 900s. No VM was started.
+```
+
+Any other 4xx is an answer waiting will not change, and takes the ordinary
+boot retries.
+
 ### The engine interface
 
 Everything the harness decides is written against a small interface
@@ -626,6 +640,7 @@ Everything the harness decides is written against a small interface
 `engine_identity`, `engine_state` (running / stopped / absent /
 **unknown**), `engine_up`, `engine_down [--force]`, `engine_destroy`,
 `engine_run`, `engine_copy`, `engine_alive`, `engine_console_log`,
+`engine_box_failure`,
 `engine_vm_status`, `engine_guest_answers`, `engine_overlay_dir`. Vagrant is the only
 implementation ([`engine-vagrant.sh`](./scripts/lib/engine-vagrant.sh));
 another engine is one file. Two properties an engine must keep: a state

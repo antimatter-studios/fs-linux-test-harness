@@ -52,6 +52,10 @@ SLOT="$FLTH_HARNESS/scripts/vm-slot.sh"
 HOST_TOOLS="$FLTH_HARNESS/scripts/host-tools.sh"
 BOOT_ATTEMPTS=3
 BOOT_RETRY_WAIT=5
+# How long a box that will not arrive is waited for, in seconds (boot_engine).
+BOX_RETRY_BOUND=900
+BOX_RETRY_FIRST_WAIT=30
+BOX_RETRY_MAX_WAIT=120
 # How much of the guest's console a failed boot prints (show_console).
 CONSOLE_TAIL_LINES=60
 # What a lost connection prints of it: several calls can lose the guest at once.
@@ -470,8 +474,21 @@ guest_run() {
 # Waiting for the port to look free does not work — `lsof` reports it
 # free while QEMU still cannot bind it — so the retry is where the
 # failure happens, and covers causes nobody has guessed.
+#
+# A BOX THAT DID NOT ARRIVE IS NOT A BOOT THAT FAILED (#145). A catalog outage
+# outlasts three attempts five seconds apart, and one threw away a merge queue
+# run that had taken hours. So it is waited for over minutes, on a count of its
+# own, and reported as what it was: no VM started, so there is no console to show
+# and nothing to force down. A boot failure keeps the retries above.
+#
+# THE WAIT FITS INSIDE WHAT IS WAITING ON IT. The slot's lease is renewed by
+# check-memory before each attempt, and a holder with no VM is only trusted for
+# FLTH_SLOT_BOOT_GRACE (180 s), so no single wait reaches that. The bound is well
+# inside the up lock's wait (FLTH_UP_LOCK_WAIT_SECS), the slot's (FLTH_SLOT_WAIT),
+# and the shortest job limit around a first boot in the family, 45 minutes. The
+# time an attempt takes counts, so a catalog that fails slowly is bounded too.
 boot_engine() {
-    local attempt=1
+    local attempt=1 box_spent=0 box_wait="$BOX_RETRY_FIRST_WAIT" failure started
     while :; do
         if ! "$SLOT" check-memory; then
             release_if_confirmed_stopped || true
@@ -479,8 +496,26 @@ boot_engine() {
         fi
         mkdir -p "$FLTH_MACHINE_DIR" || return
         printf '%s\n' "$FLTH_ROOT" > "$(mounted_worktree_record)" || return
+        started="$SECONDS"
         if engine_up "$@"; then
             return 0
+        fi
+        if failure="$(engine_box_failure)"; then
+            box_spent=$((box_spent + SECONDS - started))
+            if [ "$box_spent" -ge "$BOX_RETRY_BOUND" ]; then
+                echo "vm: the box could not be fetched: $failure, and was still failing after ${box_spent}s. No VM was started." >&2
+                release_if_confirmed_stopped || true
+                exit 1
+            fi
+            [ "$box_wait" -le $((BOX_RETRY_BOUND - box_spent)) ] || box_wait=$((BOX_RETRY_BOUND - box_spent))
+            echo "[vm] the box could not be fetched: $failure. Retrying in ${box_wait}s (${box_spent}s of ${BOX_RETRY_BOUND}s spent)..." >&2
+            # Its own output: a wait this long must not hold a caller's pipe
+            # open after this process is gone.
+            sleep "$box_wait" >/dev/null 2>&1 || return
+            box_spent=$((box_spent + box_wait))
+            box_wait=$((box_wait * 2))
+            [ "$box_wait" -le "$BOX_RETRY_MAX_WAIT" ] || box_wait="$BOX_RETRY_MAX_WAIT"
+            continue
         fi
         show_console || true
         if [ "$attempt" -ge "$BOOT_ATTEMPTS" ]; then
