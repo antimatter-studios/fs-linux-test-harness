@@ -60,6 +60,10 @@ engine_identity() { printf '%s\n' "$FLTH_MACHINE_DIR/stub"; }
 
 engine_console_log() { printf '%s\n' "$STUB/console.log"; }
 
+# The real engine's answers are held by tests/box-catalog.sh, which talks to a
+# stand-in vagrant. A stubbed boot never fails for want of a box.
+engine_box_failure() { return 1; }
+
 engine_state() {
     stub_log state
     cat "$STUB/state"

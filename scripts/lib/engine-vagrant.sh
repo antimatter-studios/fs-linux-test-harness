@@ -295,20 +295,18 @@ engine_forget_kernel() {
 # outlive the boot. Handed the caller's stderr, they hold it: a test process
 # capturing `vm.sh up` waits for end-of-file on that pipe, and one consumer's
 # kernel tests sat for 47 minutes on their first call with the guest up and
-# idle. So on macOS Vagrant writes to a file, which is shown on stderr as it
-# grows, and what it leaves running holds only the file. The stock provider
-# on Linux starts nothing that keeps them.
+# idle. So Vagrant writes to a file, which is shown on stderr as it grows, and
+# what it leaves running holds only the file. The stock provider on Linux starts
+# nothing that keeps them, but the file is also how a failed boot is read
+# afterwards (engine_box_failure), so every host takes this path.
 #
 # Vagrant is waited for here, and scripts/qemu-artifacts.rb passes it an
 # interrupt: it runs in a process group of its own (#130). Stopping when this
 # process is gone keeps the follower from outliving a killed `up`, which would
 # be the same fault again.
 engine_vagrant_up() {
-    local log="$FLTH_MACHINE_DIR/vagrant-up.log" follower rc=0
-    if [ "$(uname -s)" != Darwin ]; then
-        engine_vagrant up --provider qemu >&2
-        return
-    fi
+    local log follower rc=0
+    log="$(engine_vagrant_up_log)"
     # A file of its own: an earlier boot's processes still hold the last one.
     rm -f "$log" "$log.done"
     : > "$log"
@@ -334,9 +332,56 @@ engine_vagrant_follow() {
     sed -n "$((shown + 1)),\$p" "$log" >&2
 }
 
+engine_vagrant_up_log() { printf '%s/vagrant-up.log\n' "$FLTH_MACHINE_DIR"; }
+
+# WHAT VAGRANT SAID WHEN IT COULD NOT FETCH THE BOX (#145). Vagrant's up ends with
+# one of three messages and exit status 1, the same as any other failure, so the
+# words are all there is. They are Vagrant 2.4.9's, from its locale file:
+# box_add_short_not_found, for the catalog, and downloader_error and
+# box_metadata_download_error, for the box's own URL. Its downloader passes on
+# curl's message, which holds the HTTP status when there was one.
+#
+# A 4xx is an answer, not an outage, and nothing comes of waiting for it, except
+# 408, 425 and 429, which ask for a later try. Anything else is an outage: a 5xx, or
+# no answer at all from a host that cannot be reached. A wrong guess here costs
+# minutes, within the bound boot_engine holds it to.
+engine_box_failure() {
+    local log what error status
+    log="$(engine_vagrant_up_log)"
+    [ -f "$log" ] || return 1
+    if grep -q 'could not be accessed in the remote catalog' "$log"; then
+        what="the box catalog $(sed -n 's/^URL: //p' "$log" | head -n 1 | tr -d '[]"')"
+        error="$(sed -n 's/^Error: //p' "$log" | head -n 1)"
+    elif grep -q -e 'An error occurred while downloading the remote file' \
+        -e 'error while downloading the metadata for this box' "$log"; then
+        what='the box download'
+        # Its message, if any, is what follows the blank line.
+        error="$(awk '
+            /An error occurred while downloading|error while downloading the metadata/ { found = 1 }
+            found && !NF { message = 1; next }
+            message && NF { last = $0 }
+            END { print last }' "$log")"
+    else
+        return 1
+    fi
+    status="$(printf '%s\n' "$error" | sed -n 's/.*returned error: \([0-9][0-9][0-9]\).*/\1/p')"
+    case "$status" in
+        408 | 425 | 429) ;;
+        4??) return 1 ;;
+    esac
+    if [ -n "$status" ]; then
+        echo "$what answered HTTP $status"
+    else
+        echo "$what failed: ${error:-Vagrant gave no reason}"
+    fi
+}
+
 engine_up() {
     local tmp disposable=1 port dir kernel="" initrd=""
     [ "${1:-}" = --persist ] && disposable=0
+    # What the last attempt said is not what this one says, if this one fails
+    # before it gets to Vagrant.
+    rm -f "$(engine_vagrant_up_log)"
     dir="$(engine_vagrant_kernel_dir)"
     if [ -s "$dir/release" ]; then
         kernel="$dir/vmlinuz"

@@ -33,7 +33,13 @@
 #                              ([cache] size) has it at
 #                              FLTH_CACHE_GUEST on EVERY boot, and what
 #                              is written there is kept either way.
-#   engine_console_log         print the path of the file holding the
+#   engine_box_failure         after a failed engine_up: exit 0 and print
+#                              where the box comes from and what it
+#                              answered, when no VM started because the
+#                              box could not be fetched and a later try
+#                              may succeed. Non-zero, and nothing, for
+#                              any other failure.
+#   engine_console_log        print the path of the file holding the
 #                              console of the latest boot, failed or
 #                              not. It may be missing or empty: a boot
 #                              that never started a VM wrote nothing.
