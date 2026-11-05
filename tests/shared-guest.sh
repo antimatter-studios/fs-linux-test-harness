@@ -121,6 +121,16 @@ two down >/dev/null 2>&1
 check_eq "$(downs)" 1 "a shutdown request after both were killed stops the guest"
 check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "so a SIGKILL does not keep it up"
 
+# A reap that finds a killed suite on the list drops it and carries on.
+one up >/dev/null 2>&1
+suite; A=$SUITE; suites="$suites $A"
+one session-begin "$A" 2>/dev/null
+end_suite "$A"
+one reap >/dev/null 2>&1
+check_eq "$?" 0 "a reap with a killed suite on the list succeeds"
+check_eq "$([ -e "$MACHINE/sessions/$A" ] && echo listed)" "" "and drops it"
+two down >/dev/null 2>&1
+
 # A pid the system has handed to something else is not the suite it was.
 one up >/dev/null 2>&1
 suite; A=$SUITE; suites="$suites $A"
