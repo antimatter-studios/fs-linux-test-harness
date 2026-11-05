@@ -40,6 +40,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # failed with ENOTDIR (christhomas/virtiofsd#3, released in v1.14.0).
 VIRTIOFSD_MIN=1.14.0
 
+# The oldest forwarder plugin that stops what it starts. Before it, a watcher
+# outlives its VM with nothing left to end it (#164), and a host that boots VMs all
+# day collects them.
+NOTIFY_FORWARDER_MIN=0.7.7
+
 version_at_least() {
     # version_at_least <have> <want>: numeric, component by component, so
     # 1.14.0.1 is newer than 1.14.0 and 1.9 is older than 1.14.
@@ -104,6 +109,13 @@ check_macos() {
             printf '%s\n' "$plugins" | grep -q "^$p " ||
                 need "$p" "the macOS QEMU provider and its required companion" "vagrant plugin install $p"
         done
+        v="$(printf '%s\n' "$plugins" | sed -n 's/^vagrant-notify-forwarder-christhomas (\([0-9][0-9.]*\)[,)].*/\1/p')"
+        if printf '%s\n' "$plugins" | grep -q '^vagrant-notify-forwarder-christhomas ' &&
+            { [ -z "$v" ] || ! version_at_least "$v" "$NOTIFY_FORWARDER_MIN"; }; then
+            need "vagrant-notify-forwarder-christhomas $NOTIFY_FORWARDER_MIN or newer (found '${v:-unreadable}')" \
+                "older releases leave a watcher running for every folder of every VM after it stops" \
+                "vagrant plugin update vagrant-notify-forwarder-christhomas"
+        fi
         # The box is not checked for: it is published as a public GitHub
         # release, which the Vagrantfile names as its URL, so the first
         # boot on a Mac fetches it (#8).
