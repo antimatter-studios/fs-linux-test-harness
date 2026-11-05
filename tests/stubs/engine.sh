@@ -22,6 +22,9 @@
 #                  this file to go, with the VM not yet running
 #   gate_down      present: a down writes gate_down.reached and waits for this
 #                  file to go, with the VM already stopped
+#   on_failed_up   a script run as an up fails, for what an attempt's length does
+#   on_force_down  a script run as a forced down begins, for what can happen
+#                  between two attempts
 #
 # THE DISK. The guest's setup-stamp directory is $STUB/guest-lib
 # for the length of a boot, and $STUB/disk is what the machine's disk
@@ -84,6 +87,7 @@ engine_up() {
     if [ "$n" -gt 0 ]; then
         echo $((n - 1)) > "$STUB/up_failures"
         stub_read after_failed_up stopped > "$STUB/state"
+        [ ! -f "$STUB/on_failed_up" ] || bash "$STUB/on_failed_up"
         return 1
     fi
     [ "$(cat "$STUB/state")" = absent ] && rm -rf "$STUB/disk"
@@ -115,6 +119,7 @@ stub_boot_ended() {
 engine_down() {
     stub_log "down${1:+ $1}"
     if [ "${1:-}" = --force ]; then
+        [ ! -f "$STUB/on_force_down" ] || bash "$STUB/on_force_down"
         stub_read after_force_down "$(stub_read after_down stopped)" > "$STUB/state"
     else
         stub_read after_down stopped > "$STUB/state"

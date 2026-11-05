@@ -604,6 +604,46 @@ guest_run() {
     return "$rc"
 }
 
+# RENEWS THE SLOT'S LEASE WHILE AN ATTEMPT RUNS. Its stop waits for a renewal in
+# progress, because the next check-memory refuses a record that changes under it.
+# The nap is real time: a test's stub `sleep` must not make this spin. It ends
+# with the shell that started it, however that shell ends, within one tick.
+LEASE_KEEPER=""
+lease_keeper_start() {
+    local interval="${FLTH_SLOT_RENEW_SECS:-$((${FLTH_SLOT_BOOT_GRACE:-180} / 3))}" owner
+    [ "$interval" -gt 0 ] || interval=1
+    # The exec makes this shell the parent, on a Bash with no BASHPID. An async
+    # subshell cannot trap INT there, so a signal to the group only ends this
+    # through its owner going.
+    owner="$(exec sh -c 'echo "$PPID"')"
+    (
+        stopping=0
+        nap=""
+        # A trap ends `wait` at once, and a foreground sleep only after its second,
+        # which every boot would pay.
+        trap 'stopping=1; [ -z "$nap" ] || kill "$nap" 2>/dev/null' TERM
+        ticks=0
+        while [ "$stopping" = 0 ] && kill -0 "$owner" 2>/dev/null; do
+            command -p sleep 1 &
+            nap=$!
+            wait "$nap" || true
+            ticks=$((ticks + 1))
+            if [ "$ticks" -ge "$interval" ] && [ "$stopping" = 0 ]; then
+                ticks=0
+                "$SLOT" renew || true
+            fi
+        done
+    ) </dev/null >/dev/null 2>&1 &
+    LEASE_KEEPER=$!
+}
+
+lease_keeper_stop() {
+    [ -n "$LEASE_KEEPER" ] || return 0
+    kill -TERM "$LEASE_KEEPER" 2>/dev/null || true
+    wait "$LEASE_KEEPER" 2>/dev/null || true
+    LEASE_KEEPER=""
+}
+
 # Boot, retrying.
 #
 # RETRIED, because the forwarded SSH port is not always free the instant
@@ -624,8 +664,13 @@ guest_run() {
 # inside the up lock's wait (FLTH_UP_LOCK_WAIT_SECS), the slot's (FLTH_SLOT_WAIT),
 # and the shortest job limit around a first boot in the family, 45 minutes. The
 # time an attempt takes counts, so a catalog that fails slowly is bounded too.
+#
+# AN ATTEMPT OUTLASTS THE LEASE (#161). Vagrant can spend minutes before QEMU
+# exists: a box download, a loaded host. For all of that no VM is running and the
+# process that will start one is alive, so the lease is kept fresh while the
+# attempt runs, by a process that goes when the attempt ends or its owner does.
 boot_engine() {
-    local attempt=1 box_spent=0 box_wait="$BOX_RETRY_FIRST_WAIT" failure started identity
+    local attempt=1 box_spent=0 box_wait="$BOX_RETRY_FIRST_WAIT" failure started identity up_rc
     while :; do
         if ! "$SLOT" check-memory; then
             release_if_confirmed_stopped || true
@@ -636,12 +681,20 @@ boot_engine() {
         printf '%s\n' "$FLTH_ROOT" > "$(mounted_worktree_record)" || return
         printf '%s\n' "$FLTH_ROOT" > "$FLTH_MACHINE_DIR/up.lock/mounted-worktree" || return
         started="$SECONDS"
-        if engine_up "$@"; then
+        lease_keeper_start
+        up_rc=0
+        engine_up "$@" || up_rc=$?
+        lease_keeper_stop
+        if [ "$up_rc" = 0 ]; then
             if identity="$(engine_boot_identity)" && [ -n "$identity" ]; then
                 printf '%s\n' "$identity" > "$(mounted_worktree_boot_record)" || return
             fi
             return 0
         fi
+        # No VM from here to the next attempt, and that attempt may have lasted
+        # up to its whole timeout. A failure here stops nothing: the next attempt
+        # refuses to start without a reservation.
+        "$SLOT" renew || true
         if failure="$(engine_box_failure)"; then
             box_spent=$((box_spent + SECONDS - started))
             if [ "$box_spent" -ge "$BOX_RETRY_BOUND" ]; then
