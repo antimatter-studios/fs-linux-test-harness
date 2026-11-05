@@ -168,6 +168,13 @@ stop_watchdog() {
     wait "$WATCHDOG" 2>/dev/null
 }
 
+# Starts a command with INT and QUIT at their defaults. A test run as a background
+# job with job control off inherits both ignored, Bash cannot trap or reset a signal
+# ignored on entry, and a run of what it starts then never sees the INT it is sent.
+# It execs, so the job's pid is the command's.
+# shellcheck disable=SC2034  # read by the tests that source this
+DEFAULT_INT=(perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; exec { $ARGV[0] } @ARGV or exit 127')
+
 finish() {
     local name="$1"
     if [ "$fails" -eq 0 ]; then
