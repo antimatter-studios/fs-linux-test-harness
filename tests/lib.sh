@@ -44,6 +44,9 @@ new_sandbox() {
     SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/flth.XXXXXX")" || exit 1
     # shellcheck disable=SC2064  # expand now: the path is fixed
     trap "rm -rf '$SANDBOX'" EXIT
+    # A stand-in outside every process group asks whether this test is still alive,
+    # which no way of ending the test can leave answering yes.
+    export FLTH_TEST_PID=$$
     export FLTH_CACHE_DIR="$SANDBOX/cache"
     export FLTH_STATE_DIR="$SANDBOX/state"
     unset FLTH_CONFIG FLTH_KEEP_VM FLTH_SLOT_WAIT FLTH_SLOT_BOOT_GRACE FLTH_SLOT_COUNT

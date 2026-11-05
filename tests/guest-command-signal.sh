@@ -78,7 +78,7 @@ perl -MPOSIX -e '
     open my $pid, ">", $ARGV[1] or exit 1;
     print {$pid} "$$\n";
     close $pid;
-    exec { "/bin/sh" } "qemu-system-stub", "-c", "while :; do /bin/sleep 1; done", "$ARGV[0]/disk";
+    exec { "/bin/sh" } "qemu-system-stub", "-c", q{n=0; while kill -0 "$FLTH_TEST_PID" 2>/dev/null && [ "$n" -lt 3600 ]; do /bin/sleep 1; n=$((n + 1)); done}, "$ARGV[0]/disk";
 ' "$identity" "$QEMU_PID"
 until [ -s "$QEMU_PID" ]; do /bin/sleep 0.05; done
 
