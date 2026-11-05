@@ -9,6 +9,80 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## v0.6.0 — 2026-11-05
+
+### Added
+
+- **A watchdog on the host ends a stuck guest and says why.** One runs for each guest, started and ended with it. It warns of low memory, low disk, a process making no progress in uninterruptible sleep, and an oops, soft lockup, hung task, RCU stall or panic on the guest's console, and shows the last of it in `vm.sh status`. A guest that stops answering, or a process stuck past its limit, ends the guest and frees the slot, and every suite on it ends with status 75 and a message naming the reason. `FLTH_WATCHDOG=off` starts none, and the limits are settings.
+
+- **Consumers join one shared guest, each with its own tree and setup.** With
+  `FLTH_SHARED_ROOT` set to a host directory holding every tree that shares the
+  guest, one boot serves them all. `/repo` and `/share` are still the paths a
+  suite uses, and in each run they are that consumer's own tree and share. Each
+  consumer's `[setup]` script runs when it first joins a boot, one at a time, and
+  tools install alongside each other. A consumer's tests need no change. A tree
+  outside that directory is refused.
+
+- **A consumer's build state lasts between runs on a shared guest.** `/var/cache` is
+  the consumer's, on the guest's own disk, for as long as the guest runs, so a second
+  run does not build from nothing. A second run of one consumer at the same time has
+  its own empty one. What a killed suite held is free for the next run to register.
+
+- **Each run on a shared guest has its own random root and mounts.** A session is
+  a run. Its calls into the guest run in a private mount namespace, with
+  directories under `/var/lib/fs-linux-test-harness/runs/<id>/` mounted at `/tmp`,
+  `/var/tmp`, `/var/cache` and `/mnt`, and `FLTH_RUN_ROOT` naming the root.
+  `guest-test` also copies the tree there and mounts it at `/repo`. The end of a
+  run stops its commands, detaches the loop devices backed by its root and deletes
+  it, and leaves every other run alone. A suite killed outright gets the same when
+  it is dropped from the list.
+
+- **`FLTH_SHARED_ROOT` puts a consumer's suites on one guest with other
+  consumers'.** The machine is `machines/shared-<guest>/`, and its memory, CPUs
+  and disk are `FLTH_SHARED_MEMORY` (8G), `FLTH_SHARED_CPUS` (8) and
+  `FLTH_SHARED_DISK` (64G) rather than a consumer's `[vm]` section. A suite
+  registers when its session begins and deregisters when it ends. The end of a
+  session and a reap leave the guest running, a `down` stops it only when no
+  suite is registered, and a suite killed outright is dropped from the list. A
+  consumer that does not set it is unchanged.
+
+### Changed
+
+- **`chore host:check` and a boot on macOS refuse `vagrant-notify-forwarder-christhomas` older than 0.7.7.** Before that release a watcher outlives its VM with nothing left to end it, and they pile up on a host that boots VMs all day. Run `vagrant plugin update vagrant-notify-forwarder-christhomas`.
+
+### Fixed
+
+- A `[vm] deadline_minutes` of five or less no longer refuses the harness's first login after a boot, and a longer one no longer refuses a new connection in its last five minutes. The guest's sshd stops consulting `pam_nologin`, and the guest still powers off on schedule.
+- The setup call re-arms the guest's poweroff as it starts and as it ends, as `run` and `exec` do.
+
+- **A short `[vm] deadline_minutes` is not cut off by its own re-arm limit.** Re-arming is limited to once in a sixth of the deadline, and at most once a minute. A window of a whole minute at `deadline_minutes = 1` let a call find the stamp fresh with a second of the guest left.
+
+- **A reap of a shared guest copes with a killed suite on the list.** `vm.sh reap`
+  exited 1 and kept the entry when a suite on the list had been killed outright.
+  It now drops the entry and succeeds.
+
+- **A boot keeps its slot for as long as it is booting.** A lease is renewed
+  while a boot attempt runs and again when one fails, so a waiter finds neither
+  a long attempt with no VM yet nor the moment between two attempts abandoned,
+  and the next attempt is not refused with `no memory reservation owns this boot`.
+
+- **A join that disagrees with a shared guest's boot is refused.** A guest sees one
+  `FLTH_SHARED_ROOT` and carries one version of its run tool, both fixed at boot. A
+  consumer joining with another directory or harness version got a failed mount or
+  a misread command. `up` now refuses it, saying which differs, and the guest stays up.
+
+- **A call outside any session keeps a shared guest up.** A `vm.sh run` or `vm.sh exec`
+  by hand was not on the list a shutdown request reads, so a `vm.sh down` stopped the
+  guest under it. It is now listed for as long as it lasts.
+
+- **A run on a shared guest frees what it held before deleting its root.** Deleting a
+  large root took minutes, and a suite restarted during that got an empty `/var/cache`
+  instead of the consumer's.
+
+- **A run's copy of its tree on a shared guest keeps holes.** A copy filled every hole
+  in a suite's images, taking one consumer's 3.5 GiB of fixtures to 38 GiB of the
+  guest's disk.
+
 ## v0.5.9 — 2026-11-05
 
 ### Changed
