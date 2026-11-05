@@ -200,15 +200,8 @@ start_session() {
 # Signals the session and leaves STATUS and ELAPSED; bounded by a watchdog, so a
 # session that will not end fails here instead of holding the suite.
 signal_session() {
-    local delivery="$1" watchdog started
-    set -m
-    (
-        sleep 25
-        echo timeout > "$CASE/timeout"
-        kill -KILL -- "-$SESSION" 2>/dev/null
-    ) > /dev/null 2>&1 &
-    watchdog=$!
-    set +m
+    local delivery="$1" started
+    start_watchdog 25 "$CASE/timeout" "$SESSION"
     started=$SECONDS
     case "$delivery" in
         process) kill -TERM "$SESSION" 2>/dev/null ;;
@@ -217,8 +210,19 @@ signal_session() {
     wait "$SESSION"
     STATUS=$?
     ELAPSED=$((SECONDS - started))
-    kill -KILL -- "-$watchdog" 2>/dev/null
-    wait "$watchdog" 2>/dev/null
+    stop_watchdog
+}
+
+# Which half failed: a session that outlasted its bound, or one the watchdog stopped.
+check_session_bound() {
+    # check_session_bound <label>
+    if [ -e "$CASE/timeout" ]; then
+        bad "$1: the watchdog stopped the session after $ELAPSED seconds"
+    elif [ "$ELAPSED" -ge 20 ]; then
+        bad "$1: the session took $ELAPSED seconds, and its bound is 20"
+    else
+        ok "$1: the session ends within its bound"
+    fi
 }
 
 # Whatever a failed check left running goes, so the next case starts clean and
@@ -264,11 +268,7 @@ vm_stays_up() {
     pid="$(cat "$CASE/descendant" 2>/dev/null)"
     signal_session "$delivery"
     check_eq "$STATUS" 143 "$label: the session exits 143"
-    if [ ! -e "$CASE/timeout" ] && [ "$ELAPSED" -lt 20 ]; then
-        ok "$label: the session ends within its bound"
-    else
-        bad "$label: the session took $ELAPSED seconds"
-    fi
+    check_session_bound "$label"
     if dead "$pid"; then
         ok "$label: the command's descendant has ended"
     else
@@ -454,11 +454,7 @@ boot_interrupted() {
     group="$(pgid_of "$vagrant")"
     signal_session process
     check_eq "$STATUS" 143 "$label: the session exits 143"
-    if [ ! -e "$CASE/timeout" ] && [ "$ELAPSED" -lt 20 ]; then
-        ok "$label: the session ends within its bound"
-    else
-        bad "$label: the session took $ELAPSED seconds"
-    fi
+    check_session_bound "$label"
     check_eq "$(cat "$STUB/vagrant-term" 2>/dev/null)" TERM "$label: vagrant was given the signal"
     if [ "$group" = "$(cat "$CASE/command.pgid" 2>/dev/null)" ] || [ "$(cat "$STUB/stdin" 2>/dev/null)" = null ]; then
         ok "$label: vagrant holds no stdin it could be stopped for reading"

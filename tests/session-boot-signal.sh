@@ -171,20 +171,11 @@ start_session() {
 # Signals the session and leaves STATUS. The watchdog only stops a session that
 # would otherwise hold the suite: how long one takes is not what is held here.
 signal_session() {
-    local watchdog
-    set -m
-    (
-        perl -e 'sleep 120'
-        echo timeout > "$CASE/timeout"
-        kill -KILL -- "-$SESSION" 2>/dev/null
-    ) > /dev/null 2>&1 &
-    watchdog=$!
-    set +m
+    start_watchdog 120 "$CASE/timeout" "$SESSION"
     kill -TERM "$SESSION" 2>/dev/null
     wait "$SESSION"
     STATUS=$?
-    kill -KILL -- "-$watchdog" 2>/dev/null
-    wait "$watchdog" 2>/dev/null
+    stop_watchdog
 }
 
 wait_for_boot_to_stop_short() {
