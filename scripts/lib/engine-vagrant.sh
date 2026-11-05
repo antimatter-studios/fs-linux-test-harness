@@ -26,7 +26,7 @@ engine_prepare() {
     export VAGRANT_CWD="$ENGINE_VAGRANT_DIR"
     export FLTH_REPO_DIR="$FLTH_ROOT"
     export VAGRANT_DOTFILE_PATH="$FLTH_MACHINE_DIR/vagrant"
-    export FLTH_VM_NAME="$CFG_project_name"
+    export FLTH_VM_NAME="$FLTH_MACHINE_NAME"
     export FLTH_VM_MEMORY="$CFG_vm_memory"
     export FLTH_VM_CPUS="$CFG_vm_cpus"
     export FLTH_VM_DISK="$CFG_vm_disk"

@@ -87,7 +87,7 @@ slot_identify() {
     [ -n "$HOLDER_IDENTITY" ] && return 0
     flth_load || exit 1
     HOLDER_IDENTITY="$(engine_identity)"
-    HOLDER_NAME="$CFG_project_name"
+    HOLDER_NAME="$FLTH_MACHINE_NAME"
 }
 
 slot_path() {

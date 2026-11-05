@@ -783,6 +783,10 @@ vm_reap() {
     if ! engine_alive "$(engine_identity)"; then
         return 0
     fi
+    if flth_shared; then
+        shared_reap
+        return 0
+    fi
     if stop_unfinished_boot; then
         return 0
     fi
@@ -882,7 +886,7 @@ live_sessions() {
     [ -d "$dir" ] || return 0
     for marker in "$dir"/*; do
         [ -f "$marker" ] || continue
-        IFS=$'\t' read -r pid start < "$marker" || true
+        IFS=$'\t' read -r pid start _ < "$marker" || true
         case "$pid" in '' | *[!0-9]*) rm -f "$marker"; continue ;; esac
         [ "$pid" = "$except" ] && continue
         now="$(process_start "$pid")"
@@ -899,6 +903,10 @@ vm_session_begin() {
     start="$(process_start "$pid")"
     [ -n "$start" ] || flth_die "session-begin: no running process $pid"
     mkdir -p "$(sessions_dir)"
+    if flth_shared; then
+        shared_register "$pid" "$start"
+        return 0
+    fi
     printf '%s\t%s\n' "$pid" "$start" > "$(sessions_dir)/$pid"
 }
 
@@ -911,6 +919,10 @@ vm_session_begin() {
 vm_session_end() {
     local pid="$1" others
     rm -f "$(sessions_dir)/$pid"
+    if flth_shared; then
+        shared_session_ended "$pid"
+        return 0
+    fi
     if stop_unfinished_boot; then
         return 0
     fi
@@ -943,6 +955,72 @@ vm_session_end() {
         return 0
     fi
     vm_down
+}
+
+# THE LIST OF SUITES USING A SHARED GUEST (#153). The session markers are the list:
+# an entry names a process, and one whose process has gone is dropped before anyone
+# counts. In this mode the end of a session stops nothing, because the guest is
+# there for the next run. Only a shutdown request stops it, and only with the list
+# empty. Registering and that check hold the up lock, so a suite that registers
+# during a shutdown waits for it: its `up` then finds no guest and boots a new one.
+# Deregistering needs no lock. A shutdown that reads an entry just before it goes
+# leaves the guest up, as it would have a moment earlier.
+shared_register() {
+    up_lock_take
+    printf '%s\t%s\t%s\n' "$1" "$2" "$CFG_project_name" > "$(sessions_dir)/$1"
+    up_lock_drop
+}
+
+# The live suites, as `name (pid N)`, comma-separated.
+shared_suites() {
+    local pid name list=""
+    while IFS= read -r pid; do
+        name="$(cut -f3 "$(sessions_dir)/$pid" 2>/dev/null || true)"
+        list="$list${list:+, }${name:-unknown} (pid $pid)"
+    done < <(live_sessions)
+    printf '%s\n' "$list"
+}
+
+# A guest that stopped itself gets no halt, so what its boot left on the host goes
+# here, once nobody else is on the list and no `up` has taken the machine.
+shared_session_ended() {
+    local alive=0
+    if stop_unfinished_boot; then
+        return 0
+    fi
+    engine_alive "$(engine_identity)" || alive=$?
+    [ "$alive" -eq 1 ] || return 0
+    up_lock_try || return 0
+    if [ -z "$(live_sessions "$1")" ]; then
+        engine_stop_host_daemons
+        "$SLOT" release
+    fi
+    up_lock_drop
+}
+
+# `vm.sh down`. A private VM stops; a shared guest stops only if nobody is using it.
+vm_shutdown() {
+    local suites
+    if ! flth_shared; then
+        vm_down
+        return
+    fi
+    up_lock_take
+    suites="$(shared_suites)"
+    if [ -n "$suites" ]; then
+        echo "[vm] left running: the shared guest is in use by $suites. The last one's shutdown request stops it." >&2
+    else
+        vm_down
+    fi
+    up_lock_drop
+}
+
+shared_reap() {
+    if stop_unfinished_boot; then
+        return 0
+    fi
+    live_sessions >/dev/null
+    echo "[vm] left running: the shared guest stays up for the next run. 'chore vm:down' stops it when nobody is using it." >&2
 }
 
 # Re-apply the setup script to the disk, even when unchanged. That takes a
@@ -1043,11 +1121,23 @@ vm_reload_locked() {
 }
 
 vm_destroy() {
+    if flth_shared; then
+        local suites
+        up_lock_take
+        suites="$(shared_suites)"
+        if [ -n "$suites" ]; then
+            echo "vm: not destroying the shared guest: it is in use by $suites." >&2
+            exit 1
+        fi
+    fi
     rm -f "$FLTH_HOLD" "$FLTH_MACHINE_DIR/setup.sha256" "$(base_record)"
     engine_destroy || true
     if ! release_if_confirmed_stopped; then
         echo "vm: destroy did not leave the VM confirmed gone." >&2
         exit 1
+    fi
+    if flth_shared; then
+        up_lock_drop
     fi
 }
 
@@ -1063,6 +1153,9 @@ vm_status() {
             fi
             if boot_stopped_short; then
                 echo "vm: its last boot did not finish, so its guest has no shares. 'chore vm:up' replaces it."
+            fi
+            if flth_shared; then
+                echo "vm: in use by: $(shared_suites)"
             fi
             ;;
         *) echo "vm: $CFG_project_name is not running ($state)"; exit 1 ;;
@@ -1338,7 +1431,7 @@ case "$command" in
     reload) vm_reload ;;
     test) vm_test "$@" ;;
     guest-test) vm_guest_test "$@" ;;
-    down) vm_down ;;
+    down) vm_shutdown ;;
     status) vm_status ;;
     hold) vm_hold ;;
     reap) vm_reap ;;
