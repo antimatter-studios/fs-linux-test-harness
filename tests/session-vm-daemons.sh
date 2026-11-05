@@ -85,7 +85,7 @@ case "$1" in
         case "$boot" in
             hang | stubborn)
                 : > "$STUB/booting"
-                while :; do sleep 1; done
+                while kill -0 "$FLTH_TEST_PID" 2>/dev/null; do sleep 1; done
                 ;;
         esac
         perl -MPOSIX -e '
@@ -98,7 +98,7 @@ case "$1" in
             open my $pid, ">", "$ENV{STUB}/qemu.pid" or exit 1;
             print {$pid} "$$\n";
             close $pid;
-            exec { "/bin/sh" } "qemu-system-stub", "-c", "while :; do sleep 1; done", "$ARGV[0]/disk";
+            exec { "/bin/sh" } "qemu-system-stub", "-c", q{n=0; while kill -0 "$FLTH_TEST_PID" 2>/dev/null && [ "$n" -lt 3600 ]; do sleep 1; n=$((n + 1)); done}, "$ARGV[0]/disk";
         ' "$VAGRANT_DOTFILE_PATH"
         until [ -s "$STUB/qemu.pid" ]; do sleep 0.05; done
         ;;
