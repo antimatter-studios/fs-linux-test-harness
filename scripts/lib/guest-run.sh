@@ -208,9 +208,12 @@ end() {
         umount "$ns" 2>/dev/null || true
     fi
     detach_loops "$ROOTS/$id"
+    # The run is over now, and the consumer's /var/cache is free once it is not ready:
+    # take_var_cache reads that. Deleting a root can take minutes, and a suite restarted
+    # meanwhile should not get an empty directory for it.
+    rm -f "$ns" "$STATE/ready.$id" "$STATE/tree.$id"
     find "$ROOTS/$id" -xdev -delete 2>/dev/null || true
-    rm -f "$ns" "$STATE/ready.$id" "$STATE/tree.$id" "$STATE/lock.$id"
-    # The consumer's /var/cache is free once this run is not ready: take_var_cache reads that.
+    rm -f "$STATE/lock.$id"
     exec 9>&-
 }
 

@@ -118,6 +118,23 @@ new_suite one; third=$SUITE; third_run=$RUN
 : > "$TOOLS"
 FLTH_RUN_ID="$third_run" one exec true
 check_contains "$(cat "$TOOLS")" "mount --bind $keep/join-one/var-cache /var/" "the next run has it back"
+# A RUN'S END FREES WHAT IT HELD BEFORE IT DELETES ITS ROOT, which can take minutes. A
+# suite restarted during that takes the consumer's /var/cache, not an empty one.
+real_find="$(command -v find)"
+cat > "$FLTH_TEST_STUB/bin/find" <<STUB
+#!/bin/sh
+case "\$*" in
+    *-delete*) ls "$FLTH_TEST_STUB/guest-runs" > "$FLTH_TEST_STUB/state-at-delete" ;;
+esac
+exec "$real_find" "\$@"
+STUB
+chmod +x "$FLTH_TEST_STUB/bin/find"
+new_suite one; ending=$SUITE; ending_run=$RUN
+FLTH_RUN_ID="$ending_run" one exec true
+one session-end "$ending" 2>/dev/null
+check_lacks "$(cat "$FLTH_TEST_STUB/state-at-delete")" "ready.$ending_run" "a run is over before its root starts to go"
+rm -f "$FLTH_TEST_STUB/bin/find"
+
 # A suite killed outright holds it only until the next run registers.
 kill -KILL "$third"
 wait "$third" 2>/dev/null
