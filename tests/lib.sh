@@ -108,6 +108,29 @@ stub_calls() { cat "$FLTH_TEST_STUB/calls"; }
 stub_reset_calls() { : > "$FLTH_TEST_STUB/calls"; }
 stub_state() { printf '%s\n' "$1" > "$FLTH_TEST_STUB/state"; }
 
+# A bound on a session that would otherwise hold the suite: after <seconds> it
+# writes <file> and KILLs process group <group>. It sets WATCHDOG.
+#
+# ONLY A WAIT THAT RAN OUT DOES ANYTHING. A KILL to this group can reach the sleep
+# first, and the shell then wakes before its own KILL arrives and runs what comes
+# next (#158). Real sleep: a stub on PATH would fire this at once.
+start_watchdog() {
+    set -m
+    (
+        command -p sleep "$1" && {
+            echo timeout > "$2"
+            kill -KILL -- "-$3" 2>/dev/null
+        }
+    ) > /dev/null 2>&1 &
+    WATCHDOG=$!
+    set +m
+}
+
+stop_watchdog() {
+    kill -KILL -- "-$WATCHDOG" 2>/dev/null
+    wait "$WATCHDOG" 2>/dev/null
+}
+
 finish() {
     local name="$1"
     if [ "$fails" -eq 0 ]; then
