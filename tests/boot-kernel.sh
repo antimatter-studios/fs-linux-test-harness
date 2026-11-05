@@ -87,6 +87,8 @@ if [ "${1:-}" = -eo ] && [ "${2:-}" = args= ]; then
 fi
 exec /bin/ps "$@"
 STUB
+# The script of a provisioning boot, run here by the ssh above (#191).
+printf '#!/bin/sh\nexit 0\n' > "$BIN/sync"
 chmod +x "$BIN"/*
 export PATH="$BIN:$PATH"
 host() {
