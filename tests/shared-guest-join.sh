@@ -73,6 +73,59 @@ check_contains "$(cat "$TOOLS")" "mount --bind $FLTH_TEST_STUB/guest-lib/caches/
 check_eq "$(cached exec 'echo cached')" cached "its calls run"
 check_contains "$(cached config)" "cache.size=none" "and the machine carries nobody's cache disk"
 
+# A CONSUMER'S BUILD STATE OUTLIVES ITS RUNS. /var/cache is where a suite keeps its
+# target directory, so a second run does not build from nothing. It is the consumer's,
+# on the guest's own disk, and only one run of a consumer has it at a time: a second
+# run at once has its own, because two cannot share a target directory safely.
+keep="$FLTH_TEST_STUB/guest-lib/consumers"
+new_suite() {
+    /bin/sleep 300 >/dev/null 2>&1 &
+    SUITE=$!
+    SUITES="$SUITES $SUITE"
+    RUN="$("$1" run-id)"
+    (FLTH_RUN_ID="$RUN" "$1" session-begin "$SUITE") 2>/dev/null
+}
+SUITES=""
+# shellcheck disable=SC2329  # the trap below calls it
+stop_suites() {
+    local pid
+    for pid in $SUITES; do kill -KILL "$pid" 2>/dev/null; done
+    rm -rf "$SANDBOX"
+}
+trap stop_suites EXIT
+: > "$TOOLS"
+new_suite one; first=$SUITE; first_run=$RUN
+FLTH_RUN_ID="$first_run" one exec true
+check_contains "$(cat "$TOOLS")" "mount --bind $keep/join-one/var-cache /var/" "a run has its consumer's /var/cache"
+echo built > "$keep/join-one/var-cache/target"
+new_suite one; second=$SUITE; second_run=$RUN
+: > "$TOOLS"
+FLTH_RUN_ID="$second_run" one exec true
+check_contains "$(cat "$TOOLS")" "mount --bind $FLTH_TEST_STUB/guest-lib/runs/$second_run/var-cache /var/" "a second run at once has its own"
+new_suite two; other=$SUITE; other_run=$RUN
+: > "$TOOLS"
+FLTH_RUN_ID="$other_run" two exec true
+check_contains "$(cat "$TOOLS")" "mount --bind $keep/join-two/var-cache /var/" "another consumer has its own"
+: > "$TOOLS"
+two exec true
+check_lacks "$(cat "$TOOLS")" "$keep/join-two/var-cache" "a call outside any session does not take it"
+one session-end "$first" 2>/dev/null
+check_eq "$(cat "$keep/join-one/var-cache/target" 2>/dev/null)" built "what a run built outlives it"
+one session-end "$second" 2>/dev/null
+two session-end "$other" 2>/dev/null
+new_suite one; third=$SUITE; third_run=$RUN
+: > "$TOOLS"
+FLTH_RUN_ID="$third_run" one exec true
+check_contains "$(cat "$TOOLS")" "mount --bind $keep/join-one/var-cache /var/" "the next run has it back"
+# A suite killed outright holds it only until the next run registers.
+kill -KILL "$third"
+wait "$third" 2>/dev/null
+new_suite one; fourth=$SUITE; fourth_run=$RUN
+: > "$TOOLS"
+FLTH_RUN_ID="$fourth_run" one exec true
+check_contains "$(cat "$TOOLS")" "mount --bind $keep/join-one/var-cache /var/" "and a killed run's is free for the next"
+one session-end "$fourth" 2>/dev/null
+
 # A TREE THE GUEST CANNOT SEE is refused, naming the setting.
 out="$(cd "$SANDBOX/elsewhere" && FLTH_SHARED_ROOT="$SRC" "$VM" up 2>&1)"
 check_eq "$?" 1 "a consumer outside FLTH_SHARED_ROOT is refused"
