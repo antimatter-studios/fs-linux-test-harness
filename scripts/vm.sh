@@ -1103,9 +1103,11 @@ vm_test() {
 # so re-arming cannot stack timers. It is rate-limited by a stamp in the
 # guest's /run, so a test process asking hundreds of questions a minute
 # makes one logind call a minute, not hundreds; the price is that the
-# deadline can fall up to a minute early. A held guest (`vm.sh hold`) is
-# never re-armed. --no-wall, because a person in the guest does not need
-# a broadcast a minute.
+# deadline can fall up to a window early. THE WINDOW FITS INSIDE THE DEADLINE
+# (#152): a sixth of it, at most a minute. A window as long as a one-minute
+# deadline let a call find the stamp fresh with a second of the guest left.
+# A held guest (`vm.sh hold`) is never re-armed. --no-wall, because a person
+# in the guest does not need a broadcast a minute.
 #
 # It never fails the call: a guest whose timer could not be re-armed
 # keeps the one it had, which is the behaviour before this existed.
@@ -1127,8 +1129,14 @@ vm_test() {
 # end was the end of stdin. `set -m` makes the group; it also keeps INT and QUIT
 # from being ignored in the background job.
 REARM_WINDOW_SECS=60
+rearm_window_secs() {
+    local window=$((CFG_vm_deadline_minutes * 60 / 6))
+    [ "$window" -le "$REARM_WINDOW_SECS" ] || window="$REARM_WINDOW_SECS"
+    printf '%s\n' "$window"
+}
 guest_call() {
-    local single="'" escaped="'\\''"
+    local single="'" escaped="'\\''" window
+    window="$(rearm_window_secs)"
     cat <<EOF
 {
 flth_rearm() {
@@ -1137,7 +1145,7 @@ flth_rearm() {
     printf -v now '%(%s)T' -1
     { read -r last < $FLTH_GUEST_REARM_STAMP; } 2>/dev/null || true
     case "\$last" in '' | *[!0-9]*) last=0 ;; esac
-    [ \$((now - last)) -ge $REARM_WINDOW_SECS ] || return 0
+    [ \$((now - last)) -ge $window ] || return 0
     printf '%s\n' "\$now" > $FLTH_GUEST_REARM_STAMP
     shutdown --no-wall -h +$CFG_vm_deadline_minutes >/dev/null 2>&1 ||
         echo "vm: could not re-arm the guest's poweroff deadline; the previous one stands" >&2
