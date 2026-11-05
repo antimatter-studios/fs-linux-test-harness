@@ -50,6 +50,8 @@ new_sandbox() {
     export FLTH_CACHE_DIR="$SANDBOX/cache"
     export FLTH_STATE_DIR="$SANDBOX/state"
     unset FLTH_CONFIG FLTH_KEEP_VM FLTH_SLOT_WAIT FLTH_SLOT_BOOT_GRACE FLTH_SLOT_COUNT
+    # What a guest or a person's shell leaves set, which sends a test somewhere else.
+    unset FLTH_GUEST FLTH_SHARED_ROOT FLTH_SHARED_MEMORY FLTH_SHARED_CPUS FLTH_SHARED_DISK
     # A dead holder is reclaimed on sight unless a test asks for the window it
     # is held to on a real machine: tests/slot-reload.sh does.
     export FLTH_SLOT_ABSENT_GRACE=0
