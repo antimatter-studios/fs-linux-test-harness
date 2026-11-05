@@ -29,7 +29,7 @@ cat > "$BIN/vagrant" <<STUB
 #!/bin/sh
 case "\$1 \$2" in
     "--version "*) echo "Vagrant 2.4.9" ;;
-    "plugin list") printf 'vagrant-qemu-christhomas (0.3.12, global)\nvagrant-notify-forwarder-christhomas (0.6.0, global)\n' ;;
+    "plugin list") printf 'vagrant-qemu-christhomas (0.3.12, global)\n'; cat "$SANDBOX/forwarder-plugin" ;;
     "box list") cat "$SANDBOX/boxes" ;;
 esac
 exit 0
@@ -38,6 +38,7 @@ chmod +x "$BIN"/*
 export PATH="$BIN:$PATH"
 BOX=christhomas/vagrant-rpi-bookworm-arm64
 echo "virtiofsd 1.14.0" > "$SANDBOX/virtiofsd-versions"
+echo 'vagrant-notify-forwarder-christhomas (0.7.7, global)' > "$SANDBOX/forwarder-plugin"
 
 printf '%s (qemu, 1.0.0, (arm64))\n' "$BOX" > "$SANDBOX/boxes"
 out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
@@ -48,6 +49,30 @@ printf 'cloud-image/debian-12 (qemu, 20260909.2596.0, (arm64))\n' > "$SANDBOX/bo
 out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
 check_eq "$?" 0 "a Mac without the box added is ready: its first boot fetches it"
 check_lacks "$out" "the box $BOX" "and is not told to add it by hand"
+
+# The forwarder plugin before 0.7.7 leaves its watchers running after a halt, and
+# they never end by themselves: 60 of them had piled up on one host (#164).
+for v in 0.6.0 0.7.5 0.7.6; do
+    echo "vagrant-notify-forwarder-christhomas ($v, global)" > "$SANDBOX/forwarder-plugin"
+    out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
+    check_eq "$?" 1 "a Mac whose forwarder plugin is $v is not ready"
+    check_contains "$out" "missing: vagrant-notify-forwarder-christhomas 0.7.7 or newer (found '$v')" "  naming the version it needs"
+    check_contains "$out" "vagrant plugin update vagrant-notify-forwarder-christhomas" "  and the command that upgrades it"
+done
+echo 'vagrant-notify-forwarder-christhomas (garbled)' > "$SANDBOX/forwarder-plugin"
+out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
+check_eq "$?" 1 "a forwarder plugin whose version cannot be read is not ready"
+check_contains "$out" "(found 'unreadable')" "  and it says so"
+: > "$SANDBOX/forwarder-plugin"
+out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
+check_eq "$?" 1 "a Mac with no forwarder plugin is not ready"
+check_contains "$out" "vagrant plugin install vagrant-notify-forwarder-christhomas" "  and it is told to install it"
+for v in 0.7.7 0.7.8 0.8.0 1.0.0; do
+    echo "vagrant-notify-forwarder-christhomas ($v, global)" > "$SANDBOX/forwarder-plugin"
+    bash "$REPO/scripts/host-tools.sh" >/dev/null 2>&1
+    check_eq "$?" 0 "a Mac whose forwarder plugin is $v is ready"
+done
+echo 'vagrant-notify-forwarder-christhomas (0.7.7, global)' > "$SANDBOX/forwarder-plugin"
 
 # virtiofsd before 1.14.0 read an arm64 guest's O_DIRECT as O_DIRECTORY.
 printf '%s (qemu, 1.0.0, (arm64))\n' "$BOX" > "$SANDBOX/boxes"
