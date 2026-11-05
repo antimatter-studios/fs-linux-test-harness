@@ -179,6 +179,19 @@ engine_vm_status() {
     [ -f "$STUB/vm_status" ] && cat "$STUB/vm_status"
 }
 
+# What the guest would report to the watchdog.
+#   report         the report, as vagrant/guest/watchdog-probe.sh writes it
+#   report_cmd     a script run for each report instead
+#   report_silent  present: the guest does not answer
+engine_guest_report() {
+    [ ! -f "$STUB/report_silent" ] || return 1
+    if [ -f "$STUB/report_cmd" ]; then
+        env STUB="$STUB" bash "$STUB/report_cmd"
+        return
+    fi
+    cat "$STUB/report" 2>/dev/null
+}
+
 engine_guest_answers() {
     stub_log guest-answers
     if [ -f "$STUB/ends_on_probe" ]; then

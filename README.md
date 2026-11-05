@@ -463,6 +463,12 @@ relative, and must not leave the repository.
 | `FLTH_SLOT_RENEW_SECS` | a third of the boot grace | Seconds between renewals of a holder's lease while a boot attempt runs. |
 | `FLTH_SHARED_ROOT` | unset | A host directory holding every tree that shares the guest: suites use one guest shared with other consumers instead of a VM of their own. See [One guest for several consumers](#one-guest-for-several-consumers). |
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | `8G`, `8`, `64G` | The size of that one guest. |
+| `FLTH_WATCHDOG` | on | `off` starts no [watchdog](#what-stops-a-vm) with a guest. |
+| `FLTH_WATCHDOG_INTERVAL` | `60` | Seconds between the watchdog's looks at a guest. |
+| `FLTH_WATCHDOG_WARN_SECS` | `300` | Seconds a process goes in uninterruptible sleep with no progress before it is warned of. |
+| `FLTH_WATCHDOG_STUCK_SECS` | `1800` | The same, before the watchdog ends the guest. |
+| `FLTH_WATCHDOG_SILENT_SECS` | `600` | Seconds a guest goes without answering before the watchdog ends it. |
+| `FLTH_WATCHDOG_LOW_PERCENT` | `5` | Memory or disk left, as a percentage, below which it warns. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
 | `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
 | `FLTH_FIRMWARE_CODE`, `FLTH_FIRMWARE_VARS` | `/usr/share/AAVMF/AAVMF_{CODE,VARS}.fd` | UEFI firmware for arm64 guests on a Linux host. |
@@ -951,6 +957,20 @@ In order of precision:
    shutdown's last five minutes does not stop the harness reaching the guest:
    `deadline.sh` comments `pam_nologin` out of the guest's `/etc/pam.d/sshd`. The
    one net that works when the host process is hung or killed.
+
+4. **The watchdog** — one process on the host for a running guest, started with it
+   and ended with it. Each minute it asks the guest about memory, disk and processes
+   in uninterruptible sleep, and writes what it sees to `watchdog.log` in the machine
+   directory; `chore vm:status` shows the last of it. A warning names the process and
+   its suite and stops nothing. So does what the kernel writes on the console, which
+   is read on the host: an oops, a soft lockup, a hung task, an RCU stall or a panic,
+   and a taint that says one happened. A guest that has stopped answering, or a process that
+   has made no progress past its limit, which only a reboot can clear, ends the guest
+   and frees the slot, whichever suite it belongs to. Every suite on that guest then
+   ends with **status 75** and a message naming the reason, so an interrupted run is
+   not read as a failure of what it was testing. A process doing heavy I/O is in the
+   same sleep for hours, so progress is measured by its time on the CPU and its bytes
+   read and written, not by the state alone. The limits are settings.
 
 `hold` (and `chore vm:up`) opts out of a session's end, 2 and 3 for a
 person working in the guest: the VM stays up, and keeps the slot, until

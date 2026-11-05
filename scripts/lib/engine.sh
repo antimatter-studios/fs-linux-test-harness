@@ -83,6 +83,9 @@
 #                              Non-zero, and nothing, when it does not answer.
 #   engine_guest_answers       exit 0 when the guest answers a new connection
 #                              within a limit
+#   engine_guest_report        what vagrant/guest/watchdog-probe.sh says in the
+#                              guest, within a limit. Non-zero when the guest
+#                              did not answer in time.
 #   engine_overlay_dir         print the directory holding a disposable
 #                              boot's overlay
 
