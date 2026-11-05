@@ -38,7 +38,16 @@ echo "$1" >> "$STUBDIR/waits"
 STUB
 printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n' > "$BIN/uname"
 # Nothing reaches a shell: a guest script names the guest's own fixed paths.
-printf '#!/bin/sh\n[ -t 0 ] || cat > /dev/null\nexit 0\n' > "$BIN/ssh"
+cat > "$BIN/ssh" <<'STUB'
+#!/bin/sh
+# To the end of the script, not of stdin: a call into the guest holds stdin open
+# for as long as it lives, and ends its script with this line.
+[ ! -t 0 ] || exit 0
+while IFS= read -r line; do
+    [ "$line" != 'exit "$flth_status"' ] || break
+done
+exit 0
+STUB
 
 # `up` runs the answers in $STUBDIR/answers in turn, one line each, then boots.
 # `slow` takes a few real seconds to give the next answer.

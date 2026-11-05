@@ -11,7 +11,15 @@ VM="$SANDBOX/harness/scripts/vm.sh"
 export STUB="$SANDBOX/stub"
 printf '#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo arm64 ;; esac\n' > "$SANDBOX/bin/uname"
 printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/pgrep"
-printf '#!/bin/sh\ncat >/dev/null\n' > "$SANDBOX/bin/ssh"
+cat > "$SANDBOX/bin/ssh" <<'STUB'
+#!/bin/sh
+# To the end of the script, not of stdin: a call into the guest holds stdin open
+# for as long as it lives, and ends its script with this line.
+while IFS= read -r line; do
+    [ "$line" != 'exit "$flth_status"' ] || break
+done
+exit 0
+STUB
 ln -s "$BASH" "$SANDBOX/bin/bash"
 cat > "$SANDBOX/bin/vagrant" <<'STUB'
 #!/usr/bin/env bash

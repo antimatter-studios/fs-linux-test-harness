@@ -48,7 +48,11 @@ ln -s "$BASH" "$BIN/bash"
 printf '#!/bin/sh\nexit 1\n' > "$BIN/pgrep"
 cat > "$BIN/ssh" <<'STUB'
 #!/bin/sh
-cat > /dev/null
+# To the end of the script, not of stdin: a call into the guest holds stdin open
+# for as long as it lives, and ends its script with this line.
+while IFS= read -r line; do
+    [ "$line" != 'exit "$flth_status"' ] || break
+done
 exit 0
 STUB
 cat > "$BIN/vagrant" <<'STUB'

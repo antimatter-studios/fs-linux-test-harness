@@ -163,10 +163,12 @@ printf '%s\n' '$hash' > \"\$stamp\"
 echo applied"
 
     rc=0
-    out="$(engine_run "$guest")" || rc=$?
+    # Through guest_call_held, so the call re-arms the guest's deadline as it starts
+    # and as it ends (#150): a setup that ends just inside a short deadline still
+    # leaves the whole of it to reach the first command.
+    out="$(guest_call_held "$guest")" || rc=$?
     if [ "$rc" -ne 0 ]; then
         rm -f "$host_stamp"
-        [ "$rc" -ne 255 ] || report_lost_guest
         echo "vm: the setup script ($CFG_setup_script) failed inside the VM." >&2
         echo "    The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
         exit 1
@@ -596,9 +598,14 @@ report_lost_guest() {
 }
 
 # A call into the guest. Keeps its status, and reports when that is ssh's own.
-guest_run() {
+guest_run() { guest_call_held "$(guest_call_script "$1")"; }
+
+# The same, outside any run of a shared guest. A setup is what makes the tools every
+# run uses, and it enters a namespace of its own (`run.sh setup`), so it must not go
+# through a run, whose private directories would keep what it installs (#150).
+guest_call_held() {
     local rc=0 script
-    script="$(guest_call "$(guest_call_script "$1")")" || return
+    script="$(guest_call "$1")" || return
     engine_run_held "$script" || rc=$?
     [ "$rc" -ne 255 ] || report_lost_guest
     return "$rc"

@@ -405,6 +405,10 @@ prints `PASS  <name> (N checks)` and sets the exit status.
 - **`deadline_minutes` is an idle timeout.** Every `run` and `exec` re-arms it
   as the call starts and ends, so a single call longer than it (a whole
   `guest-test` run is one call) is still cut off.
+- **A scheduled shutdown would refuse logins.** logind writes `/run/nologin`
+  for the last five minutes, and a deadline of five or less is inside them from
+  the start, so `deadline.sh` takes `pam_nologin` out of the guest's sshd
+  stack (#150). A smoke consumer with a five-minute deadline holds it to that.
 - **Unix socket paths are limited to about 104 bytes.** Sockets the harness
   makes live under `FLTH_STATE_DIR`, never under the caller's `TMPDIR`.
   `FLTH_STATE_DIR` also holds the machine-wide slot, so moving it for one
