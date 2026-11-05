@@ -862,7 +862,7 @@ machine and waits for the slot. Its size comes from `FLTH_SHARED_MEMORY`,
 `FLTH_SHARED_CPUS` and `FLTH_SHARED_DISK`, not from a consumer's `[vm]` section. Each
 consumer's `[setup]` script runs when that consumer first joins a boot, one at a time,
 and tools install alongside each other. Nothing merges the scripts, and two versions
-of one tool are not provided for. Setup stays with the boot: the disk is never
+of one tool are not provided for. A setup that installs a kernel the guest is not running fails that consumer's join, naming both kernels, because a shared guest does not restart for one consumer; such a consumer runs on a guest of its own. Setup stays with the boot: the disk is never
 provisioned, so after the guest stops each consumer's setup runs again when it joins.
 
 **The guest stays up between runs**, so a run does not pay for a boot or wait for the
