@@ -143,6 +143,9 @@ stub_guest_paths() {
         sed -e "s|/var/lib/fs-linux-test-harness|$STUB/guest-lib|g" \
             -e "s|/run/fs-linux-test-harness-held|$STUB/guest-held|g" \
             -e "s|/run/fs-linux-test-harness-rearmed|$STUB/guest-rearmed|g" \
+            -e "s|/run/fs-linux-test-harness-runs|$STUB/guest-runs|g" \
+            -e "s|/proc/|$STUB/guest-proc/|g" \
+            -e "s|/etc/ssh/|$STUB/guest-etc-ssh/|g" \
             -e "s|/repo|$STUB/guest-repo|g" \
             -e "s|/cache\\([/ ']\\)|$STUB/guest-cache\\1|g" -e "s|/cache\$|$STUB/guest-cache|"
 }

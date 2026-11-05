@@ -20,9 +20,10 @@
 #   vm.sh config           print the resolved configuration
 #
 # NOT IN THE USAGE, AND NO CHORE TASK, ON PURPOSE: `session-begin <pid>`,
-# `session-end <pid>` and `boot-finished` are vm-session.sh's plumbing, the calls
-# that make a session visible to the reaper and tell it whether there is a VM it
-# may keep. A person has no reason to run them, so
+# `session-end <pid>`, `boot-finished`, `run-id` and `guest-tree` are vm-session.sh's
+# and guest-test's plumbing, the calls that make a session visible to the reaper,
+# tell it whether there is a VM it may keep and set up a run on a shared guest. A
+# person has no reason to run them, so
 # they stay out of the list above, which is what tests/generic.sh reads as
 # the public commands every one of which needs a task in vm.chores.yml.
 #
@@ -220,6 +221,9 @@ unfinished_boot_marker() { printf '%s/boot-unfinished\n' "$FLTH_MACHINE_DIR"; }
 boot_vm() {
     : > "$(unfinished_boot_marker)" || return
     boot_engine "$@" || return
+    if flth_shared; then
+        shared_prepare_guest || return
+    fi
     rm -f "$(unfinished_boot_marker)"
 }
 
@@ -552,12 +556,15 @@ report_lost_guest() {
         echo "vm: $free MB free on the host's disk holding the overlay ($dir)${overlay:+; the overlay is $overlay}." >&2
     fi
     show_console "$LOST_GUEST_CONSOLE_LINES"
+    if flth_shared && [ "$answered" = 0 ]; then
+        echo "vm: this guest is shared, so every suite using it lost it too: $(shared_suites)." >&2
+    fi
 }
 
 # A call into the guest. Keeps its status, and reports when that is ssh's own.
 guest_run() {
     local rc=0 script
-    script="$(guest_call "$1")" || return
+    script="$(guest_call "$(guest_call_script "$1")")" || return
     engine_run_held "$script" || rc=$?
     [ "$rc" -ne 255 ] || report_lost_guest
     return "$rc"
@@ -881,17 +888,18 @@ record_boot_invocation() {
 # The pids of live sessions on this machine, one per line, except $1.
 # Markers whose process is gone are removed on the way.
 live_sessions() {
-    local except="${1:-}" dir marker pid start now
+    local except="${1:-}" dir marker pid start now run
     dir="$(sessions_dir)"
     [ -d "$dir" ] || return 0
     for marker in "$dir"/*; do
         [ -f "$marker" ] || continue
-        IFS=$'\t' read -r pid start _ < "$marker" || true
+        IFS=$'\t' read -r pid start _ run < "$marker" || true
         case "$pid" in '' | *[!0-9]*) rm -f "$marker"; continue ;; esac
         [ "$pid" = "$except" ] && continue
         now="$(process_start "$pid")"
         if [ -z "$now" ] || [ "$now" != "$start" ]; then
             rm -f "$marker"
+            shared_run_gone "$run"
             continue
         fi
         printf '%s\n' "$pid"
@@ -917,10 +925,13 @@ vm_session_begin() {
 # person was working in took it down. A session ends exactly as reap
 # would treat it: a held VM stays up, and keeps its slot.
 vm_session_end() {
-    local pid="$1" others
+    local pid="$1" others run=""
+    if flth_shared; then
+        run="$(cut -f4 "$(sessions_dir)/$pid" 2>/dev/null || true)"
+    fi
     rm -f "$(sessions_dir)/$pid"
     if flth_shared; then
-        shared_session_ended "$pid"
+        shared_session_ended "$pid" "$run"
         return 0
     fi
     if stop_unfinished_boot; then
@@ -967,8 +978,86 @@ vm_session_end() {
 # leaves the guest up, as it would have a moment earlier.
 shared_register() {
     up_lock_take
-    printf '%s\t%s\t%s\n' "$1" "$2" "$CFG_project_name" > "$(sessions_dir)/$1"
+    printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$CFG_project_name" "$(shared_run_id)" > "$(sessions_dir)/$1"
     up_lock_drop
+}
+
+# WHICH RUN THIS CALL BELONGS TO. A session names one in the environment of what it
+# starts, led by a hash of the tree it is for, because a suite that drives another
+# consumer's harness calls must not land in this one's run. A call outside any
+# session belongs to its worktree's standing run, which lasts as long as the guest:
+# a `chore vm:exec` by hand still finds what the last one left.
+shared_run_prefix() { flth_hash8 "$FLTH_ROOT"; }
+
+shared_run_id() {
+    local prefix
+    prefix="$(shared_run_prefix)"
+    case "${FLTH_RUN_ID:-}" in
+        "$prefix"-*[!a-z0-9-]*) ;;
+        "$prefix"-?*) printf '%s\n' "$FLTH_RUN_ID"; return 0 ;;
+    esac
+    printf '%s-worktree\n' "$prefix"
+}
+
+# What a session names, for itself and everything it starts.
+shared_new_run_id() {
+    local inherited
+    inherited="$(shared_run_id)"
+    case "$inherited" in
+        *-worktree) ;;
+        *) printf '%s\n' "$inherited"; return 0 ;;
+    esac
+    printf '%s-%s\n' "$(shared_run_prefix)" "$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+}
+
+# The words after a run's id on lib/guest-run.sh's command line: where its tree and
+# its share are in the guest, and its cache.
+shared_run_places() {
+    printf '%s %s -' "$FLTH_REPO_GUEST" "$FLTH_SHARE_GUEST"
+}
+
+shared_in_run() {
+    printf 'bash %s/run.sh enter %s %s %s\n' "$FLTH_GUEST_RUNS" "$(shared_run_id)" "$(shared_run_places)" \
+        "$(quote_for_guest "$1")"
+}
+
+# Whether a call into the guest goes in the run. Off, it goes as it always has.
+guest_call_script() {
+    if flth_shared; then
+        shared_in_run "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+# A guest-test's run has its own copy of the tree (lib/guest-run.sh).
+vm_guest_tree() {
+    engine_run "bash $FLTH_GUEST_RUNS/run.sh tree $(shared_run_id) $(shared_run_places) $(quote_for_guest "$CFG_share_dir")" >&2
+}
+
+# The tool the calls above use, on every boot: the disk it would be kept on is
+# thrown away with the boot, and so is /run. Before the boot counts as finished.
+shared_prepare_guest() {
+    engine_run "mkdir -p $FLTH_GUEST_RUNS
+cat > $FLTH_GUEST_RUNS/run.sh <<'FLTH_GUEST_RUN_END'
+$(cat "$FLTH_HARNESS/scripts/lib/guest-run.sh")
+FLTH_GUEST_RUN_END
+bash $FLTH_GUEST_RUNS/run.sh prepare" >&2
+}
+
+# A run nobody is on the list for any more: stop what it left and delete its root,
+# if the guest is there to ask. Nothing depends on this having worked. What it fails
+# to free goes with the boot.
+shared_run_gone() {
+    local run="$1" marker
+    [ -n "$run" ] || return 0
+    for marker in "$(sessions_dir)"/*; do
+        [ -f "$marker" ] || continue
+        [ "$(cut -f4 "$marker" 2>/dev/null || true)" != "$run" ] || return 0
+    done
+    engine_alive "$(engine_identity)" || return 0
+    engine_run "bash $FLTH_GUEST_RUNS/run.sh end $run" >&2 ||
+        echo "vm: run $run could not be cleaned up in the guest; what it left goes when the guest stops." >&2
 }
 
 # The live suites, as `name (pid N)`, comma-separated.
@@ -988,6 +1077,7 @@ shared_session_ended() {
     if stop_unfinished_boot; then
         return 0
     fi
+    shared_run_gone "$2"
     engine_alive "$(engine_identity)" || alive=$?
     [ "$alive" -eq 1 ] || return 0
     up_lock_try || return 0
@@ -1173,6 +1263,19 @@ vm_test() {
     [ -n "$CFG_test_command" ] ||
         flth_die "$FLTH_CONFIG has no [test] command"
     cd "$FLTH_ROOT"
+    # ON A SHARED GUEST THE SESSION STAYS ABLE TO HEAR A SIGNAL. A script that sources
+    # the session has its command in the foreground, so a TERM to that shell alone
+    # waits for the command, for the length of the suite. Here a signal to one suite
+    # has to stop it while others run, and a session running a command passes it on.
+    if flth_shared; then
+        FLTH_VM="$SELF" FLTH_SHARE_HOST="$FLTH_SHARE_HOST" FLTH_SHARE_GUEST="$FLTH_SHARE_GUEST" \
+        FLTH_TEST_COMMAND="$CFG_test_command" \
+            exec "$FLTH_HARNESS/scripts/vm-session.sh" bash -c '
+                "$FLTH_VM" up || exit
+                exec bash -c "$FLTH_TEST_COMMAND \"\$@\"" flth-test "$@"
+            ' flth-session "$@"
+    fi
+    cd "$FLTH_ROOT"
     FLTH_VM="$SELF" FLTH_SHARE_HOST="$FLTH_SHARE_HOST" FLTH_SHARE_GUEST="$FLTH_SHARE_GUEST" \
     FLTH_TEST_COMMAND="$CFG_test_command" \
         exec bash -c '
@@ -1338,6 +1441,14 @@ vm_guest_test() {
     for arg in "$@"; do
         script="$script $(quote_for_guest "$arg")"
     done
+    if flth_shared; then
+        FLTH_VM="$SELF" FLTH_GUEST_SCRIPT="$script" \
+            exec "$FLTH_HARNESS/scripts/vm-session.sh" bash -c '
+                "$FLTH_VM" up || exit
+                "$FLTH_VM" guest-tree || exit
+                exec "$FLTH_VM" exec "$FLTH_GUEST_SCRIPT"
+            '
+    fi
     FLTH_VM="$SELF" FLTH_GUEST_SCRIPT="$script" \
         exec bash -c '
             . "$1"
@@ -1393,7 +1504,7 @@ case "$command" in
         shift
         exec "$(dirname "$SELF")/vm-session.sh" "$@"
         ;;
-    up | run | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | boot-finished) ;;
+    up | run | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | boot-finished | run-id | guest-tree) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -1438,6 +1549,8 @@ case "$command" in
     destroy) vm_destroy ;;
     config) vm_config ;;
     boot-finished) vm_boot_finished ;;
+    run-id) shared_new_run_id ;;
+    guest-tree) vm_guest_tree ;;
     session-begin | session-end)
         if [ $# -ne 1 ] || ! [[ "$1" =~ ^[1-9][0-9]*$ ]]; then
             flth_die "usage: vm.sh $command <pid>"

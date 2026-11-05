@@ -70,6 +70,10 @@
 # The consumer is resolved when the session begins, not when the trap
 # fires: the script may have changed directory by then.
 #
+# ON A SHARED GUEST A SESSION IS A RUN (FLTH_SHARED_ROOT). Its id is in the environment
+# of everything the session starts, so every call into the guest finds the run's own
+# root and mounts. A session inside a session belongs to the same run.
+#
 # THE SESSION IS VISIBLE TO THE REAPER. Beginning one records the
 # session's process on the machine (`vm.sh session-begin`), so `vm.sh
 # reap` — which any other chore invocation runs — leaves the VM alone
@@ -104,6 +108,9 @@ fi
 # `exit` when run, `return` when sourced: a `return` outside a function
 # or a sourced file is an error bash reports and then carries on past.
 if ! { FLTH_CONFIG="$(flth_find_config)" && export FLTH_CONFIG &&
+    { [ -z "${FLTH_SHARED_ROOT:-}" ] || {
+        FLTH_RUN_ID="$("$_flth_session_scripts/vm.sh" run-id)" && export FLTH_RUN_ID
+    }; } &&
     "$_flth_session_scripts/vm.sh" session-begin "$$"; }; then
     [ "$_flth_session_run" = 1 ] && exit 1
     return 1

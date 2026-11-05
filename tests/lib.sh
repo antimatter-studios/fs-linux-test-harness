@@ -98,10 +98,44 @@ make_stub_harness() {
     mkdir -p "$FLTH_TEST_STUB/bin"
     printf '#!/bin/sh\nexit 0\n' > "$FLTH_TEST_STUB/bin/sleep"
     printf '#!/bin/sh\necho "shutdown $*" >> "%s/calls"\nexit 0\n' "$FLTH_TEST_STUB" > "$FLTH_TEST_STUB/bin/shutdown"
+    make_stub_guest_tools
     chmod +x "$FLTH_TEST_STUB/bin/"*
     echo absent > "$FLTH_TEST_STUB/state"
     : > "$FLTH_TEST_STUB/calls"
     export PATH="$FLTH_TEST_STUB/bin:$PATH"
+}
+
+# What scripts/lib/guest-run.sh calls on a shared guest. The stub engine runs it on
+# this host, so nothing here may touch this host's mounts. Each one logs its call.
+# `nsenter` runs what it is given in this host's namespace, except that it answers
+# `readlink` with a namespace named for the run, which tests/shared-guest-run.sh
+# gives its stand-in processes under guest-proc.
+make_stub_guest_tools() {
+    local tool
+    for tool in mount umount mountpoint systemctl flock losetup tar; do
+        printf '#!/bin/sh\necho "%s $*" >> "%s/guest-tools"\n' "$tool" "$FLTH_TEST_STUB" > "$FLTH_TEST_STUB/bin/$tool"
+    done
+    printf 'exit 1\n' >> "$FLTH_TEST_STUB/bin/mountpoint"
+    printf 'cat "%s/losetup_list" 2>/dev/null\nexit 0\n' "$FLTH_TEST_STUB" >> "$FLTH_TEST_STUB/bin/losetup"
+    cat > "$FLTH_TEST_STUB/bin/unshare" <<STUB
+#!/bin/sh
+echo "unshare \$*" >> "$FLTH_TEST_STUB/guest-tools"
+: > "\${1#--mount=}"
+shift 3
+exec "\$@"
+STUB
+    cat > "$FLTH_TEST_STUB/bin/nsenter" <<STUB
+#!/bin/sh
+echo "nsenter \$*" >> "$FLTH_TEST_STUB/guest-tools"
+ns="\${1#--mount=}"
+while [ "\$1" != -- ]; do shift; done
+shift
+if [ "\$1" = readlink ]; then
+    echo "mnt:[\${ns##*/}]"
+    exit 0
+fi
+exec "\$@"
+STUB
 }
 
 stub_calls() { cat "$FLTH_TEST_STUB/calls"; }
