@@ -237,6 +237,84 @@ up_lock_drop() {
 # reaper stop it whatever would have kept a VM, and `up` replaces it.
 unfinished_boot_marker() { printf '%s/boot-unfinished\n' "$FLTH_MACHINE_DIR"; }
 
+# THE WATCHDOG (scripts/vm-watchdog.sh, #190). In a session of its own, so a signal to
+# what booted the guest does not reach it, and holding nothing of its caller's open:
+# the up lock's descriptors are how a dead `up` is noticed.
+WATCHDOG_STATUS=75
+watchdog_record() { printf '%s/watchdog-ended\n' "$FLTH_MACHINE_DIR"; }
+watchdog_told() { printf '%s/watchdog-told\n' "$FLTH_MACHINE_DIR"; }
+
+watchdog_start() {
+    [ "${FLTH_WATCHDOG:-on}" != off ] || return 0
+    watchdog_stop
+    rm -f "$(watchdog_record)"
+    # The parent records the pid before it exits, so a stop straight after this finds it.
+    perl -MPOSIX -e '
+        my $record = shift;
+        my $child = fork;
+        if ($child) { open my $file, ">", $record or exit 1; print {$file} "$child\n"; close $file; exit 0; }
+        POSIX::setsid();
+        exec @ARGV or exit 127;
+    ' "$FLTH_MACHINE_DIR/watchdog.pid" bash "$FLTH_HARNESS/scripts/vm-watchdog.sh" \
+        </dev/null >/dev/null 2>&1 5<&- 6>&- 7<&- 8>&- 9>&- || true
+}
+
+watchdog_stop() {
+    local pid
+    pid="$(cat "$FLTH_MACHINE_DIR/watchdog.pid" 2>/dev/null || true)"
+    rm -f "$FLTH_MACHINE_DIR/watchdog.pid"
+    case "$pid" in '' | *[!0-9]*) return 0 ;; esac
+    # A pid on record can belong to something else by now.
+    case "$(ps -o args= -p "$pid" 2>/dev/null || true)" in
+        *vm-watchdog.sh*) kill -TERM "$pid" 2>/dev/null || true ;;
+    esac
+}
+
+# The reason a watchdog gave, for whatever asks after it ended the guest.
+watchdog_explain() {
+    local reason="$1"
+    echo "vm: the watchdog ended this guest: $reason." >&2
+    echo "    This is not a failure of the suite: it could not finish. Run it again; the next call boots a new guest." >&2
+}
+
+# Called by the watchdog. The record goes first, so anything that loses the guest from
+# here on can say why. The guest is forced down, since a graceful stop waits on what
+# is stuck, and the suites are stopped once it has gone, so that none of them boots
+# another guest in its place.
+vm_watchdog_end() {
+    local reason="$1" marker pid start have_lock=0 pids="" told
+    told="$(watchdog_told)"
+    printf '%s\n' "$reason" > "$(watchdog_record)"
+    mkdir -p "$told"
+    for marker in "$(sessions_dir)"/*; do
+        [ -f "$marker" ] || continue
+        IFS=$'\t' read -r pid start _ < "$marker" || true
+        case "$pid" in '' | *[!0-9]*) continue ;; esac
+        [ "$(process_start "$pid" || true)" = "$start" ] || continue
+        printf '%s\n' "$reason" > "$told/$pid"
+        pids="$pids $pid"
+    done
+    if up_lock_try; then have_lock=1; fi
+    rm -f "$FLTH_MACHINE_DIR/watchdog.pid"
+    engine_down --force >/dev/null 2>&1 || true
+    release_if_confirmed_stopped || true
+    [ "$have_lock" = 0 ] || up_lock_drop
+    for pid in $pids; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+}
+
+# Asked by a session as it ends: prints `told`, having said why on stderr, if the
+# watchdog ended it. Printed rather than a status, so that only a yes is a yes.
+vm_watchdog_told() {
+    local file
+    file="$(watchdog_told)/$1"
+    [ -f "$file" ] || return 0
+    watchdog_explain "$(cat "$file")"
+    rm -f "$file"
+    echo told
+}
+
 boot_vm() {
     : > "$(unfinished_boot_marker)" || return
     boot_engine "$@" || return
@@ -610,6 +688,10 @@ guest_call_held() {
     script="$(guest_call "$1")" || return
     engine_run_held "$script" || rc=$?
     [ "$rc" -ne 255 ] || report_lost_guest
+    if [ "$rc" -eq 255 ] && [ -f "$(watchdog_record)" ]; then
+        watchdog_explain "$(cat "$(watchdog_record)")"
+        rc="$WATCHDOG_STATUS"
+    fi
     return "$rc"
 }
 
@@ -698,6 +780,7 @@ boot_engine() {
             if identity="$(engine_boot_identity)" && [ -n "$identity" ]; then
                 printf '%s\n' "$identity" > "$(mounted_worktree_boot_record)" || return
             fi
+            watchdog_start
             return 0
         fi
         # No VM from here to the next attempt, and that attempt may have lasted
@@ -818,6 +901,7 @@ release_if_confirmed_stopped() {
 
 vm_down() {
     rm -f "$FLTH_HOLD"
+    watchdog_stop
     # The engine's own exit status is not the answer; the state is. This
     # runs as a chore `defer:`, where its exit status is the only thing
     # between a leaked VM and a green run.
@@ -1413,8 +1497,17 @@ vm_status() {
             if flth_shared; then
                 echo "vm: in use by: $(shared_suites)"
             fi
+            if [ -s "$FLTH_MACHINE_DIR/watchdog.last" ]; then
+                echo "vm: watchdog: $(cat "$FLTH_MACHINE_DIR/watchdog.last")"
+            fi
             ;;
-        *) echo "vm: $CFG_project_name is not running ($state)"; exit 1 ;;
+        *)
+            echo "vm: $CFG_project_name is not running ($state)"
+            if [ -f "$(watchdog_record)" ]; then
+                echo "vm: the watchdog ended it: $(cat "$(watchdog_record)")"
+            fi
+            exit 1
+            ;;
     esac
 }
 
@@ -1577,6 +1670,10 @@ EOF
 # the setup script cannot change while it runs.
 vm_exec() {
     if ! engine_alive "$(engine_identity)"; then
+        if [ -f "$(watchdog_record)" ]; then
+            watchdog_explain "$(cat "$(watchdog_record)")"
+            exit "$WATCHDOG_STATUS"
+        fi
         echo "vm: $CFG_project_name's VM is not running, and 'exec' never boots one." >&2
         echo "    Bring it up for the run first ('chore vm:up', which also holds it)," >&2
         echo "    or use 'chore vm:run -- <command>', which boots on demand." >&2
@@ -1672,7 +1769,7 @@ case "$command" in
         shift
         exec "$(dirname "$SELF")/vm-session.sh" "$@"
         ;;
-    up | run | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | boot-finished | run-id | guest-tree) ;;
+    up | run | watchdog-end | watchdog-told | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | boot-finished | run-id | guest-tree) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -1718,6 +1815,8 @@ case "$command" in
     destroy) vm_destroy ;;
     config) vm_config ;;
     boot-finished) vm_boot_finished ;;
+    watchdog-end) vm_watchdog_end "$1" ;;
+    watchdog-told) vm_watchdog_told "$1" ;;
     run-id) shared_new_run_id ;;
     guest-tree) vm_guest_tree ;;
     session-begin | session-end)

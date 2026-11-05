@@ -69,6 +69,8 @@ case "$SMOKE_GUEST" in
     *) echo "smoke: FLTH_SMOKE_GUEST must be debian-12 or debian-13, got '$SMOKE_GUEST'" >&2; exit 2 ;;
 esac
 unset FLTH_KEEP_VM
+# Looks often enough to be seen here, with the limits as a consumer gets them.
+export FLTH_WATCHDOG_INTERVAL=5
 
 fails=0
 passes=0
@@ -205,6 +207,18 @@ check_eq "$("$VM" run 'test -r /run/systemd/shutdown/scheduled && echo armed' 2>
 check_eq "$("$VM" run 'test -r /run/systemd/shutdown/scheduled && echo armed' 2>/dev/null)" armed \
     "a call re-arms the deadline as it ends, on the guest's real logind (cancelled, then re-armed by the same call)"
 "$VM" run 'uname -a; cat /etc/debian_version; nproc; free -m | sed -n 2p; df -h / | tail -1' 2>/dev/null | sed 's/^/  guest: /'
+
+step "watchdog: the guest's own tools answer it (#190)"
+probe_out="$("$VM" run "$(cat "$REPO/vagrant/guest/watchdog-probe.sh")" 2>/dev/null)"
+check_contains "$probe_out" "mem " "the probe reads the guest's memory"
+check_contains "$probe_out" "disk " "and its disk"
+attempt=0
+until "$VM" status 2>/dev/null | grep -q 'vm: watchdog: .* ok: ' || [ "$attempt" -ge 24 ]; do
+    sleep 5
+    attempt=$((attempt + 1))
+done
+check_contains "$("$VM" status 2>&1)" "vm: watchdog:" "a watchdog started with the guest, and status shows what it sees"
+check_contains "$("$VM" status 2>&1)" " ok: the guest answers" "and a guest doing nothing reads as ok"
 
 step "disposable: what a run leaves behind goes with its boot"
 # The oracles are the guest's own losetup and findmnt, and the disk's

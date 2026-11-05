@@ -723,6 +723,19 @@ engine_guest_answers() {
         -T default true </dev/null >/dev/null 2>&1
 }
 
+# The watchdog's question (#190). A connection of its own, as above, since the shared
+# one can be what has gone wrong, and a limit, since a call into a stuck guest can sit
+# for ever.
+ENGINE_VAGRANT_REPORT_LIMIT=30
+engine_guest_report() {
+    local cfg
+    cfg="$(engine_ssh_config)" || return 1
+    perl -e 'alarm shift; exec @ARGV or exit 127' "$ENGINE_VAGRANT_REPORT_LIMIT" \
+        ssh -F "$cfg" -o ControlPath=none -o ConnectTimeout="$ENGINE_VAGRANT_ANSWER_LIMIT" \
+        -T default "sudo FLTH_GUEST_RUNS=$FLTH_GUEST_RUNS bash -s" \
+        < "$FLTH_HARNESS/vagrant/guest/watchdog-probe.sh" 2>/dev/null
+}
+
 # Where engine_up points QEMU's TMPDIR.
 engine_overlay_dir() {
     # shellcheck disable=SC2153  # FLTH_STATE_DIR, set in lib/common.sh

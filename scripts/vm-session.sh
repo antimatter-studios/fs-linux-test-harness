@@ -121,6 +121,11 @@ flth_session_end() {
     # Cleared first: a failing `down` must not re-enter this.
     trap - EXIT
 
+    # An interrupted run is not to be read as a failure of what it was testing (#190).
+    if [ "$("$_flth_session_scripts/vm.sh" watchdog-told "$$")" = told ]; then
+        code=75
+    fi
+
     if [ "${FLTH_KEEP_VM:-0}" = "1" ] && "$_flth_session_scripts/vm.sh" boot-finished; then
         echo "[vm] FLTH_KEEP_VM=1 — leaving the VM running, as asked." >&2
         exit "$code"
