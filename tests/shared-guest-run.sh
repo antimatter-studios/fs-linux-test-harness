@@ -144,7 +144,9 @@ check_eq "$([ -e "$root_b" ] && echo left)" "" "and its root is deleted"
 begin_suite two; L=$SUITE
 one exec 'exit 255' 2>"$SANDBOX/lost"
 check_eq "$?" 255 "a lost connection keeps its status"
-check_contains "$(cat "$SANDBOX/lost")" "every suite using it lost it too: run-one (pid $L)" "and names the suites a crash took with it"
+# In any order: the list sorts by name, so 1043 comes before 972.
+check_contains "$(cat "$SANDBOX/lost")" "every suite using it lost it too: " "and says a crash took the others with it"
+check_contains "$(cat "$SANDBOX/lost")" "run-one (pid $L)" "and names them"
 one session-end "$L" 2>/dev/null
 touch "$FLTH_TEST_STUB/guest_answers"
 one exec 'exit 255' 2>"$SANDBOX/lost"
