@@ -75,10 +75,11 @@ check_eq "$root_b" "$ROOTS/$RUN_B" "and another suite's root is another director
 FLTH_RUN_ID="$RUN_A" one exec 'exit 7' 2>/dev/null
 check_eq "$?" 7 "a call's status is the command's"
 check_eq "$(FLTH_RUN_ID="$RUN_A" one exec 'printf "%s" "it'"'"'s"')" "it's" "and a command's quoting survives the way in"
-# (The stub engine's rewrite of /cache reaches /var/cache too, so that line ends in it.)
-for place in "tmp /tmp" "var-tmp /var/tmp" "var-cache /var/" "mnt /mnt"; do
+for place in "tmp /tmp" "var-tmp /var/tmp" "mnt /mnt"; do
     check_contains "$(cat "$TOOLS")" "mount --bind $root_a/${place% *} ${place#* }" "the run has ${place#* } to itself"
 done
+# (The stub engine's rewrite of /cache reaches /var/cache too, so that line ends in it.)
+check_contains "$(cat "$TOOLS")" "mount --bind $root_b/var-cache /var/" "a second run of one consumer has /var/cache to itself"
 check_eq "$(grep -c "unshare --mount=$FLTH_TEST_STUB/guest-runs/ns/$RUN_A " "$TOOLS" | tr -d ' ')" 1 "only a run's first call makes its namespace"
 
 before="$(grep -c '^unshare' "$TOOLS" | tr -d ' ')"

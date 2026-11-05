@@ -868,9 +868,16 @@ during a shutdown waits for it and then boots a new guest.
 **Each run has its own files.** A session is a run, with a random root on the
 guest's own disk, `/var/lib/fs-linux-test-harness/runs/<id>/`, which `FLTH_RUN_ROOT`
 names. Its commands run in a private mount namespace where that root's directories
-are mounted at `/tmp`, `/var/tmp`, `/var/cache` and `/mnt`, so a suite's scripts keep
-the paths they already use and cannot see another run's. `/var/cache` is where the
-family's suites keep their build directories, so a run builds from nothing.
+are mounted at `/tmp`, `/var/tmp` and `/mnt`, so a suite's scripts keep the paths they
+already use and cannot see another run's.
+
+`/var/cache` is the consumer's, under `/var/lib/fs-linux-test-harness/consumers/`, and
+lasts as long as the guest. That is where the family's suites keep their build
+directories, so a second run does not build from nothing. A second run of one consumer
+at the same time has its own empty one, because two runs cannot share a build directory.
+A package registry a suite keeps on the guest's own disk, under `/var/lib` or `/var/cache`,
+lasts too.
+
 `guest-test` also copies the tree into the root and mounts the copy at `/repo`,
 leaving out `tmp/`, the share and any directory marked with a `CACHEDIR.TAG`. Calls
 made by a suite on the host see the live checkout, because that suite writes files

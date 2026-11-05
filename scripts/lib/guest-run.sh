@@ -5,18 +5,17 @@
 # this file to the guest when it boots, to /run, so it goes with the boot.
 #
 #   guest-run.sh prepare                            once per boot
-#   guest-run.sh enter <id> <repo> <share> <cache> <script>
+#   guest-run.sh enter <id> <repo> <share> <cache> <consumer> <script>
 #                                                   run a script in the run <id>
-#   guest-run.sh tree <id> <repo> <share> <cache> <share dir>
+#   guest-run.sh tree <id> <repo> <share> <cache> <consumer> <share dir>
 #                                                   give the run its own copy of its tree
 #   guest-run.sh end <id>                           stop the run and delete its root
-#   guest-run.sh setup <repo> <share> <cache> <command...>
+#   guest-run.sh setup <repo> <share> <cache> <consumer> <command...>
 #                                                   run a consumer's setup with its tree
 #
 # A RUN IS A RANDOM ROOT ON THE GUEST'S OWN DISK AND A PRIVATE MOUNT NAMESPACE, in
 # which that root's directories are mounted where a suite already looks: /tmp,
-# /var/tmp, /var/cache and /mnt, with its own tree at /repo and its own share at
-# /share. A suite's scripts name those paths and need no change, and no two runs can
+# /var/tmp and /mnt, with its own tree at /repo and its own share at /share. A suite's scripts name those paths and need no change, and no two runs can
 # see each other's files there or overwrite them. What a suite mounts stays in its
 # namespace too. The namespace is held by a file, not a process, so it lasts between
 # the many calls of a run and costs nothing while none is running.
@@ -25,11 +24,18 @@
 # command has since moved to: `end` stops exactly the processes in it.
 #
 # <repo> and <share> are where this run's tree and share are in the guest, <cache> is
-# the directory for /cache, or - for none.
+# the directory for /cache, or - for none. <consumer> is whose run this is.
+#
+# /VAR/CACHE IS THE CONSUMER'S, NOT THE RUN'S, because that is where a suite keeps its
+# build directory, and a run should not build from nothing on a guest that stays up. It
+# lasts as long as the guest and stays on the guest's own disk. One run of a consumer has
+# it at a time. A second at once has a directory in its root instead: two runs cannot
+# share a build directory, whose test programs one would rebuild under the other.
 set -euo pipefail
 
 STATE=/run/fs-linux-test-harness-runs
 ROOTS=/var/lib/fs-linux-test-harness/runs
+CONSUMERS=/var/lib/fs-linux-test-harness/consumers
 SSH_SESSIONS=128
 # How long, in ticks of 0.1 s, each signal has to stop a run's processes.
 STOP_TICKS=50
@@ -51,6 +57,25 @@ prepare() {
     fi
 }
 
+# Print the directory for this run's /var/cache, taking the consumer's if it is free. A
+# call outside any session never takes it: nothing would give it back.
+take_var_cache() {
+    local id="$1" consumer="$2" owner="$STATE/owner.$2" holder
+    case "$id" in
+        *-worktree) printf '%s\n' "$ROOTS/$id/var-cache"; return 0 ;;
+    esac
+    exec 8> "$owner.lock"
+    flock 8
+    holder="$(cat "$owner" 2>/dev/null || true)"
+    if [ -n "$holder" ] && [ -e "$STATE/ready.$holder" ]; then
+        printf '%s\n' "$ROOTS/$id/var-cache"
+    else
+        printf '%s\n' "$id" > "$owner"
+        printf '%s\n' "$CONSUMERS/$consumer/var-cache"
+    fi
+    exec 8>&-
+}
+
 # Inside a new namespace. The share first, because <repo> may be under /repo.
 bind_tree() {
     local repo="$1" share="$2" cache="$3"
@@ -60,11 +85,11 @@ bind_tree() {
 }
 
 bind() {
-    local root="$1"
+    local root="$1" var_cache="$5"
     bind_tree "$2" "$3" "$4"
     mount --bind "$root/tmp" /tmp
     mount --bind "$root/var-tmp" /var/tmp
-    mount --bind "$root/var-cache" /var/cache
+    mount --bind "$var_cache" /var/cache
     mount --bind "$root/mnt" /mnt
 }
 
@@ -73,7 +98,7 @@ bind() {
 # run's. Its namespace goes when it ends.
 setup() {
     local repo="$1" share="$2" cache="$3"
-    shift 3
+    shift 4
     if [ "$cache" != - ]; then
         mkdir -p "$cache" /cache
     fi
@@ -89,25 +114,26 @@ setup_inner() {
 
 # The first call of a run makes it. A suite's first calls can arrive together.
 begin() {
-    local id="$1" repo="$2" share="$3" cache="$4" root="$ROOTS/$1" ns="$STATE/ns/$1"
+    local id="$1" repo="$2" share="$3" cache="$4" consumer="$5" root="$ROOTS/$1" ns="$STATE/ns/$1" var_cache
     exec 9> "$STATE/lock.$id"
     flock 9
     if [ ! -e "$STATE/ready.$id" ]; then
-        mkdir -p "$root/tmp" "$root/var-tmp" "$root/var-cache" "$root/mnt"
+        var_cache="$(take_var_cache "$id" "$consumer")"
+        mkdir -p "$root/tmp" "$root/var-tmp" "$var_cache" "$root/mnt"
         chmod 1777 "$root/tmp" "$root/var-tmp"
         if [ "$cache" != - ]; then
             mkdir -p "$cache" /cache
         fi
         : > "$ns"
-        unshare --mount="$ns" --propagation private bash "$0" bind "$root" "$repo" "$share" "$cache"
+        unshare --mount="$ns" --propagation private bash "$0" bind "$root" "$repo" "$share" "$cache" "$var_cache"
         : > "$STATE/ready.$id"
     fi
     exec 9>&-
 }
 
 enter() {
-    local id="$1" repo="$2" share="$3" cache="$4" script="$5"
-    [ -e "$STATE/ready.$id" ] || begin "$id" "$repo" "$share" "$cache"
+    local id="$1" repo="$2" share="$3" cache="$4" consumer="$5" script="$6"
+    [ -e "$STATE/ready.$id" ] || begin "$id" "$repo" "$share" "$cache" "$consumer"
     export FLTH_RUN_ROOT="$ROOTS/$id"
     exec nsenter --mount="$STATE/ns/$id" --wd="$PWD" -- bash -c "$script"
 }
@@ -119,8 +145,8 @@ enter() {
 # to read them. What a directory marks as a cache and the scratch directory stay
 # behind; the share stays where it is, reached through the same name.
 tree() {
-    local id="$1" repo="$2" share="$3" cache="$4" share_dir="$5" root="$ROOTS/$1"
-    [ -e "$STATE/ready.$id" ] || begin "$id" "$repo" "$share" "$cache"
+    local id="$1" repo="$2" share="$3" cache="$4" consumer="$5" share_dir="$6" root="$ROOTS/$1"
+    [ -e "$STATE/ready.$id" ] || begin "$id" "$repo" "$share" "$cache" "$consumer"
     [ ! -e "$STATE/tree.$id" ] || return 0
     mkdir -p "$root/tree"
     tar -C "$repo" --exclude-caches-all --exclude=./tmp --exclude="./$share_dir" -cf - . |
@@ -184,6 +210,7 @@ end() {
     detach_loops "$ROOTS/$id"
     find "$ROOTS/$id" -xdev -delete 2>/dev/null || true
     rm -f "$ns" "$STATE/ready.$id" "$STATE/tree.$id" "$STATE/lock.$id"
+    # The consumer's /var/cache is free once this run is not ready: take_var_cache reads that.
     exec 9>&-
 }
 

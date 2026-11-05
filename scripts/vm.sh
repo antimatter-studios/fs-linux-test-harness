@@ -1014,6 +1014,8 @@ vm_session_end() {
 # leaves the guest up, as it would have a moment earlier.
 shared_register() {
     up_lock_take
+    # Before this one counts: what a killed suite holds is free for this one.
+    live_sessions >/dev/null
     printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$CFG_project_name" "$(shared_run_id)" > "$(sessions_dir)/$1"
     up_lock_drop
 }
@@ -1047,17 +1049,17 @@ shared_new_run_id() {
 }
 
 # The words after a run's id on lib/guest-run.sh's command line: where its tree and
-# its share are in the guest, and its cache.
+# its share are in the guest, its cache, and whose run it is.
 #
 # A DECLARED CACHE IS A DIRECTORY OF THE GUEST'S, per consumer, for as long as the
 # guest runs: every consumer's own disk could not be attached to a guest already up.
 shared_run_places() {
     local cache=-
     [ -z "$FLTH_SHARED_CACHE" ] || cache="/var/lib/fs-linux-test-harness/caches/$CFG_project_name"
-    printf '%s %s %s' \
+    printf '%s %s %s %s' \
         "$(quote_for_guest "$FLTH_REPO_GUEST/$FLTH_SHARED_RELATIVE")" \
         "$(quote_for_guest "$FLTH_SHARE_GUEST/$FLTH_SHARED_RELATIVE/$CFG_share_dir")" \
-        "$cache"
+        "$cache" "$CFG_project_name"
 }
 
 shared_in_run() {
