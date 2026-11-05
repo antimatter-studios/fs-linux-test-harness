@@ -120,7 +120,7 @@ make_stub_guest_tools() {
     cat > "$FLTH_TEST_STUB/bin/unshare" <<STUB
 #!/bin/sh
 echo "unshare \$*" >> "$FLTH_TEST_STUB/guest-tools"
-: > "\${1#--mount=}"
+case "\$1" in --mount=*) : > "\${1#--mount=}" ;; esac
 shift 3
 exec "\$@"
 STUB

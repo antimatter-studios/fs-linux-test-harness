@@ -119,7 +119,7 @@ sha256_of() {
 # /dev/null so an `apt-get` inside cannot swallow what follows. Its output
 # goes to stderr, so the stdout of `vm.sh run` is only the command's.
 apply_setup() {
-    local mode="$1" script hash host_stamp guest force=0 payload out rc
+    local mode="$1" script hash host_stamp guest force=0 payload out rc stamp take_turn="" with_tree=""
     script="$FLTH_ROOT/$CFG_setup_script"
     hash="$(sha256_of "$script")" || return
     host_stamp="$FLTH_MACHINE_DIR/setup.sha256"
@@ -130,16 +130,33 @@ apply_setup() {
     [ "$mode" = force ] && force=1
     payload="$(base64 < "$script")" || return
     SETUP_APPLIED=0
+    stamp=/var/lib/fs-linux-test-harness/setup.sha256
+
+    # ON A SHARED GUEST each consumer has a stamp of its own and its setup runs with
+    # its own tree. Two setups at once would collide on the package manager's lock,
+    # and nothing merges them, so they take turns. The stamp is read again after the
+    # wait: another suite of this consumer may have applied it. They install
+    # alongside each other.
+    if flth_shared; then
+        stamp="/var/lib/fs-linux-test-harness/setup-$CFG_project_name.sha256"
+        take_turn="exec 9> $FLTH_GUEST_RUNS/setup.lock
+flock -n 9 || { echo '[vm] waiting for another consumer'\\''s setup to finish' >&2; flock 9; }
+if [ $force = 0 ] && [ \"\$(cat \"\$stamp\" 2>/dev/null || true)\" = '$hash' ]; then
+    exit 0
+fi"
+        with_tree="bash $FLTH_GUEST_RUNS/run.sh setup $(shared_run_places)"
+    fi
 
     guest="set -euo pipefail
-stamp=/var/lib/fs-linux-test-harness/setup.sha256
+stamp=$stamp
 if [ $force = 0 ] && [ \"\$(cat \"\$stamp\" 2>/dev/null || true)\" = '$hash' ]; then
     exit 0
 fi
+$take_turn
 echo '[vm] running setup script $CFG_setup_script' >&2
 tmp=\"\$(mktemp)\"
 printf '%s\n' '$payload' | base64 -d > \"\$tmp\"
-FLTH_PROJECT='$CFG_project_name' FLTH_SHARE='$FLTH_SHARE_GUEST' bash \"\$tmp\" </dev/null >&2
+FLTH_PROJECT='$CFG_project_name' FLTH_SHARE='$FLTH_SHARE_GUEST' $with_tree bash \"\$tmp\" </dev/null 9>&- >&2
 rm -f \"\$tmp\"
 mkdir -p \"\$(dirname \"\$stamp\")\"
 printf '%s\n' '$hash' > \"\$stamp\"
@@ -288,6 +305,9 @@ mounted_worktree_boot_record() { printf '%s\n' "$FLTH_MACHINE_DIR/mounted-worktr
 # Print the worktree the guest has mounted, when that is not this one.
 mounted_elsewhere() {
     local mounted recorded current pending owner
+    if flth_shared; then
+        return 1
+    fi
     mounted="$(cat "$(mounted_worktree_record)" 2>/dev/null || true)"
     [ -n "$mounted" ] && [ "$mounted" != "$FLTH_ROOT" ] || return 1
     recorded="$(cat "$(mounted_worktree_boot_record)" 2>/dev/null || true)"
@@ -405,6 +425,11 @@ vm_up() {
     fi
     up_lock_drop
     trap - HUP INT TERM
+    if [ "$rc" -eq 0 ] && flth_shared; then
+        # Outside the lock: a consumer's setup can take many minutes, and nothing
+        # about another suite joining depends on it. The guest serialises them.
+        apply_setup "$([ "$PROVISION_MODE" = force ] && echo force || echo boot)" || rc=$?
+    fi
     return "$rc"
 }
 
@@ -422,6 +447,9 @@ vm_up_locked() {
             # every call, and a VM that is up needs nothing installed.
             refuse_other_worktree
             refuse_provisioning_boot
+            if flth_shared; then
+                return 0
+            fi
             apply_setup auto || return
             forget_disk_if_setup_ran || return
             return 0
@@ -455,6 +483,12 @@ vm_up_locked() {
     rm -f "$(provisioning_marker)" || return
 
     echo "[vm] booting $CFG_project_name (a first boot downloads the box and provisions)..." >&2
+    # A shared guest's disk carries nobody's setup: each consumer's runs when it
+    # joins, on the boot it joined, and goes with that boot.
+    if flth_shared; then
+        boot_vm
+        return
+    fi
     if [ "$PROVISION_MODE" = force ] || ! engine_kernel_known ||
         [ "$(cat "$(base_record)" 2>/dev/null || true)" != "$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" ]; then
         provision_disk || return
@@ -1012,8 +1046,16 @@ shared_new_run_id() {
 
 # The words after a run's id on lib/guest-run.sh's command line: where its tree and
 # its share are in the guest, and its cache.
+#
+# A DECLARED CACHE IS A DIRECTORY OF THE GUEST'S, per consumer, for as long as the
+# guest runs: every consumer's own disk could not be attached to a guest already up.
 shared_run_places() {
-    printf '%s %s -' "$FLTH_REPO_GUEST" "$FLTH_SHARE_GUEST"
+    local cache=-
+    [ -z "$FLTH_SHARED_CACHE" ] || cache="/var/lib/fs-linux-test-harness/caches/$CFG_project_name"
+    printf '%s %s %s' \
+        "$(quote_for_guest "$FLTH_REPO_GUEST/$FLTH_SHARED_RELATIVE")" \
+        "$(quote_for_guest "$FLTH_SHARE_GUEST/$FLTH_SHARED_RELATIVE/$CFG_share_dir")" \
+        "$cache"
 }
 
 shared_in_run() {
@@ -1119,6 +1161,12 @@ shared_reap() {
 # it. A held VM is held again afterwards.
 vm_provision() {
     local held=0 others
+    # A shared guest is not stopped for one consumer's setup. It runs again in place.
+    if flth_shared; then
+        PROVISION_MODE=force
+        vm_up
+        return
+    fi
     if [ "$(engine_state)" = running ]; then
         refuse_other_worktree
         others="$(live_sessions)"
@@ -1484,6 +1532,7 @@ test.guest_command=$CFG_test_guest_command
 cache.size=${CFG_cache_size:-none}
 cache.guest=$([ -n "$CFG_cache_size" ] && echo "$FLTH_CACHE_GUEST" || echo none)
 machine=$FLTH_MACHINE_DIR
+shared.root=${FLTH_SHARED_ROOT:-none}
 disk.setup=$(cat "$(base_record)" 2>/dev/null || echo none)
 identity=$(engine_identity)
 slot=$FLTH_STATE_DIR/slot.lock

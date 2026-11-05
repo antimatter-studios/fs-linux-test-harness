@@ -701,6 +701,9 @@ check_eq "$(kernel_vm run 'uname -r' 2>/dev/null)" "$installed" "and runs it too
 kernel_vm destroy
 check_eq "$?" 0 "the second consumer's VM is destroyed"
 
+# shellcheck source=tests/smoke-shared/guest.sh
+. "$REPO/tests/smoke-shared/guest.sh"
+
 trap - EXIT
 rm -rf "$CONTENDER"
 verdict

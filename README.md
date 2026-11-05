@@ -229,6 +229,7 @@ refuses something a filesystem tool does to an image file:
 | On | What fails | How it shows |
 | --- | --- | --- |
 | macOS (virtiofs), virtiofsd before 1.14.0 | any `O_DIRECT` open of a shared file — `xfs_repair`, `xfs_db`, `losetup --direct-io=on`, `dd iflag=direct` (#26) | `ENOTDIR` ("Not a directory"), whatever the image holds |
+| macOS (virtiofs), virtiofsd 1.14.0 | a file hard-linked and then removed under its first name cannot be opened under its new name for a moment (#162) | `ENOENT` on a file that is there; `ls` lists it soon after |
 | Linux (9p) | `mmap` of a shared file is unreliable | a tool killed by `SIGSEGV`, exit 139 (seen on CI's x86_64 guest) |
 | Linux (9p), `/repo` | setting ownership (`chown`, a tool restoring recorded uids): `security_model=none` cannot | `Operation not permitted` |
 
@@ -459,7 +460,7 @@ relative, and must not leave the repository.
 | `FLTH_SLOT_COUNT` | `1` | Machine-wide concurrent VM limit, 1–64. Set it consistently for every consumer and shell on this host; `2` admits two consumers when host memory permits. |
 | `FLTH_SLOT_BOOT_GRACE` | `180` | Seconds a new slot holder is trusted before a VM must be running. |
 | `FLTH_SLOT_ABSENT_GRACE` | the boot grace | Seconds a holder past its boot grace must be seen with no VM running before a waiter takes its slot. |
-| `FLTH_SHARED_ROOT` | unset | A host directory: suites use one guest shared with other consumers instead of a VM of their own. See [One guest for several consumers](#one-guest-for-several-consumers). |
+| `FLTH_SHARED_ROOT` | unset | A host directory holding every tree that shares the guest: suites use one guest shared with other consumers instead of a VM of their own. See [One guest for several consumers](#one-guest-for-several-consumers). |
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | `8G`, `8`, `64G` | The size of that one guest. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
 | `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
@@ -822,10 +823,35 @@ names the holders and waits. Neither failure is silent.
 
 ## One guest for several consumers
 
-Set `FLTH_SHARED_ROOT` and a consumer's suites use one long-running guest with
-every other consumer that set it, with no change to its tests.
+A consumer normally has a VM of its own, and with one slot on the host two consumers
+wait for each other. To run them at once in one guest, set one thing, in the shell
+or the job that runs them:
 
-The guest stays up between runs, so a run does not pay for a boot or wait for the
+```sh
+export FLTH_SHARED_ROOT="$HOME/projects"   # a directory holding every tree that shares the guest
+chore test:vm                              # in one consumer
+chore test:vm                              # in another, at the same time
+chore vm:down                              # when you are done: stops it if nobody is using it
+```
+
+No consumer's tests or config change, and a consumer without the setting keeps its
+private VM. Every `vm.sh` call for the shared guest needs the setting, `chore vm:down`
+included: without it, that call means the consumer's private VM.
+
+The guest can read and write everything under that directory, so choose the narrowest
+one that holds your trees. A run only has its own tree mounted, at `/repo`, and its own
+share, at `/share`. A tree outside the directory is refused.
+
+**One boot, each consumer's own setup.** The first suite boots the guest. The machine
+is `machines/shared-<guest>/`, so a consumer naming another `[vm] guest` gets another
+machine and waits for the slot. Its size comes from `FLTH_SHARED_MEMORY`,
+`FLTH_SHARED_CPUS` and `FLTH_SHARED_DISK`, not from a consumer's `[vm]` section. Each
+consumer's `[setup]` script runs when that consumer first joins a boot, one at a time,
+and tools install alongside each other. Nothing merges the scripts, and two versions
+of one tool are not provided for. Setup stays with the boot: the disk is never
+provisioned, so after the guest stops each consumer's setup runs again when it joins.
+
+**The guest stays up between runs**, so a run does not pay for a boot or wait for the
 slot. A suite registers when its session begins and deregisters when it ends.
 
 - `chore vm:status` lists the suites using the guest.
@@ -851,10 +877,26 @@ made by a suite on the host see the live checkout, because that suite writes fil
 there for the guest to read. A call outside any session uses a standing run of its
 worktree, which lasts as long as the guest.
 
+A consumer that declares a cache (`[cache] size`) has `/cache` as a directory on the
+guest's own disk, kept across its runs for as long as the guest is up, with no size limit
+of its own. The machine has no second disk.
+
 **The end of a run** stops every process in its namespace, TERM and then KILL, detaches
 the loop devices backed by its root, and deletes the root. That is what a signal to
 one suite does to its commands in the guest, and no other run is touched. If the guest
 is lost, every suite using it is named in the report on stderr.
+
+**What a path does not separate.** All runs share one kernel:
+
+- A kernel a consumer's setup installs is not the one running, because the guest does
+  not restart for it.
+- A kernel crash, or anything that powers the guest off, stops every suite.
+- Loop device numbers come from the kernel on request, so a suite that asks with
+  `losetup -f` is fine, and one that names `/dev/loop0` or runs `losetup -D` is not.
+- Unloading a kernel module, or anything else that changes the kernel for everyone,
+  reaches the other suites too.
+
+Issue #157 lists the consumers that do any of these today.
 
 ## What stops a VM
 

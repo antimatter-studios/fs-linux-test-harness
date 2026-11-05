@@ -367,6 +367,13 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   leaves the VM running (`tests/vm-worktree.sh`, #112). Sessions from one
   worktree share the guest: the reaper leaves it alone while any session's
   process is alive, and the last session out brings it down.
+- **`FLTH_SHARED_ROOT` changes what a machine is.** The machine is
+  `machines/shared-<guest>/`, its `/repo` and `/share` mount the shared directory,
+  and each run binds its own tree and share over them in a private mount namespace
+  (`scripts/lib/guest-run.sh`, sent to the guest at boot). Calls into the guest go
+  through `guest_call_script`. `tests/stubs/engine.sh` runs that script here with
+  `mount`, `unshare` and `nsenter` stubbed by `make_stub_guest_tools`, and
+  `tests/smoke-shared/guest.sh` holds a real guest to it.
 - **A run's writes are gone when its boot stops.** Every boot is
   disposable (QEMU `snapshot=on`) except the provisioning boot that
   applies a changed setup script, which is stopped and confirmed stopped
