@@ -94,7 +94,7 @@ check_eq "$(grep -c '^unshare' "$TOOLS" | tr -d ' ')" "$((before + 1))" "made on
 : > "$TOOLS"
 FLTH_RUN_ID="$RUN_A" one guest-tree 2>/dev/null
 check_eq "$?" 0 "a run takes its own copy of its tree"
-check_contains "$(cat "$TOOLS")" "tar -C $FLTH_TEST_STUB/guest-repo/one --exclude-caches-all --exclude=./tmp --exclude=./.vm-share -cf - ." "leaving behind caches, scratch and the share"
+check_contains "$(cat "$TOOLS")" "tar -S -C $FLTH_TEST_STUB/guest-repo/one --exclude-caches-all --exclude=./tmp --exclude=./.vm-share -cf - ." "leaving behind caches, scratch and the share"
 check_contains "$(cat "$TOOLS")" "mount --bind $root_a/tree $FLTH_TEST_STUB/guest-repo" "mounted where the suite looks"
 check_eq "$(readlink "$root_a/tree/.vm-share")" /share "the share stays reachable by the name it had"
 : > "$TOOLS"

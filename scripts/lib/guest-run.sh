@@ -149,7 +149,9 @@ tree() {
     [ -e "$STATE/ready.$id" ] || begin "$id" "$repo" "$share" "$cache" "$consumer"
     [ ! -e "$STATE/tree.$id" ] || return 0
     mkdir -p "$root/tree"
-    tar -C "$repo" --exclude-caches-all --exclude=./tmp --exclude="./$share_dir" -cf - . |
+    # -S keeps holes: a suite's images are mostly holes, and filling them took one
+    # consumer's 3.5 GiB of fixtures to 38 GiB of the guest's disk.
+    tar -S -C "$repo" --exclude-caches-all --exclude=./tmp --exclude="./$share_dir" -cf - . |
         tar -C "$root/tree" --no-same-owner -xf -
     mkdir -p "$root/tree/tmp" "$(dirname "$root/tree/$share_dir")"
     ln -s /share "$root/tree/$share_dir"

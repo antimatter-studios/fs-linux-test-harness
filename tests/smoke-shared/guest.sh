@@ -69,6 +69,13 @@ check_eq "$(shared_vm "$two" exec 'test -e /tmp/left && echo seen; findmnt -n -o
 check_eq "$(shared_vm "$one" exec 'findmnt -n -o FSTYPE -T /var/tmp >/dev/null; stat -c %d /var/tmp "$FLTH_RUN_ROOT/var-tmp" | uniq | wc -l' 2>/dev/null)" 1 \
     "its /var/tmp is in its root, on the guest's own disk"
 
+step "shared guest: a run's copy of its tree keeps its holes"
+# An image is mostly holes, and a copy that fills them takes its full size on the guest's
+# disk. The oracle is the guest's own du, on what guest-tree made.
+truncate -s 256M "$one/sparse.img"
+sparse="$(shared_vm "$one" session bash -c '"$1" guest-tree && "$1" exec "du -m /repo/sparse.img | cut -f1; stat -c %s /repo/sparse.img"' flth-session "$VM" 2>/dev/null | paste -sd, -)"
+check_eq "$sparse" "0,268435456" "a 256 MiB image of holes takes no room there, and keeps its size"
+
 step "shared guest: a signal to one suite leaves the other running"
 # Each suite: a session whose one command prints its pid and a loop device it
 # attached by hand, and sleeps.
