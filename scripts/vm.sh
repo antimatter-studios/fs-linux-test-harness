@@ -137,19 +137,41 @@ apply_setup() {
     # and nothing merges them, so they take turns. The stamp is read again after the
     # wait: another suite of this consumer may have applied it. They install
     # alongside each other.
+    #
+    # A SHARED GUEST DOES NOT RESTART FOR ONE CONSUMER (#157). A setup that installs a
+    # kernel the guest is not running would leave that consumer's kernel tests on the
+    # wrong kernel while its join reported success. So the kernels in /boot are
+    # compared before and after it, and a new one that is not the running kernel is
+    # recorded for this consumer: this join and every later one on this boot refuse,
+    # naming both. Another consumer's join is not affected.
+    local kernel_check="" kernel_after=""
     if flth_shared; then
         stamp="/var/lib/fs-linux-test-harness/setup-$CFG_project_name.sha256"
+        kernel_check="kernel_record=/var/lib/fs-linux-test-harness/setup-$CFG_project_name.kernel
+running=\"\$(uname -r)\"
+kernels() { local k; for k in /boot/vmlinuz-*; do [ -e \"\$k\" ] && printf '%s\\n' \"\${k##*/vmlinuz-}\"; done; return 0; }
+refuse_kernel() { [ -s \"\$kernel_record\" ] || return 0; echo \"kernel \$(cat \"\$kernel_record\") \$running\"; exit 0; }
+kernels_before=\"\$(kernels)\""
         take_turn="exec 9> $FLTH_GUEST_RUNS/setup.lock
 flock -n 9 || { echo '[vm] waiting for another consumer'\\''s setup to finish' >&2; flock 9; }
 if [ $force = 0 ] && [ \"\$(cat \"\$stamp\" 2>/dev/null || true)\" = '$hash' ]; then
+    refuse_kernel
     exit 0
+fi
+kernels_before=\"\$(kernels)\""
+        kernel_after="installed=\"\$(kernels | grep -Fxv -f <(printf '%s\\n' \"\$kernels_before\") | grep -Fxv \"\$running\" | tail -n 1 || true)\"
+if [ -n \"\$installed\" ]; then
+    mkdir -p \"\$(dirname \"\$kernel_record\")\"
+    printf '%s\\n' \"\$installed\" > \"\$kernel_record\"
 fi"
         with_tree="bash $FLTH_GUEST_RUNS/run.sh setup $(shared_run_places)"
     fi
 
     guest="set -euo pipefail
 stamp=$stamp
+$kernel_check
 if [ $force = 0 ] && [ \"\$(cat \"\$stamp\" 2>/dev/null || true)\" = '$hash' ]; then
+    ${kernel_check:+refuse_kernel}
     exit 0
 fi
 $take_turn
@@ -160,6 +182,8 @@ FLTH_PROJECT='$CFG_project_name' FLTH_SHARE='$FLTH_SHARE_GUEST' $with_tree bash 
 rm -f \"\$tmp\"
 mkdir -p \"\$(dirname \"\$stamp\")\"
 printf '%s\n' '$hash' > \"\$stamp\"
+$kernel_after
+${kernel_check:+refuse_kernel}
 echo applied"
 
     rc=0
@@ -173,9 +197,26 @@ echo applied"
         echo "    The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
         exit 1
     fi
+    case "$out" in
+        'kernel '*)
+            # shellcheck disable=SC2086  # "kernel <installed> <running>"
+            set -- $out
+            printf '%s\n' "$2" > "$(shared_kernel_record)"
+            shared_kernel_explain "$2" "$3"
+            exit 1
+            ;;
+    esac
     printf '%s\n' "$hash" > "$host_stamp" || return
     [ "$out" = applied ] && SETUP_APPLIED=1
     return 0
+}
+
+# The consumer's refusal on this boot of a shared guest, for the calls after a join.
+shared_kernel_record() { printf '%s/kernel-refused-%s\n' "$FLTH_MACHINE_DIR" "$CFG_project_name"; }
+shared_kernel_explain() {
+    echo "vm: $CFG_project_name's setup installed kernel $1, and this shared guest runs $2." >&2
+    echo "    A shared guest does not restart for one consumer's setup, so its tests would run on $2." >&2
+    echo "    Run $CFG_project_name on a guest of its own: unset FLTH_SHARED_ROOT for it." >&2
 }
 
 # ONE UP AT A TIME PER MACHINE. A test process that runs its oracle tests
@@ -321,6 +362,11 @@ boot_vm() {
     if flth_shared; then
         shared_prepare_guest || return
         shared_boot_identity > "$(shared_boot_record)" || return
+        # A refusal is for the boot that holds the kernel it named.
+        local refused
+        for refused in "$FLTH_MACHINE_DIR"/kernel-refused-*; do
+            [ ! -f "$refused" ] || rm -f "$refused"
+        done
     fi
     rm -f "$(unfinished_boot_marker)"
 }
@@ -1669,6 +1715,10 @@ EOF
 # It also skips the setup check: the suite's task brought the VM up, and
 # the setup script cannot change while it runs.
 vm_exec() {
+    if flth_shared && [ -s "$(shared_kernel_record)" ]; then
+        shared_kernel_explain "$(cat "$(shared_kernel_record)")" "the kernel it booted with"
+        exit 1
+    fi
     if ! engine_alive "$(engine_identity)"; then
         if [ -f "$(watchdog_record)" ]; then
             watchdog_explain "$(cat "$(watchdog_record)")"
