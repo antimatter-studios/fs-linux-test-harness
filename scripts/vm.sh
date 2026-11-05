@@ -930,7 +930,9 @@ live_sessions() {
         IFS=$'\t' read -r pid start _ run < "$marker" || true
         case "$pid" in '' | *[!0-9]*) rm -f "$marker"; continue ;; esac
         [ "$pid" = "$except" ] && continue
-        now="$(process_start "$pid")"
+        # `|| now=""`: a process that has gone is what this looks for, and this runs
+        # under `set -e` when it is not called in a substitution.
+        now="$(process_start "$pid")" || now=""
         if [ -z "$now" ] || [ "$now" != "$start" ]; then
             rm -f "$marker"
             shared_run_gone "$run"
