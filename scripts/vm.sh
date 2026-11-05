@@ -1146,6 +1146,29 @@ FLTH_GUEST_RUN_END
 bash $FLTH_GUEST_RUNS/run.sh prepare" >&2
 }
 
+# A CALL OUTSIDE ANY SESSION IS A USER OF THE GUEST TOO. It goes on the list for as long
+# as it lasts, so a shutdown request waits for it, and an entry naming a process that has
+# gone is dropped like any other. It names no run: the worktree's standing run outlives
+# the call. A `run` is listed before its `up` takes the lock, so a shutdown holding the
+# lock either sees it or has finished, and the `up` then boots. An `exec` never boots, so
+# one that starts in the moment after a shutdown has counted loses the guest and says so.
+SHARED_CALL_ENTRY=""
+
+shared_call_begin() {
+    flth_shared || return 0
+    case "$(shared_run_id)" in *-worktree) ;; *) return 0 ;; esac
+    mkdir -p "$(sessions_dir)"
+    SHARED_CALL_ENTRY="$(sessions_dir)/$$"
+    printf '%s\t%s\t%s\n' "$$" "$(process_start "$$")" "$CFG_project_name" > "$SHARED_CALL_ENTRY"
+}
+
+guest_run_listed() {
+    local rc=0
+    guest_run "$1" || rc=$?
+    [ -z "$SHARED_CALL_ENTRY" ] || rm -f "$SHARED_CALL_ENTRY"
+    return "$rc"
+}
+
 # WHAT A BOOT FIXED FOR EVERYONE WHO JOINS. The guest sees one host directory and carries
 # one lib/guest-run.sh. A join with another directory would mount a path that is not
 # there, and one from a harness with another tool would call it with the wrong words,
@@ -1555,7 +1578,8 @@ vm_exec() {
     refuse_other_worktree
     refuse_provisioning_boot
     refuse_unfinished_boot
-    guest_run "$*"
+    shared_call_begin
+    guest_run_listed "$*"
 }
 
 # THE CONSUMER'S SUITE, RUN IN THE GUEST, from the repository mounted at
@@ -1657,10 +1681,11 @@ case "$command" in
     up) vm_up ;;
     run)
         [ $# -gt 0 ] || flth_die "usage: vm.sh run <command...>"
+        shared_call_begin
         vm_up
         # Joined, and run by the guest's shell: a pipeline or `&&` in the
         # command belongs to the guest, not the host.
-        guest_run "$*"
+        guest_run_listed "$*"
         ;;
     exec)
         [ $# -gt 0 ] || flth_die "usage: vm.sh exec <command...>"

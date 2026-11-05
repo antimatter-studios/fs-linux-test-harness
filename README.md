@@ -863,6 +863,8 @@ provisioned, so after the guest stops each consumer's setup runs again when it j
 slot. A suite registers when its session begins and deregisters when it ends.
 
 - `chore vm:status` lists the suites using the guest.
+- A `vm.sh run` or `vm.sh exec` outside any session is on that list for as long as it
+  lasts.
 - `chore vm:down` stops the guest only when that list is empty. Otherwise it says
   who is using it, leaves the guest up and succeeds.
 - A suite that was killed outright never deregisters. Its entry records its
