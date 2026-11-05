@@ -460,6 +460,7 @@ relative, and must not leave the repository.
 | `FLTH_SLOT_COUNT` | `1` | Machine-wide concurrent VM limit, 1–64. Set it consistently for every consumer and shell on this host; `2` admits two consumers when host memory permits. |
 | `FLTH_SLOT_BOOT_GRACE` | `180` | Seconds a new slot holder is trusted before a VM must be running. |
 | `FLTH_SLOT_ABSENT_GRACE` | the boot grace | Seconds a holder past its boot grace must be seen with no VM running before a waiter takes its slot. |
+| `FLTH_SLOT_RENEW_SECS` | a third of the boot grace | Seconds between renewals of a holder's lease while a boot attempt runs. |
 | `FLTH_SHARED_ROOT` | unset | A host directory holding every tree that shares the guest: suites use one guest shared with other consumers instead of a VM of their own. See [One guest for several consumers](#one-guest-for-several-consumers). |
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | `8G`, `8`, `64G` | The size of that one guest. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
@@ -803,6 +804,9 @@ names the holders and waits. Neither failure is silent.
   seen not running, with no gap, for `FLTH_SLOT_ABSENT_GRACE`. An unreadable
   process table is not a dead holder. Until that absence has settled, the
   holder's memory is waited for rather than refused or ignored.
+- **A boot keeps its own lease.** While a boot attempt runs, which can be minutes
+  before its VM process exists, its lease is renewed; it is renewed again when an
+  attempt fails, before the machine is stopped for the next one.
 - **A VM restarted in place has no process for a moment**, which is what an
   abandoned one looks like. `vm.sh reload` (`chore vm:reload`) renews the lease
   before the stop, renews it again before the boot, and keeps the slot throughout.
