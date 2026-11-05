@@ -26,6 +26,26 @@ if [ -f "$HOLD" ]; then
     exit 0
 fi
 
+# THE GUEST TAKES LOGINS UNTIL IT POWERS OFF (#150). logind writes /run/nologin
+# five minutes before a scheduled shutdown, or at once when less than that is left,
+# and pam_nologin in sshd's account stack then refuses every user but root. The
+# harness logs in as an unprivileged user, to set the guest up and to re-arm this
+# deadline, so a deadline of five minutes refused its first login and any other was
+# cut five minutes short for a call needing a new connection. A guest that cannot
+# be changed still arms its deadline: that is what stops a lost VM.
+SSHD_PAM=/etc/pam.d/sshd
+NOLOGIN_RULE='^[[:space:]]*account[[:space:]].*pam_nologin'
+allow_logins() {
+    local edited
+    [ -f "$SSHD_PAM" ] || return 0
+    grep -Eq "$NOLOGIN_RULE" "$SSHD_PAM" || return 0
+    edited="$(sed -E "/$NOLOGIN_RULE/s/^/# /" "$SSHD_PAM")" || return 1
+    printf '%s\n' "$edited" > "$SSHD_PAM"
+}
+if ! allow_logins; then
+    echo "deadline: could not change $SSHD_PAM: new logins stop five minutes before the poweroff" >&2
+fi
+
 # NOT BACKGROUNDED, AND ITS STATUS IS READ. `nohup shutdown ... &` put the
 # one call this exists to make out of `set -e`'s reach and announced a
 # timer that may never have been set. shutdown returns once it is armed.

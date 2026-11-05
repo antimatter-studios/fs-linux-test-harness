@@ -1,0 +1,18 @@
+# The same consumer, booting the Debian 13 guest (#70).
+
+[project]
+name = "flth-smoke-deadline"
+
+[vm]
+guest = "debian-13"
+memory = "2G"
+cpus = 2
+disk = "16G"
+ssh_port = 50124
+deadline_minutes = 5
+
+[share]
+dir = ".vm-share"
+
+[setup]
+script = "setup.sh"

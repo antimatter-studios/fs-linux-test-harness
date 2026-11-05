@@ -408,7 +408,7 @@ chose.
 | `[vm] cpus` | integer | `4` | Guest CPUs, 1–64. |
 | `[vm] disk` | string | `32G` | Guest disk size, e.g. `16G`. |
 | `[vm] ssh_port` | integer | `50122` | Host port forwarded to the guest's SSH when it is free at boot; when another socket holds it, the boot forwards a free port the kernel hands out instead, and says so. |
-| `[vm] deadline_minutes` | integer | `480` | The guest powers itself off after this long **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
+| `[vm] deadline_minutes` | integer | `480` | The guest powers itself off after this long **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
 | `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. A consumer needing both runs a second config with its own `[project] name` and `[vm] ssh_port` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
 
 Paths may contain only letters, digits, `.`, `_`, `-` and `/`, must be
@@ -945,8 +945,11 @@ In order of precision:
    in `status`. A boot still in progress is protected by its live `up` lock.
 3. **The guest's own deadline** — scheduled inside the guest at every boot
    (`[vm] deadline_minutes`), confirmed from logind's record, and re-armed
-   by every `run` and `exec` as the call starts and as it ends (at most once
-   a minute, or once in a sixth of a shorter deadline), so it measures idleness rather than the boot's lifetime. The
+   by the setup call, `run` and `exec` as the call starts and as it ends (at
+   most once a minute, or once in a sixth of a shorter deadline), so it measures
+   idleness rather than the boot's lifetime. logind's `/run/nologin` for a
+   shutdown's last five minutes does not stop the harness reaching the guest:
+   `deadline.sh` comments `pam_nologin` out of the guest's `/etc/pam.d/sshd`. The
    one net that works when the host process is hung or killed.
 
 `hold` (and `chore vm:up`) opts out of a session's end, 2 and 3 for a

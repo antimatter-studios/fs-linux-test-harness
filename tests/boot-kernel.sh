@@ -24,10 +24,13 @@ export FLTH_STATE_DIR
 # shellcheck disable=SC2064  # expand now: the paths are fixed
 trap "rm -rf '$SANDBOX' '$FLTH_STATE_DIR'" EXIT
 
+require_guest_bash || exit 1
 BIN="$SANDBOX/bin"
 export STUBDIR="$SANDBOX/stubdir"
 export GUEST="$SANDBOX/guest"
-mkdir -p "$BIN" "$STUBDIR"
+mkdir -p "$BIN" "$STUBDIR" "$GUEST"
+# The setup call re-arms the guest's poweroff, and this is not a guest.
+printf '#!/bin/sh\nexit 0\n' > "$BIN/shutdown"
 printf '#!/bin/sh\nexit 0\n' > "$BIN/sleep"
 printf '#!/bin/sh\nexit 0\n' > "$BIN/shutdown"
 
@@ -55,8 +58,24 @@ cat > "$BIN/ssh" <<'STUB'
 for arg in "$@"; do
     case "$arg" in -N | -O) exit 0 ;; esac
 done
-sed -e "s|/boot|$GUEST/boot|g" -e "s|/var/lib/fs-linux-test-harness|$GUEST/lib|g" |
-    tee -a "$STUBDIR/guest-scripts" | bash -s
+# To the end of the script, not of stdin: a call into the guest holds stdin open
+# for as long as it lives, and ends its script with this line. The rest of stdin
+# stays the script's own, as it is on a guest.
+script=""
+while IFS= read -r line; do
+    script="$script$line
+"
+    [ "$line" != 'exit "$flth_status"' ] || { script="$script}
+"; break; }
+done
+run="$STUBDIR/guest-run.$$"
+printf '%s' "$script" |
+    sed -e "s|/boot|$GUEST/boot|g" -e "s|/var/lib/fs-linux-test-harness|$GUEST/lib|g" -e "s|/run/fs-linux-test-harness|$GUEST/run-|g" |
+    tee -a "$STUBDIR/guest-scripts" > "$run"
+"$FLTH_TEST_GUEST_BASH" "$run"
+rc=$?
+rm -f "$run"
+exit "$rc"
 STUB
 # ps: a QEMU naming the machine's disk while the machine is running.
 cat > "$BIN/ps" <<'STUB'

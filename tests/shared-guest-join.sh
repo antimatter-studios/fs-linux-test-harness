@@ -42,7 +42,8 @@ check_eq "$(setups join-two)" 1 "its setup runs when it first joins"
 check_eq "$(setups join-one)" 1 "and the first one's does not run again"
 check_contains "$(cat "$TOOLS")" "mount --bind /share/deep/two/.vm-share /share" "its share is its own, wherever its tree is"
 check_contains "$(cat "$TOOLS")" "flock -n 9" "and setups take turns"
-check_lacks "$(stub_calls)" "down" "and nothing stops the guest for it"
+# By the line: a re-arm logs `shutdown ...`, which is no stop.
+check_eq "$(stub_calls | grep -c '^down')" 0 "and nothing stops the guest for it"
 
 two up 2>/dev/null
 check_eq "$(setups join-two)" 1 "joining again does not run it again"

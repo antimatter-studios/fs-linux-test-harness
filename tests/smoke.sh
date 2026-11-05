@@ -38,6 +38,8 @@
 #                 session's (#139)
 #   poweroff      a guest that powers itself off leaves no forwarder when its
 #                 session ends (#135)
+#   short deadline a guest whose deadline is already in logind's last five minutes
+#                 takes setup and new logins, then powers off on time (#150)
 #   test          a passing suite passes and tears down; a CORRUPTED one
 #                 FAILS with a non-zero exit and still tears down;
 #                 FLTH_KEEP_VM=1 keeps the VM
@@ -56,8 +58,14 @@ SLOT="$REPO/scripts/vm-slot.sh"
 # same but for `[vm] guest`, so CI boots every guest a consumer can pin (#70).
 SMOKE_GUEST="${FLTH_SMOKE_GUEST:-debian-12}"
 case "$SMOKE_GUEST" in
-    debian-12) export FLTH_CONFIG="$CONSUMER/fs-linux-test-harness.toml" ;;
-    debian-13) export FLTH_CONFIG="$CONSUMER/fs-linux-test-harness.debian-13.toml" ;;
+    debian-12)
+        export FLTH_CONFIG="$CONSUMER/fs-linux-test-harness.toml"
+        DEADLINE_CONFIG="$REPO/tests/smoke-deadline-consumer/fs-linux-test-harness.toml"
+        ;;
+    debian-13)
+        export FLTH_CONFIG="$CONSUMER/fs-linux-test-harness.debian-13.toml"
+        DEADLINE_CONFIG="$REPO/tests/smoke-deadline-consumer/fs-linux-test-harness.debian-13.toml"
+        ;;
     *) echo "smoke: FLTH_SMOKE_GUEST must be debian-12 or debian-13, got '$SMOKE_GUEST'" >&2; exit 2 ;;
 esac
 unset FLTH_KEEP_VM
@@ -153,10 +161,13 @@ cleanup() {
     step "cleanup: destroy the smoke VM"
     "$VM" destroy >/dev/null 2>&1 || "$VM" destroy
     kernel_vm destroy >/dev/null 2>&1 || kernel_vm destroy
+    deadline_vm destroy >/dev/null 2>&1 || deadline_vm destroy
     rm -rf "$CONTENDER"
 }
 # The second consumer, whose setup installs a kernel (#80).
 kernel_vm() { FLTH_CONFIG="$REPO/tests/smoke-kernel-consumer/fs-linux-test-harness.toml" "$VM" "$@"; }
+# The third, whose deadline is five minutes (#150).
+deadline_vm() { FLTH_CONFIG="$DEADLINE_CONFIG" "$VM" "$@"; }
 trap cleanup EXIT
 
 step "host tools"
@@ -671,6 +682,49 @@ fi
 check_eq "$?" 0 "the abrupt-stop guest is destroyed"
 check_artifacts_gone "$memory" 'destroy after abrupt stop'
 check_no_forwarders "vm.sh destroy after an abrupt stop"
+
+step "short deadline: the guest takes logins until it powers off on time (#150)"
+# The oracles are the guest's own: logind writes /run/nologin for a poweroff less
+# than five minutes away, sshd decides a login with it there, and logind's record
+# says when the poweroff is. The status of `up` is the setup's first login, on the
+# provisioning boot and on the next. A new connection bypasses the harness's shared
+# one, which sshd has already let in. How long the guest stays up is timed from the
+# last call, whose start is the last re-arm: the rate limit is past by then.
+deadline_vm destroy >/dev/null 2>&1 || true
+deadline_vm up
+rc=$?
+check_eq "$rc" 0 "a five-minute deadline lets the setup finish on both boots"
+boot_or_stop "$rc"
+check_eq "$(deadline_vm run 'test -e /run/nologin && echo present' 2>/dev/null)" present \
+    "the first command runs with logind's /run/nologin in place"
+deadline_ssh() {
+    ssh -F "$(deadline_vm config | sed -n 's/^machine=//p')/ssh-config" -o ControlPath=none -T default "$@"
+}
+check_eq "$(deadline_ssh 'sudo -n echo logged-in' 2>/dev/null </dev/null)" logged-in \
+    "a new connection is let in and reaches root"
+poweroff_due() { deadline_vm run 'sed -n "s/^USEC=//p" /run/systemd/shutdown/scheduled' 2>/dev/null; }
+due_before="$(poweroff_due)"
+sleep 65
+due_after="$(poweroff_due)"
+last_call=$(date +%s)
+check_true '[ -n "$due_before" ] && [ -n "$due_after" ] && [ "$due_after" -gt "$due_before" ]' \
+    "a call after the rate limit moves the poweroff in logind's record ($due_before to $due_after)" \
+    "a call after the rate limit did not move the poweroff in logind's record ($due_before to $due_after)"
+idle=0
+while [ "$idle" -lt 480 ] && deadline_vm status >/dev/null 2>&1; do
+    sleep 5
+    idle=$(( $(date +%s) - last_call ))
+done
+check_true '! deadline_vm status >/dev/null 2>&1' "the guest stops by itself with nothing asking anything of it" "the guest was still up ${idle}s after its last call"
+check_true '[ "$idle" -ge 280 ] && [ "$idle" -le 420 ]' \
+    "it stops on time: ${idle}s after its last call, for a deadline of 300s" \
+    "it stopped ${idle}s after its last call, for a deadline of 300s"
+deadline_console="$(deadline_vm config | sed -n 's/^machine=//p')/console.log"
+check_contains "$(tail -n 40 "$deadline_console" 2>/dev/null)" "Power down" "and its console records a power-off"
+deadline_vm down
+check_eq "$?" 0 "down clears up after a guest that powered itself off"
+deadline_vm destroy
+check_eq "$?" 0 "the third consumer's VM is destroyed"
 
 step "kernel: the next boot runs the kernel a provisioning boot installed (#80)"
 # The oracles are the guest's own: dpkg says which kernel the setup's package
