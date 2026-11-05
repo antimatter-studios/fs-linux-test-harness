@@ -104,6 +104,8 @@ make_stub_harness() {
     printf '#!/bin/sh\nexit 0\n' > "$FLTH_TEST_STUB/bin/sleep"
     printf '#!/bin/sh\necho "shutdown $*" >> "%s/calls"\nexit 0\n' "$FLTH_TEST_STUB" > "$FLTH_TEST_STUB/bin/shutdown"
     make_stub_guest_tools
+    # A provisioning boot's script is `sync`, and here it runs on this machine (#191).
+    printf '#!/bin/sh\necho sync >> "%s/calls"\nexit 0\n' "$FLTH_TEST_STUB" > "$FLTH_TEST_STUB/bin/sync"
     chmod +x "$FLTH_TEST_STUB/bin/"*
     echo absent > "$FLTH_TEST_STUB/state"
     : > "$FLTH_TEST_STUB/calls"
