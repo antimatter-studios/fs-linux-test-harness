@@ -93,7 +93,7 @@ signal_case() {
     : > "$STUB/pause"
     [ "$phase" != before-qemu ] || : > "$STUB/before-qemu"
     set -m
-    "$VM" up > "$SANDBOX/$signal-$target-$phase.log" 2>&1 &
+    "${DEFAULT_INT[@]}" "$VM" up > "$SANDBOX/$signal-$target-$phase.log" 2>&1 &
     up_pid=$!
     set +m
     if ! wait_file "$STUB/booting"; then

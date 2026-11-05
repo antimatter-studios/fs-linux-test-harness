@@ -110,7 +110,7 @@ start_hang() {
     local monitor=0
     case "$-" in *m*) monitor=1 ;; esac
     set -m
-    (cd "$C" && exec "${RUN[@]}" ./oracle.sh "$1") >/dev/null 2>&1 &
+    (cd "$C" && exec "${DEFAULT_INT[@]}" "${RUN[@]}" ./oracle.sh "$1") >/dev/null 2>&1 &
     pid=$!
     [ "$monitor" = 1 ] || set +m
     local tries=0

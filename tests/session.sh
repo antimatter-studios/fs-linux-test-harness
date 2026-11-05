@@ -59,7 +59,7 @@ signal_case() {
     # signal_case <signal> <number>
     stub_down 0; work "sleep 30 & wait \$!"; : > "$LOG"
     set -m
-    (cd "$SANDBOX/consumer" && exec ./work.sh) >/dev/null 2>&1 &
+    (cd "$SANDBOX/consumer" && exec "${DEFAULT_INT[@]}" ./work.sh) >/dev/null 2>&1 &
     local pid=$! tries=0
     set +m
     until grep -q "^begin $pid\$" "$LOG" 2>/dev/null || [ "$tries" -ge 100 ]; do
