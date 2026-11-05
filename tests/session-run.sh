@@ -114,9 +114,12 @@ start_hang() {
     pid=$!
     [ "$monitor" = 1 ] || set +m
     local tries=0
-    until [ -s "$OUT/pid" ] || [ "$tries" -ge 200 ]; do
+    # A boot takes more than 10 seconds at a load average of 300. Only a failure
+    # waits this out, and it says so rather than signalling a run with no command.
+    until [ -s "$OUT/pid" ] || [ "$tries" -ge 2400 ]; do
         "$REAL_SLEEP" 0.05; tries=$((tries + 1))
     done
+    [ -s "$OUT/pid" ] || bad "the command never started, so the case after this says nothing"
 }
 
 # TERM to the runner alone — `kill <pid>`, a supervisor that signals the
