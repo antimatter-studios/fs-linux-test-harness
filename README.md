@@ -838,6 +838,10 @@ No consumer's tests or config change, and a consumer without the setting keeps i
 private VM. Every `vm.sh` call for the shared guest needs the setting, `chore vm:down`
 included: without it, that call means the consumer's private VM.
 
+Every consumer joining one boot needs the same directory and the same harness version.
+A join that differs is refused, saying which, because the guest was given both when it
+booted. Ask `chore vm:config` what this call has.
+
 The guest can read and write everything under that directory, so choose the narrowest
 one that holds your trees. A run only has its own tree mounted, at `/repo`, and its own
 share, at `/share`. A tree outside the directory is refused.

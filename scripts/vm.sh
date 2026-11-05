@@ -240,6 +240,7 @@ boot_vm() {
     boot_engine "$@" || return
     if flth_shared; then
         shared_prepare_guest || return
+        shared_boot_identity > "$(shared_boot_record)" || return
     fi
     rm -f "$(unfinished_boot_marker)"
 }
@@ -448,6 +449,7 @@ vm_up_locked() {
             refuse_other_worktree
             refuse_provisioning_boot
             if flth_shared; then
+                refuse_other_boot
                 return 0
             fi
             apply_setup auto || return
@@ -1089,6 +1091,35 @@ cat > $FLTH_GUEST_RUNS/run.sh <<'FLTH_GUEST_RUN_END'
 $(cat "$FLTH_HARNESS/scripts/lib/guest-run.sh")
 FLTH_GUEST_RUN_END
 bash $FLTH_GUEST_RUNS/run.sh prepare" >&2
+}
+
+# WHAT A BOOT FIXED FOR EVERYONE WHO JOINS. The guest sees one host directory and carries
+# one lib/guest-run.sh. A join with another directory would mount a path that is not
+# there, and one from a harness with another tool would call it with the wrong words,
+# so it is refused here, where it can say why. Nobody is stopped for it: the guest is
+# in use, and it can be joined with its own settings, or later by a new boot.
+shared_boot_record() { printf '%s/shared-boot\n' "$FLTH_MACHINE_DIR"; }
+
+shared_boot_identity() {
+    printf '%s\t%s\n' "$FLTH_SHARED_ROOT" "$(flth_hash8 "$(cat "$FLTH_HARNESS/scripts/lib/guest-run.sh")")"
+}
+
+refuse_other_boot() {
+    local recorded root
+    recorded="$(cat "$(shared_boot_record)" 2>/dev/null || true)"
+    [ "$recorded" != "$(shared_boot_identity)" ] || return 0
+    if [ -z "$recorded" ]; then
+        echo "vm: the shared guest has no record of how it was booted, so joining it is refused." >&2
+    else
+        root="${recorded%%$'\t'*}"
+        if [ "$root" != "$FLTH_SHARED_ROOT" ]; then
+            echo "vm: the shared guest was booted with FLTH_SHARED_ROOT=$root, and this call has $FLTH_SHARED_ROOT." >&2
+        else
+            echo "vm: the shared guest was booted by another version of the harness." >&2
+        fi
+    fi
+    echo "    Nothing ran. Join with what it was booted with, or again once it has stopped." >&2
+    exit 1
 }
 
 # A run nobody is on the list for any more: stop what it left and delete its root,
