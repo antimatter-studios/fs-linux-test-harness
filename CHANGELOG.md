@@ -9,6 +9,51 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## v0.5.9 — 2026-11-05
+
+### Changed
+
+- **A command run through `vm.sh run` or `vm.sh exec` is run by `bash -c`.** Its
+  whole text is parsed before any of it runs, so a syntax error on a later line now
+  stops the lines before it from running. Its stdin is `/dev/null`.
+
+- **The macOS setup installs `vagrant-notify-forwarder-christhomas` 0.7.7.** The
+  harness still works with 0.7.5, and it declares no minimum: nothing here needs a
+  newer plugin. A macOS guest still runs no forwarder receiver: notify-forwarder
+  v1.2.1 no longer writes data to the files an event names, and the reasons the
+  stand-in stays are recorded in `vagrant/Vagrantfile`.
+
+### Fixed
+
+- **A box catalog outage is waited for and not blamed on the guest.** A box
+  catalog or box download answering a 5xx, a 408, 425 or 429, or not answering
+  at all, took the three boot attempts five seconds apart and ended saying the
+  VM would not boot. `up` now waits for it over minutes, 30, 60 and then 120
+  seconds between tries, for 15 minutes at most, and its failure names the
+  catalog and what it answered. Any other boot failure keeps its retries.
+
+- **A signal to a session stops the guest command it started.** When the VM stayed
+  up (`FLTH_KEEP_VM=1`, a held VM, another live session), a command started through
+  `vm.sh run` or `vm.sh exec` kept running in the guest after the host side had
+  ended. It now gets TERM, then KILL after about five seconds, along with its
+  descendants. Other calls in that guest are not touched.
+
+- **`vm.sh down` and `vm.sh destroy` read the record plugin 0.7.7 writes.** A line
+  with a pid and an identity was skipped and the record then removed, so the plugin
+  had nothing left to stop.
+- **A session ending on a guest that powered itself off stops its forwarders.** They
+  ran until a later `down` or `destroy` of that machine with plugin 0.7.5, and for
+  about 15 seconds with 0.7.7.
+
+- A session signalled during a boot no longer leaves a guest running without `/share` and `/repo`. `FLTH_KEEP_VM=1`, a hold, another live session and another worktree still keep a VM whose boot finished. If such a guest is left by a boot with no session, `vm.sh up` and `vm.sh run` replace it, `vm.sh exec` refuses it, `vm.sh status` says so and `vm.sh reap` stops it.
+
+- An interrupted bare `vm.sh up` stops its boot and any unfinished guest before
+  releasing the machine's boot lock. TERM, INT, and HUP sent to `up` alone are
+  forwarded to its boot, so neither an orphaned boot nor a guest without its
+  poweroff deadline is left behind.
+
+- A mounted-worktree record is trusted only for the VM boot that wrote it, so a boot by an older harness cannot leave a stale record that refuses legitimate commands or names the wrong mounted worktree.
+
 ## v0.5.8 — 2026-11-04
 
 ### Added
