@@ -20,6 +20,8 @@
 #                  shutting down does just after it drops its connections
 #   gate_up        present: a successful up writes gate_up.reached and waits for
 #                  this file to go, with the VM not yet running
+#   host-bin       made by the engine: a `sync` that logs, first on every guest
+#                  script's PATH, so no test runs the host's own
 #   gate_down      present: a down writes gate_down.reached and waits for this
 #                  file to go, with the VM already stopped
 #   on_failed_up   a script run as an up fails, for what an attempt's length does
@@ -156,16 +158,33 @@ stub_guest_paths() {
             -e "s|/cache\\([/ ']\\)|$STUB/guest-cache\\1|g" -e "s|/cache\$|$STUB/guest-cache|"
 }
 
+# A GUEST SCRIPT RUN HERE GETS A SYNC THAT ONLY LOGS (#202). A provisioning boot's
+# script is `sync`, and on the host that flushes every disk on the machine. A test
+# that copies this engine sets up its own PATH, so the stand-in comes from the
+# engine, first on the PATH of every script it runs, children included.
+stub_host_bin() {
+    mkdir -p "$STUB/host-bin"
+    [ -x "$STUB/host-bin/sync" ] ||
+        printf '#!/bin/sh\necho sync >> "%s/calls"\n' "$STUB" > "$STUB/host-bin/sync"
+    chmod +x "$STUB/host-bin/sync"
+}
+
+stub_guest_script() {
+    stub_host_bin
+    printf 'export PATH=%q:"$PATH"\n' "$STUB/host-bin"
+    stub_guest_paths "$1"
+}
+
 engine_run() {
     stub_log run
     printf '%s\n' "$1" >> "$STUB/scripts"
-    stub_guest_paths "$1" | "$FLTH_TEST_GUEST_BASH" -s
+    stub_guest_script "$1" | "$FLTH_TEST_GUEST_BASH" -s
 }
 
 engine_run_held() {
     stub_log run
     printf '%s\n' "$1" >> "$STUB/scripts"
-    flth_run_holding_stdin "$(stub_guest_paths "$1")" "$FLTH_TEST_GUEST_BASH" -s
+    flth_run_holding_stdin "$(stub_guest_script "$1")" "$FLTH_TEST_GUEST_BASH" -s
 }
 
 engine_copy() {
