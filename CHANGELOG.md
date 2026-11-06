@@ -9,6 +9,24 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## v0.6.2 — 2026-11-06
+
+### Fixed
+
+- **A stalled Ubuntu mirror no longer fails `ci-setup-linux.sh`.** After an
+  apt-get attempt stalls, the next one points the runner's Ubuntu mirror at
+  another (`archive.ubuntu.com`, then `mirrors.edge.kernel.org`, or
+  `FLTH_APT_MIRRORS`), fetches its package index and tries again there;
+  security updates keep their own host. A stall on every attempt names each
+  mirror it tried, in order (#200).
+
+- **The stub engine runs no real `sync`, whatever `PATH` its caller set.** A
+  consumer's script guards that copy `tests/stubs/engine.sh` set up their own
+  `PATH`, so the stand-in 0.6.1 added for the harness's own tests never reached
+  them, and every provisioning boot they drove flushed the host's disks. The
+  engine now puts a `sync` that only logs first on the `PATH` of every guest
+  script it runs, and records it in `calls` (#202).
+
 ## v0.6.1 — 2026-11-05
 
 ### Fixed
