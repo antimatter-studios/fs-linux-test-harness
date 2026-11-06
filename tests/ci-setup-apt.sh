@@ -18,6 +18,9 @@ new_sandbox
 
 LIB="$REPO/scripts/lib/apt.sh"
 SETUP="$REPO/scripts/ci-setup-linux.sh"
+# No sources file until the mirror checks make one: nothing here may read or
+# rewrite the machine's own /etc/apt.
+export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
 
 if ! command -v timeout >/dev/null 2>&1; then
     bad "timeout is required: install coreutils"
@@ -33,10 +36,17 @@ mkdir -p "$bin"
 # sudo runs its command, environment assignments first, as sudo does.
 printf '#!/usr/bin/env bash\nexec env "$@"\n' > "$bin/sudo"
 # apt-get logs its arguments and frontend; $SANDBOX/hang makes it stall,
-# $SANDBOX/hang-once stall once, and $SANDBOX/fail fail, saying why.
+# $SANDBOX/hang-once stall once, and $SANDBOX/fail fail, saying why. A
+# mirror named in $SANDBOX/stalled-mirrors stalls whenever the sources file
+# points at it: the stand-in for a stalled package mirror (#200).
 cat > "$bin/apt-get" <<STUB
 #!/usr/bin/env bash
 echo "apt-get \$* frontend=\${DEBIAN_FRONTEND:-}" >> "$SANDBOX/calls"
+if [ -f "$SANDBOX/stalled-mirrors" ] && [ -f "\$FLTH_APT_SOURCES" ]; then
+    while read -r m; do
+        grep -qF "URIs: \$m" "\$FLTH_APT_SOURCES" && exec sleep 30
+    done < "$SANDBOX/stalled-mirrors"
+fi
 [ -f "$SANDBOX/hang" ] && exec sleep 30
 if [ -f "$SANDBOX/hang-once" ]; then rm -f "$SANDBOX/hang-once"; exec sleep 30; fi
 if [ -f "$SANDBOX/fail" ]; then echo "E: the stub mirror refused" >&2; exit 100; fi
@@ -48,8 +58,11 @@ cat > "$bin/dpkg" <<STUB
 echo "dpkg \$*" >> "$SANDBOX/calls"
 exit 0
 STUB
+# Under ci-setup-linux.sh's own shell options: a helper that ends on a
+# failed test kills the setup step there, saying nothing (#204's first run).
 cat > "$SANDBOX/run-apt" <<RUN
 #!/usr/bin/env bash
+set -euo pipefail
 . "$LIB"
 flth_apt "\$@"
 RUN
@@ -113,6 +126,105 @@ rm -f "$SANDBOX/fail"
 check_eq "$rc" 100 "a failed apt-get keeps its exit status"
 check_contains "$out" "exit 100" "the failure names apt-get's status"
 check_contains "$out" "E: the stub mirror refused" "and prints the tail of apt-get's output"
+
+# A stalled mirror is left behind (#200). The runner's sources name one
+# Ubuntu mirror, and security updates from another host. When an attempt
+# stalls, the next one points the Ubuntu mirror at another, fetches the
+# package index from it, and installs from there; security is untouched.
+cat > "$SANDBOX/ubuntu.sources" <<'SOURCES'
+Types: deb
+URIs: http://azure.archive.ubuntu.com/ubuntu/
+Suites: noble noble-updates noble-backports
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: noble-security
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+SOURCES
+export FLTH_APT_SOURCES="$SANDBOX/ubuntu.sources"
+export FLTH_APT_MIRRORS="http://mirror-two.example/ubuntu/ http://mirror-three.example/ubuntu/"
+export FLTH_APT_TIMEOUT=2
+echo "http://azure.archive.ubuntu.com/ubuntu/" > "$SANDBOX/stalled-mirrors"
+run_apt "QEMU" install -y -qq qemu-utils
+sources="$(cat "$SANDBOX/ubuntu.sources")"
+check_eq "$rc" 0 "an install whose mirror stalls succeeds from another mirror"
+check_contains "$sources" "URIs: http://mirror-two.example/ubuntu/" "the sources now name the next mirror"
+check_lacks "$sources" "azure.archive.ubuntu.com" "and no longer the one that stalled"
+check_contains "$sources" "URIs: http://security.ubuntu.com/ubuntu/" "security updates keep their own host"
+check_contains "$out" "azure.archive.ubuntu.com" "the stalled mirror is named"
+check_contains "$out" "mirror-two.example" "and so is the one the next attempt uses"
+check_eq "$(grep '^apt-get ' <<<"$calls" | sed -n 2,3p | sed 's/ -o [^ ]*//g')" "apt-get update -qq frontend=noninteractive
+apt-get install -y -qq qemu-utils frontend=noninteractive" "the next mirror's package index is fetched before the install is tried again"
+
+# A stall on every mirror fails naming each one it tried.
+printf '%s\n' http://mirror-two.example/ubuntu/ http://mirror-three.example/ubuntu/ >> "$SANDBOX/stalled-mirrors"
+sed -i.bak 's#mirror-two.example#azure.archive.ubuntu.com#' "$SANDBOX/ubuntu.sources"
+run_apt "QEMU" install -y -qq qemu-utils
+if [ "$rc" -ne 0 ]; then ok "a stall on every mirror fails"; else bad "a stall on every mirror fails (it exited 0)"; fi
+check_contains "$out" "a package mirror stalled: http://azure.archive.ubuntu.com/ubuntu/, then http://mirror-two.example/ubuntu/, then http://mirror-three.example/ubuntu/" "the failure names every mirror that stalled, in order"
+
+# A package index update that stalls moves to the next mirror as well, and
+# needs no second update before it.
+rm -f "$SANDBOX/stalled-mirrors"
+printf 'http://mirror-three.example/ubuntu/\n' > "$SANDBOX/stalled-mirrors"
+run_apt "the package index" update -qq
+check_eq "$rc" 0 "an index update whose mirror stalls succeeds from another mirror"
+check_eq "$(grep -c ' update -qq ' <<<"$calls")" 2 "and is fetched once per mirror"
+rm -f "$SANDBOX/stalled-mirrors"
+unset FLTH_APT_MIRRORS FLTH_APT_TIMEOUT
+export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
+
+# GitHub's ubuntu-24.04 image names its archive mirror through a mirror list
+# (runner-images' configure-apt-sources.sh): `mirror+file:` a file of
+# mirrors, Azure's first. Only the security stanza keeps a plain URI. Under
+# ci-setup-linux.sh's shell options, a mirror search that found nothing
+# ended the setup step at once, printing nothing (#204's first CI run).
+printf 'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\nhttps://security.ubuntu.com/ubuntu/\tpriority:3\n' > "$SANDBOX/apt-mirrors.txt"
+cat > "$SANDBOX/runner.sources" <<SOURCES
+Types: deb
+URIs: mirror+file:$SANDBOX/apt-mirrors.txt
+Suites: noble noble-updates noble-backports
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: noble-security
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+SOURCES
+export FLTH_APT_SOURCES="$SANDBOX/runner.sources"
+export FLTH_APT_MIRRORS="http://mirror-two.example/ubuntu/" FLTH_APT_TIMEOUT=2
+run_apt "QEMU" install -y -qq qemu-utils
+check_eq "$rc" 0 "a runner's mirror list does not stop an install that does not stall"
+check_contains "$out" "from mirror+file:$SANDBOX/apt-mirrors.txt (http://azure.archive.ubuntu.com/ubuntu/ first)" "and the attempt names the list and the mirror it tries first"
+printf 'mirror+file:%s\n' "$SANDBOX/apt-mirrors.txt" > "$SANDBOX/stalled-mirrors"
+run_apt "QEMU" install -y -qq qemu-utils
+sources="$(cat "$SANDBOX/runner.sources")"
+check_eq "$rc" 0 "a runner's mirror list that stalls is left for the next mirror"
+check_contains "$sources" "URIs: http://mirror-two.example/ubuntu/" "the sources now name the next mirror"
+check_contains "$sources" "URIs: http://security.ubuntu.com/ubuntu/" "security updates keep their own host"
+check_contains "$out" "the mirror mirror+file:$SANDBOX/apt-mirrors.txt (http://azure.archive.ubuntu.com/ubuntu/ first) stalled" "the stall names the list and its first mirror"
+rm -f "$SANDBOX/stalled-mirrors"
+# Sources that name only the security host leave nothing to switch, and the
+# install still runs.
+sed -n '/security/,$p' "$SANDBOX/runner.sources" > "$SANDBOX/security-only.sources"
+FLTH_APT_SOURCES="$SANDBOX/security-only.sources" run_apt "QEMU" install -y -qq qemu-utils
+check_eq "$rc" 0 "sources with no archive mirror still install"
+unset FLTH_APT_MIRRORS FLTH_APT_TIMEOUT
+export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
+
+# An older runner names its mirror on a one-line `deb` entry instead.
+printf '%s\n' '# deb http://commented.example/ubuntu/ jammy main' \
+    'deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu/ jammy main' \
+    'deb http://security.ubuntu.com/ubuntu/ jammy-security main' > "$SANDBOX/sources.list"
+got="$(FLTH_APT_SOURCES="$SANDBOX/sources.list" bash -c '. "$1"; flth_apt_mirror' _ "$LIB")"
+check_eq "$got" "http://azure.archive.ubuntu.com/ubuntu/" "a one-line deb entry's mirror is read, past comments and options"
+got="$(bash -c '. "$1"; flth_apt_mirror' _ "$LIB")"
+check_eq "$got" "" "no sources file names no mirror, so nothing switches"
 
 # ci-setup-linux.sh calls apt-get only through the bounded call: the
 # package index and QEMU, then HashiCorp's index and Vagrant.

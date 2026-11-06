@@ -31,6 +31,10 @@
 #                               before it is cut off (lib/apt.sh)
 #   FLTH_APT_ATTEMPTS           3: the attempts each apt-get call makes before
 #                               it fails naming itself (lib/apt.sh)
+#   FLTH_APT_SOURCES            the runner's ubuntu.sources and sources.list: the
+#                               files whose Ubuntu mirror a stall moves (lib/apt.sh)
+#   FLTH_APT_MIRRORS            archive.ubuntu.com, then mirrors.edge.kernel.org:
+#                               the mirrors an attempt after a stall moves to
 #   FLTH_VM_GUEST               the guest whose box is cached: the consumer's
 #                               `[vm] guest`, read from the config found from
 #                               the working directory, or debian-12 without one
@@ -117,7 +121,8 @@ endgroup
 group "QEMU"
 # Each apt-get retries, times out, is bounded and tried again after a stall
 # (lib/apt.sh): a stalled mirror once held this group for 26 minutes,
-# printing nothing (#77).
+# printing nothing (#77). The attempt after a stall uses another Ubuntu
+# mirror, since a stall can outlast every fresh attempt on one (#200).
 flth_apt "the package index" update -qq
 flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
 qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
