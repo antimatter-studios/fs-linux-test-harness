@@ -40,6 +40,21 @@ require_guest_bash() {
     fi
 }
 
+# require_tool <command> <what installs it> — a test that needs a tool and has
+# none fails here, naming what installs it. It never skips, and it does not run
+# on into "command not found", which names nothing to install (#182).
+require_tool() {
+    command -v "$1" >/dev/null 2>&1 && return 0
+    bad "$1 is required, and there is none on PATH: $2"
+    return 1
+}
+
+# require_chore — for the tests that drive a real chore. CI's unit job installs
+# it; a guest has it only when a consumer's setup installs it.
+require_chore() {
+    require_tool chore "install a release (.github/actions/install-chore does it for CI's unit job), or have the guest's setup install it"
+}
+
 new_sandbox() {
     SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/flth.XXXXXX")" || exit 1
     # shellcheck disable=SC2064  # expand now: the path is fixed
