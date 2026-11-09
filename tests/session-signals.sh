@@ -59,18 +59,19 @@ COMMAND
 # BASH_ENV. The statement after the launch is the one place a test can stand:
 # the command has been forked and the session does not yet know its PID. A
 # statement that no longer matches leaves the "launched" record empty, which the
-# replay case below reports.
+# replay case below reports. Before the launch, the signal arrives as the session
+# checks for one, the last statement before it forks; a statement that no longer
+# matches leaves the "injected" record empty, which that case reports.
 cat > "$SANDBOX/startup.sh" <<'COMMAND'
-set() {
-    if [ "${0##*/}" = vm-session.sh ] && [ "${SESSION_TEST_INJECT:-}" = before-launch ] &&
-        [ "${1:-}" = -m ] && [ ! -f "$SESSION_TEST_DIR/injected" ]; then
+session_test_statement() {
+    [ "${0##*/}" = vm-session.sh ] || return 0
+    if [ "$1" = '[ "$_flth_session_signalled" = 0 ]' ] && [ "${SESSION_TEST_INJECT:-}" = before-launch ] &&
+        [ ! -f "$SESSION_TEST_DIR/injected" ]; then
         echo TERM > "$SESSION_TEST_DIR/injected"
         kill -TERM "$$"
+        return 0
     fi
-    builtin set "$@"
-}
-session_test_statement() {
-    [ "$1" = '_flth_session_child=$!' ] && [ "${0##*/}" = vm-session.sh ] || return 0
+    [ "$1" = '_flth_session_child=$!' ] || return 0
     echo "$!" > "$SESSION_TEST_DIR/launched"
     [ "${SESSION_TEST_INJECT:-}" = after-launch ] || return 0
     echo TERM > "$SESSION_TEST_DIR/injected"
@@ -81,10 +82,11 @@ trap 'session_test_statement "$BASH_COMMAND"' DEBUG
 COMMAND
 
 # How long a session gets to end, in the same units as its escalation. The
-# session counts 50 ticks of `kill -0` and `command -p sleep 0.1` before it sends
-# KILL, which is five seconds on an idle machine and whatever the machine allows
-# on a loaded one, so a limit in seconds fails a session that is on schedule. The
-# watchdog runs that same loop at the same time, so a slow machine slows both.
+# session counts 50 ticks of a liveness check and a 0.1-second sleep before it
+# sends KILL, which is five seconds on an idle machine and whatever the machine
+# allows on a loaded one, so a limit in seconds fails a session that is on
+# schedule. The watchdog counts its ticks at the same time, each costing at least
+# what one of the session's does, so a slow machine slows both.
 # A session that does not end reaches this limit on any machine.
 # Measured on arm64 macOS at load 420, Bash 3.2 and 5.3, 40 runs: the stubborn
 # cases ended at tick 48 to 50 and every other case by tick 3. With both loops'

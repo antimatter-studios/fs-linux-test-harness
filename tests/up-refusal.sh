@@ -64,13 +64,17 @@ STUB
     check_eq "$?" 0 "$phase: the recovered VM stops"
 done
 
+# vm.sh's definitions with a step made to fail. `up` runs its boot as vm.sh again,
+# `vm.sh up-boot` (#209), which here is this script again, so the step fails there too.
 FAILURE_VM="$STUB_HARNESS/scripts/failure-vm.sh"
 sed '/^command="${1:-}"/,$d' "$VM" > "$FAILURE_VM"
 cat >> "$FAILURE_VM" <<'STUB'
 flth_load || exit 1
 engine_prepare
 eval "$FLTH_TEST_FAIL_STEP() { stub_log step-refused; echo 'vm: $FLTH_TEST_FAIL_STEP refused' >&2; return 17; }"
-if [ "$FLTH_TEST_FAIL_STEP" = guest_call ]; then
+if [ "${1:-}" = up-boot ]; then
+    vm_up_boot "$2" "$3"
+elif [ "$FLTH_TEST_FAIL_STEP" = guest_call ]; then
     guest_run 'echo unexpected'
 else
     vm_up
