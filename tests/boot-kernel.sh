@@ -110,6 +110,21 @@ INITRD="$MACHINE/boot/initrd.img"
 export SETUP_LOG="$SANDBOX/setup.log"
 
 vm() { (cd "$C" && "$VM" "$@"); }
+# vm_kept <args>: a vm call whose output no check reads. A passing run does not
+# show what it printed; its stderr and exit status are kept, and a failing run
+# prints them for every such call, so an `up` that stopped says why (#210).
+VM_CALLS="$SANDBOX/vm-calls"
+: > "$VM_CALLS"
+vm_kept() {
+    local rc
+    vm "$@" 2> "$SANDBOX/vm-call.err"
+    rc=$?
+    {
+        printf 'vm %s: exit %s\n' "$*" "$rc"
+        sed 's/^/    /' "$SANDBOX/vm-call.err"
+    } >> "$VM_CALLS"
+    return "$rc"
+}
 boots() { cat "$STUBDIR/boots" 2>/dev/null; }
 forget_boots() { rm -f "$STUBDIR/boots" "$STUBDIR/guest-scripts"; }
 setup_runs() { grep -c . "$SETUP_LOG" 2>/dev/null | tr -d ' '; }
@@ -181,7 +196,7 @@ host Darwin arm64
 
 fresh_disk
 setup_installs 6.12.95+deb12-arm64
-vm up 2>/dev/null
+vm_kept up
 check_eq "$?" 0 "up succeeds when the setup installs a kernel"
 check_eq "$(boots)" "disposable=0 $ON_BOX
 disposable=1 $ON_DISK" \
@@ -189,35 +204,35 @@ disposable=1 $ON_DISK" \
 check_eq "$(cat "$KERNEL" 2>/dev/null)" "disk kernel 6.12.95+deb12-arm64" "with the bytes of the guest's own kernel"
 check_eq "$(cat "$INITRD" 2>/dev/null)" "disk initrd 6.12.95+deb12-arm64" "and of its initrd"
 
-vm down 2>/dev/null
+vm_kept down
 forget_boots
-vm up 2>/dev/null
+vm_kept up
 check_eq "$(boots)" "disposable=1 $ON_DISK" "a later cold boot runs it too, with no provisioning boot"
-vm down 2>/dev/null
+vm_kept down
 
 setup_installs 6.12.95+deb12-arm64 6.16.3+deb12-arm64
 forget_boots
-vm up 2>/dev/null
+vm_kept up
 check_eq "$(boots)" "disposable=0 $ON_DISK
 disposable=1 $ON_DISK" "a changed setup is applied from the kernel the disk already runs"
 check_eq "$(cat "$KERNEL" 2>/dev/null)" "disk kernel 6.16.3+deb12-arm64" "and the next boot runs the newer one it installed"
 check_eq "$(cat "$INITRD" 2>/dev/null)" "disk initrd 6.16.3+deb12-arm64" "with its own initrd"
-vm down 2>/dev/null
+vm_kept down
 
 # --- a disk provisioned before the harness kept a kernel ---------------------
 
 rm -rf "${MACHINE:?}/boot"
 runs="$(setup_runs)"
 forget_boots
-vm up 2>/dev/null
+vm_kept up
 check_eq "$(boots)" "disposable=0 $ON_BOX
 disposable=1 $ON_DISK" "a machine provisioned by an earlier harness takes one provisioning boot to find its kernel"
 check_eq "$(setup_runs)" "$runs" "and the setup is not run again: the disk carries it"
-vm down 2>/dev/null
+vm_kept down
 
 # --- a destroyed machine's kernel goes with its disk -------------------------
 
-vm destroy 2>/dev/null
+vm_kept destroy
 check_eq "$(test -e "$KERNEL" && echo kept || echo gone)" gone "destroy deletes the kept kernel with the disk that holds its modules"
 check_eq "$(test -e "$INITRD" && echo kept || echo gone)" gone "and its initrd"
 
@@ -227,23 +242,23 @@ mkdir -p "$MACHINE/boot"
 echo stale > "$KERNEL"
 echo stale > "$INITRD"
 echo stale > "$MACHINE/boot/release"
-vm up 2>/dev/null
+vm_kept up
 check_eq "$(boots)" "disposable=0 $ON_BOX
 disposable=1 $ON_BOX" "a machine that no longer exists boots a new disk on the box's kernel, whatever was kept"
-vm destroy 2>/dev/null
+vm_kept destroy
 
 # --- a setup that installs no kernel changes nothing --------------------------
 
 fresh_disk
 setup_installs
-vm up 2>/dev/null
+vm_kept up
 check_eq "$(boots)" "disposable=0 $ON_BOX
 disposable=1 $ON_BOX" "a setup that installs no kernel leaves every boot on the box's"
-vm down 2>/dev/null
+vm_kept down
 forget_boots
-vm up 2>/dev/null
+vm_kept up
 check_eq "$(boots)" "disposable=1 $ON_BOX" "and does not provision again on each cold boot to find that out"
-vm destroy 2>/dev/null
+vm_kept destroy
 
 # --- a kernel that cannot be kept fails the provisioning ---------------------
 
@@ -259,15 +274,15 @@ check_eq "$([ "$rc" -ne 0 ] && echo failed || echo passed)" failed "up fails whe
 check_contains "$out" "initrd.img-6.12.95+deb12-arm64" "naming it"
 check_eq "$(test -e "$MACHINE/base.sha256" && echo recorded || echo none)" none "and the disk is not recorded as provisioned"
 check_eq "$(cat "$STUBDIR/status")" running "the provisioning boot is left up to be inspected, as a failed setup's is"
-vm down 2>/dev/null
+vm_kept down
 echo "disk initrd 6.12.95+deb12-arm64" > "$GUEST/boot/initrd.img-6.12.95+deb12-arm64"
 forget_boots
-vm up 2>/dev/null
+vm_kept up
 check_eq "$?" 0 "the next up provisions again"
 check_eq "$(boots)" "disposable=0 $ON_BOX
 disposable=1 $ON_DISK" "and the next boot runs the kernel"
 check_eq "$(setup_runs)" 1 "without running a setup the guest records as applied"
-vm destroy 2>/dev/null
+vm_kept destroy
 
 # --- Linux guests choose for themselves --------------------------------------
 
@@ -275,17 +290,22 @@ for arch in x86_64 aarch64; do
     host Linux "$arch"
     fresh_disk
     setup_installs 6.12.95+deb12-arm64
-    vm up 2>/dev/null
+    vm_kept up
     check_eq "$?" 0 "Linux $arch: up succeeds"
     check_eq "$(boots)" "disposable=0 $ON_BOX
 disposable=1 $ON_BOX" "Linux $arch: QEMU is never told which kernel to run"
     check_lacks "$(cat "$STUBDIR/guest-scripts")" "vmlinuz" "Linux $arch: and the guest's kernels are not asked about"
     check_eq "$(test -e "$MACHINE/boot" && echo kept || echo none)" none "Linux $arch: and nothing is kept for it"
-    vm down 2>/dev/null
+    vm_kept down
     forget_boots
-    vm up 2>/dev/null
+    vm_kept up
     check_eq "$(boots)" "disposable=1 $ON_BOX" "Linux $arch: a cold boot is one disposable boot, with nothing to find out"
-    vm destroy 2>/dev/null
+    vm_kept destroy
 done
+
+if [ "$fails" -gt 0 ]; then
+    echo "every vm call no check read, in order, with its exit status and its stderr:"
+    sed 's/^/  /' "$VM_CALLS"
+fi
 
 finish boot-kernel
