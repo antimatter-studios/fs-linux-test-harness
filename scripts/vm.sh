@@ -1627,8 +1627,18 @@ vm_test() {
 # Everything is one compound command because `bash -s` reads its script from the
 # stdin the watcher reads: the shell has to have read all of it first. The command
 # goes in as a quoted string, and its stdin is empty, as it was when the script's
-# end was the end of stdin. `set -m` makes the group; it also keeps INT and QUIT
-# from being ignored in the background job.
+# end was the end of stdin.
+#
+# THE COMMAND MAKES ITS OWN GROUP. Perl, in every Debian and macOS base install,
+# moves itself into a group of its own and then runs the command, and it sets INT
+# and QUIT back to their defaults first, since a background job without job control
+# starts with them ignored. Job control (`set -m`) would make the group from both
+# sides, the shell and the child at once, as POSIX asks; on macOS the two calls
+# race, the child's fails with EPERM although the group is made, and Bash prints
+# "child setpgid ... Operation not permitted" into the call's stderr. The tests
+# run this script on the host as the guest's shell. A group made from one side
+# exists only once the child has made it, so the watcher also stops the command by
+# its pid: a host side gone before then still stops it.
 REARM_WINDOW_SECS=60
 rearm_window_secs() {
     local window=$((CFG_vm_deadline_minutes * 60 / 6))
@@ -1667,7 +1677,7 @@ flth_members() {
 }
 flth_stop() {
     local members ticks=0
-    members="\$(flth_members "\$1" "")"
+    members="\$(flth_members "\$1" "\$1")"
     [ -n "\$members" ] || return 0
     kill -TERM -- "-\$1" \$members
     while [ "\$ticks" -lt 50 ]; do
@@ -1686,10 +1696,9 @@ flth_stop() {
 }
 flth_rearm
 trap flth_rearm EXIT
-set -m
+perl -e '\$SIG{INT} = \$SIG{QUIT} = "DEFAULT"; setpgrp(0, 0) or die "vm: the guest command has no process group of its own: \$!\n"; exec { \$ARGV[0] } @ARGV or exit 127' \\
 "\$BASH" -c '${1//$single/$escaped}' < /dev/null &
 flth_command=\$!
-set +m
 (
     trap '' HUP
     while read -r flth_line; do :; done

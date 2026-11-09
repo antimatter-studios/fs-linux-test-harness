@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_chore || finish reap-lifecycle
 new_sandbox
 mkdir -p "$SANDBOX/harness/scripts/lib" "$SANDBOX/consumer"
 cp -R "$REPO/scripts/." "$SANDBOX/harness/scripts/"
