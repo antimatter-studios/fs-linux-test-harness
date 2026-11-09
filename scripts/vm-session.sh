@@ -150,27 +150,47 @@ trap flth_session_end EXIT
 # Only the traps below call this. It stays outside the branch because ShellCheck
 # does not read a trap's command, and counts a function as used only when it is
 # still defined where the script ends, which that branch never reaches.
+# A PROCESS GROUP IS MADE FROM ONE SIDE (#209). Job control (`set -m`) makes a
+# background job's group from both sides at once, the shell and the child, as
+# POSIX asks; on macOS the two calls race, the child's fails with EPERM although
+# the group is made, and Bash prints "child setpgid ... Operation not permitted"
+# into the session's stderr. So the command and the escalation below are started
+# by Perl, which makes the group in the child alone and then runs them. The group
+# exists only once the child has made it, so until then the command is signalled
+# by its pid. Job control a caller turned on is off while they start.
+#
+# The command: INT and QUIT back to their defaults first, since a background job
+# without job control starts with them ignored, then its group, then the command,
+# with the status Bash's `exec` gives a command it cannot run.
+_flth_session_own_group='$SIG{INT} = $SIG{QUIT} = "DEFAULT";
+setpgrp(0, 0) or die "vm: the command has no process group of its own: $!\n";
+exec { $ARGV[0] } @ARGV;
+print STDERR "vm: $ARGV[0]: $!\n";
+exit($!{ENOENT} ? 127 : 126);'
+# Escalation: KILL to what is left of the group after 50 ticks of 0.1 seconds. By
+# the pid only while the group has not been seen: once it has, the pid is its.
+_flth_session_killer_script='setpgrp(0, 0); my ($child, $seen) = (shift, 0);
+for (1 .. 50) {
+    if (kill 0, -$child) { $seen = 1 } elsif ($seen || !kill 0, $child) { last }
+    select undef, undef, undef, 0.1;
+}
+kill "KILL", -$child;
+kill "KILL", $child unless $seen;'
+
 _flth_session_forward() {
     # _flth_session_forward <status to report> <signal>
     _flth_session_signalled="$1"
     [ -n "$_flth_session_child" ] || return 0
-    kill -"$2" -- "-$_flth_session_child" 2>/dev/null || true
+    kill -"$2" -- "-$_flth_session_child" 2>/dev/null || kill -"$2" "$_flth_session_child" 2>/dev/null || true
     [ -z "$_flth_session_killer" ] || return 0
     local monitor=0
-    case "$-" in *m*) monitor=1 ;; esac
-    set -m
+    case "$-" in *m*) monitor=1 && set +m ;; esac
     (
-        trap - EXIT
         trap '' HUP INT TERM
-        ticks=0
-        while kill -0 -- "-$_flth_session_child" 2>/dev/null && [ "$ticks" -lt 50 ]; do
-            command -p sleep 0.1
-            ticks=$((ticks + 1))
-        done
-        kill -KILL -- "-$_flth_session_child" 2>/dev/null || true
+        exec perl -e "$_flth_session_killer_script" "$_flth_session_child"
     ) >/dev/null 2>&1 &
     _flth_session_killer=$!
-    [ "$monitor" = 1 ] || set +m
+    [ "$monitor" = 0 ] || set -m
 }
 
 if [ "$_flth_session_run" = 1 ]; then
@@ -182,19 +202,15 @@ if [ "$_flth_session_run" = 1 ]; then
     trap '_flth_session_forward 143 TERM' TERM
 
     _flth_session_monitor=0
-    case "$-" in *m*) _flth_session_monitor=1 ;; esac
-    set -m
+    case "$-" in *m*) _flth_session_monitor=1 && set +m ;; esac
     [ "$_flth_session_signalled" = 0 ] || exit "$_flth_session_signalled"
     # A background job is the only way to keep receiving signals while the
-    # command runs. Job control keeps Bash 3.2 from ignoring INT and QUIT;
+    # command runs. Perl gives it back INT and QUIT, which Bash 3.2 cannot:
     # resetting a background job's traps does not restore them there. The
     # explicit redirection preserves the command's foreground stdin.
-    (
-        trap - INT QUIT
-        exec "$@"
-    ) 0<&0 &
+    perl -e "$_flth_session_own_group" -- "$@" 0<&0 &
     _flth_session_child=$!
-    [ "$_flth_session_monitor" = 1 ] || set +m
+    [ "$_flth_session_monitor" = 0 ] || set -m
     if [ "$_flth_session_signalled" != 0 ]; then
         case "$_flth_session_signalled" in
             129) _flth_session_forward 129 HUP ;;

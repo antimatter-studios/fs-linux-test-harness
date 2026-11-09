@@ -22,7 +22,8 @@
 # NOT IN THE USAGE, AND NO CHORE TASK, ON PURPOSE: `session-begin <pid>`,
 # `session-end <pid>`, `boot-finished`, `run-id` and `guest-tree` are vm-session.sh's
 # and guest-test's plumbing, the calls that make a session visible to the reaper,
-# tell it whether there is a VM it may keep and set up a run on a shared guest. A
+# tell it whether there is a VM it may keep and set up a run on a shared guest.
+# `up-boot` is the boot `up` starts in a process group of its own (vm_up). A
 # person has no reason to run them, so
 # they stay out of the list above, which is what tests/generic.sh reads as
 # the public commands every one of which needs a task in vm.chores.yml.
@@ -90,6 +91,10 @@ provisioning_marker() { printf '%s/provisioning\n' "$FLTH_MACHINE_DIR"; }
 # `boot` provisions only when the disk does not carry the script; `force`
 # (`vm.sh provision`) re-applies it regardless.
 PROVISION_MODE=boot
+
+# What started this process. The boot `up` starts is a process of its own and is
+# handed its caller's, so what it records names the same invocation (vm_up).
+VM_PARENT="$PPID"
 
 # Set by apply_setup when the setup script actually ran in the guest.
 SETUP_APPLIED=0
@@ -461,31 +466,42 @@ refuse_other_worktree() {
     exit 1
 }
 
+# A PROCESS GROUP IS MADE FROM ONE SIDE (#209). Job control (`set -m`) makes a
+# background job's group from both sides at once, the shell and the child, as
+# POSIX asks; on macOS the two calls race, the child's fails with EPERM although
+# the group is made, and Bash prints "child setpgid ... Operation not permitted"
+# into the caller's stderr. So the boot and the escalation below are started by
+# Perl, which makes the group in the child alone and then runs them. The group
+# exists only once the child has made it, so until then the boot is signalled by
+# its pid. Job control a caller turned on is off while they start.
+UP_OWN_GROUP='$SIG{INT} = $SIG{QUIT} = "DEFAULT"; setpgrp(0, 0) or die "vm: the boot has no process group of its own: $!\n"; exec { $ARGV[0] } @ARGV or die "vm: could not start the boot: $!\n"'
+# Escalation: KILL to what is left of the group after 50 ticks of 0.1 seconds. By
+# the pid only while the group has not been seen: once it has, the pid is its.
+UP_KILLER='setpgrp(0, 0); my ($child, $seen) = (shift, 0);
+for (1 .. 50) {
+    if (kill 0, -$child) { $seen = 1 } elsif ($seen || !kill 0, $child) { last }
+    select undef, undef, undef, 0.1;
+}
+kill "KILL", -$child;
+kill "KILL", $child unless $seen;'
+
 up_forward() {
     up_signalled="$1"
     [ -n "$up_child" ] || return 0
-    kill -"$2" -- "-$up_child" 2>/dev/null || true
+    kill -"$2" -- "-$up_child" 2>/dev/null || kill -"$2" "$up_child" 2>/dev/null || true
     [ -z "$up_killer" ] || return 0
     local monitor=0
-    case "$-" in *m*) monitor=1 ;; esac
-    set -m
+    case "$-" in *m*) monitor=1 && set +m ;; esac
     (
-        trap - EXIT
         trap '' HUP INT TERM
-        exec 6>&-
-        ticks=0
-        while kill -0 -- "-$up_child" 2>/dev/null && [ "$ticks" -lt 50 ]; do
-            command -p sleep 0.1
-            ticks=$((ticks + 1))
-        done
-        kill -KILL -- "-$up_child" 2>/dev/null || true
-    ) >/dev/null 2>&1 &
+        exec perl -e "$UP_KILLER" "$up_child"
+    ) >/dev/null 2>&1 6>&- &
     up_killer=$!
-    [ "$monitor" = 1 ] || set +m
+    [ "$monitor" = 0 ] || set -m
 }
 
 vm_up() {
-    local rc=0 up_child='' up_killer='' up_signalled=0 monitor=0 watcher
+    local rc=0 up_child='' up_killer='' up_signalled=0 monitor=0
     up_lock_take
     trap 'up_forward 129 HUP' HUP
     trap 'up_forward 130 INT' INT
@@ -494,33 +510,13 @@ vm_up() {
     exec 6<> "$FLTH_MACHINE_DIR/up.lock/owner"
     exec 5< "$FLTH_MACHINE_DIR/up.lock/owner"
     rm -f "$FLTH_MACHINE_DIR/up.lock/owner"
-    case "$-" in *m*) monitor=1 ;; esac
-    set -m
+    case "$-" in *m*) monitor=1 && set +m ;; esac
     if [ "$up_signalled" = 0 ]; then
-        (
-            trap - EXIT INT QUIT
-            exec 6>&-
-            set +m
-            (
-                trap 'exit 0' TERM
-                read -r _ || {
-                    trap '' HUP INT TERM
-                    kill -TERM 0 2>/dev/null || true
-                    command -p sleep 5
-                    kill -KILL 0 2>/dev/null || true
-                }
-            ) <&5 >/dev/null 2>&1 &
-            watcher=$!
-            exec 5<&-
-            vm_up_locked || rc=$?
-            kill -TERM "$watcher" 2>/dev/null || true
-            wait "$watcher" 2>/dev/null || true
-            exit "$rc"
-        ) 0<&0 &
+        perl -e "$UP_OWN_GROUP" "$BASH" "$SELF" up-boot "$PROVISION_MODE" "$VM_PARENT" 0<&0 6>&- &
         up_child=$!
     fi
     exec 5<&-
-    [ "$monitor" = 1 ] || set +m
+    [ "$monitor" = 0 ] || set -m
     if [ "$up_signalled" != 0 ] && [ -n "$up_child" ]; then
         case "$up_signalled" in
             129) up_forward 129 HUP ;;
@@ -558,6 +554,31 @@ vm_up() {
         apply_setup "$([ "$PROVISION_MODE" = force ] && echo force || echo boot)" || rc=$?
     fi
     return "$rc"
+}
+
+# The boot `up` starts (`up-boot <provision mode> <up's caller>`), in a process group
+# of its own: what a signal to `up` is passed to. Descriptor 5 is the read end of
+# the up lock's owner FIFO, whose writer is `up`: when `up` is gone, however it
+# went, the watcher reads end-of-file and stops the boot.
+vm_up_boot() {
+    local rc=0 watcher
+    PROVISION_MODE="$1"
+    VM_PARENT="$2"
+    (
+        trap 'exit 0' TERM
+        read -r _ || {
+            trap '' HUP INT TERM
+            kill -TERM 0 2>/dev/null || true
+            command -p sleep 5
+            kill -KILL 0 2>/dev/null || true
+        }
+    ) <&5 >/dev/null 2>&1 &
+    watcher=$!
+    exec 5<&-
+    vm_up_locked || rc=$?
+    kill -TERM "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    exit "$rc"
 }
 
 vm_up_locked() {
@@ -1077,7 +1098,7 @@ process_start() {
 }
 
 chore_invocation() {
-    local pid="$PPID" command parent arguments start depth=0
+    local pid="$VM_PARENT" command parent arguments start depth=0
     while [ "$pid" -gt 1 ] && [ "$depth" -lt 64 ]; do
         command="$(ps -o comm= -p "$pid" 2>/dev/null | sed 's/^ *//')" || { echo unknown; return 0; }
         if [ "${command##*/}" = chore ]; then
@@ -1104,9 +1125,9 @@ record_boot_invocation() {
     local invocation start
     invocation="$(chore_invocation)"
     if [ -z "$invocation" ]; then
-        start="$(process_start "$PPID")"
+        start="$(process_start "$VM_PARENT")"
         invocation=unknown
-        [ -z "$start" ] || invocation="$(printf '%s\t%s' "$PPID" "$start")"
+        [ -z "$start" ] || invocation="$(printf '%s\t%s' "$VM_PARENT" "$start")"
     fi
     printf '%s\n' "$invocation" > "$FLTH_MACHINE_DIR/boot-invocation"
 }
@@ -1435,7 +1456,7 @@ vm_provision() {
 
 # The live sessions this call is not itself running inside.
 other_sessions() {
-    local ancestors=" " pid="$PPID" parent depth=0 session
+    local ancestors=" " pid="$VM_PARENT" parent depth=0 session
     while [ "$pid" -gt 1 ] && [ "$depth" -lt 64 ]; do
         ancestors="$ancestors$pid "
         parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || break
@@ -1828,7 +1849,7 @@ case "$command" in
         shift
         exec "$(dirname "$SELF")/vm-session.sh" "$@"
         ;;
-    up | run | watchdog-end | watchdog-told | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | boot-finished | run-id | guest-tree) ;;
+    up | up-boot | run | watchdog-end | watchdog-told | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | boot-finished | run-id | guest-tree) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -1842,6 +1863,10 @@ engine_prepare
 
 case "$command" in
     up) vm_up ;;
+    up-boot)
+        [ $# -eq 2 ] || flth_die "usage: vm.sh up-boot <provision mode> <pid>"
+        vm_up_boot "$1" "$2"
+        ;;
     run)
         [ $# -gt 0 ] || flth_die "usage: vm.sh run <command...>"
         shared_call_begin
