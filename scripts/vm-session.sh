@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 #
-# vm-session.sh — keep the VM for the length of some work, and bring it
-# down when the work finishes, however it finishes. Two ways in:
+# vm-session.sh — one run on the shared guest, for the length of some work, ended
+# when the work finishes, however it finishes. Two ways in:
 #
 #   vm.sh session <command> [args...]      run a command inside a session
 #   . ../fs-linux-test-harness/scripts/vm-session.sh   make the sourcing script one
 #
 # RUN A COMMAND INSIDE A SESSION. For a consumer's test runner, whose test
-# processes boot the VM themselves from their first guest call:
+# processes boot the guest themselves from their first guest call:
 #
 #   exec ../fs-linux-test-harness/scripts/vm.sh session <test command> "$@"
 #
@@ -17,20 +17,20 @@
 # session` with "unknown command" — where executing an older copy of this
 # file would end a session at once and never run the command at all.
 #
-# The VM is ONE SLOT FOR THE WHOLE MACHINE. A run that boots it and leaves
-# the cleanup to chore's `after_all` reaper holds that slot whenever it was
-# started some other way (the consumer's own script, a command by hand),
-# and every other repository queues behind it until the guest's idle
-# deadline. Run through this, the VM comes down and the slot is released
-# when the command ends: passed, failed or killed.
+# A SESSION IS A RUN (#153). Its id is in the environment of everything the session
+# starts, so every call into the guest finds the run's own root and mounts, and a
+# session inside a session belongs to the same run. When the session ends, what the
+# run left in the guest is cleaned up and the run leaves the list of suites using
+# the guest. The guest itself stays up for the next run, of this consumer or another:
+# `chore vm:down` stops it when nobody is using it, and its idle deadline does when
+# nobody asks.
 #
-# The command is the session's child, not exec'd: the trap that brings
-# the VM down belongs to this shell, which has to outlive the command. A
-# TERM, INT or HUP sent to this shell is passed on to the command, and the
-# VM is brought down only once the command has finished with it — bash
-# would otherwise run its exit trap at once, under a test process that
-# would boot the VM again outside any session. Its status is the
-# command's; killed by a signal, 128 plus the signal's number.
+# The command is the session's child, not exec'd: the trap that ends the run
+# belongs to this shell, which has to outlive the command. A TERM, INT or HUP sent
+# to this shell is passed on to the command, and the run ends only once the
+# command has finished with it — bash would otherwise run its exit trap at once,
+# under a test process that would go on calling into the guest outside any run.
+# Its status is the command's; killed by a signal, 128 plus the signal's number.
 #
 # NO SESSION WHERE NO VM CAN RUN. With FLTH_GUEST=1 the command is already
 # inside the guest, and on a host that fails `host-tools.sh --quiet` (a CI
@@ -38,50 +38,19 @@
 # exec'd as it is, and the engine is asked nothing. A test that needs the
 # VM there fails on its own, naming what it needed.
 #
-# SOURCED, it makes the script that sourced it the session: an EXIT trap
-# brings the VM down when that script finishes, so teardown also happens
-# on failure, on a `set -e` abort and on Ctrl-C. That is how `vm.sh test`,
-# `vm.sh guest-test` and a consumer's fixture build use it.
+# SOURCED, it makes the script that sourced it the session: an EXIT trap ends
+# the run when that script finishes, so the end also happens on failure, on a
+# `set -e` abort and on Ctrl-C. That is how a consumer's fixture build uses it.
 #
-# `vm.sh run` and `put` boot the VM when it is not up, which is what makes
-# wrappers convenient. Nothing brought it back down: every wrapper left a
-# QEMU process holding gigabytes until somebody noticed, and "somebody
-# noticed" was the teardown mechanism.
+# A BOOT THAT DID NOT FINISH IS STOPPED when the session ends (#134): that guest has
+# no shares. A FAILING STOP FAILS THE SCRIPT, even when the work succeeded, and when
+# the work ALSO failed, the work's status wins: it is the more informative failure,
+# and both are printed.
 #
-# A FAILING TEARDOWN FAILS THE SCRIPT, even when the work succeeded. A VM
-# that would not stop is the condition this exists to prevent, and
-# reporting success while it runs is how it went unnoticed. `vm.sh down`
-# confirms the stop rather than trusting the engine, so a failure here
-# means it really is still up (or could not be confirmed down).
-#
-# When the work ALSO failed, the work's status wins: it is the more
-# informative failure, and both are printed.
-#
-# KEEPING IT UP ON PURPOSE:
-#
-#   FLTH_KEEP_VM=1 ./scripts/build-fixtures.sh
-#
-# for several runs back to back, where booting each time is the slow
-# part. It says so on the way out, so a VM left running is always one
-# somebody asked for. A VM held with `chore vm:up` (or `vm:hold`) is left
-# running too: a session's end is not `vm:down`. Neither keeps what a boot left
-# when it did not finish: that guest has no shares, so it is brought down.
-#
-# The consumer is resolved when the session begins, not when the trap
-# fires: the script may have changed directory by then.
-#
-# ON A SHARED GUEST A SESSION IS A RUN (FLTH_SHARED_ROOT). Its id is in the environment
-# of everything the session starts, so every call into the guest finds the run's own
-# root and mounts. A session inside a session belongs to the same run.
-#
-# THE SESSION IS VISIBLE TO THE REAPER. Beginning one records the
-# session's process on the machine (`vm.sh session-begin`), so `vm.sh
-# reap` — which any other chore invocation runs — leaves the VM alone
-# while it is alive, instead of taking an unheld VM for a leak. Ending
-# runs `vm.sh session-end`, which brings the VM down unless it is held or
-# another live session is still using it. A session killed outright
-# leaves a marker whose process is dead, and the reaper treats that as
-# the leak it is.
+# THE SESSION IS VISIBLE TO THE REAPER AND TO `down`. Beginning one records the
+# session's process on the machine (`vm.sh session-begin`), so `vm.sh down` leaves
+# the guest up while it is alive. A session killed outright leaves a marker whose
+# process is dead, and the next look at the list drops it.
 
 _flth_session_scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
@@ -108,9 +77,7 @@ fi
 # `exit` when run, `return` when sourced: a `return` outside a function
 # or a sourced file is an error bash reports and then carries on past.
 if ! { FLTH_CONFIG="$(flth_find_config)" && export FLTH_CONFIG &&
-    { [ -z "${FLTH_SHARED_ROOT:-}" ] || {
-        FLTH_RUN_ID="$("$_flth_session_scripts/vm.sh" run-id)" && export FLTH_RUN_ID
-    }; } &&
+    FLTH_RUN_ID="$("$_flth_session_scripts/vm.sh" run-id)" && export FLTH_RUN_ID &&
     "$_flth_session_scripts/vm.sh" session-begin "$$"; }; then
     [ "$_flth_session_run" = 1 ] && exit 1
     return 1
@@ -126,17 +93,12 @@ flth_session_end() {
         code=75
     fi
 
-    if [ "${FLTH_KEEP_VM:-0}" = "1" ] && "$_flth_session_scripts/vm.sh" boot-finished; then
-        echo "[vm] FLTH_KEEP_VM=1 — leaving the VM running, as asked." >&2
-        exit "$code"
-    fi
-
     if "$_flth_session_scripts/vm.sh" session-end "$$"; then
         exit "$code"
     fi
 
-    echo "vm: TEARDOWN FAILED — the VM is still running (or could not be confirmed" >&2
-    echo "    stopped) and is still using memory. 'chore vm:status', then 'chore vm:down'" >&2
+    echo "vm: THE SESSION'S END FAILED — a guest whose boot did not finish is still running" >&2
+    echo "    (or could not be confirmed stopped). 'chore vm:status', then 'chore vm:down'" >&2
     echo "    or 'chore vm:destroy'." >&2
     if [ "$code" -eq 0 ]; then
         exit 1

@@ -15,10 +15,11 @@
 # holds the guest's side of this on a real VM.
 #
 # What is pinned:
-#   - on every path that leaves the VM up, the daemons survive and every
-#     descendant of the command still ends, within the session's own bound;
-#   - on the path that brings it down, and at a normal end, nothing is left,
-#     although the provider's halt does not stop the forwarders itself;
+#   - a session's end leaves the shared guest up (#220), and then the daemons
+#     survive and every descendant of the command still ends, within the
+#     session's own bound;
+#   - a `down` after it leaves nothing, although the provider's halt does not
+#     stop the forwarders itself;
 #   - a guest that powered itself off leaves no forwarder when its session ends;
 #   - both ways the plugin records a watcher are read, and a pid in that record
 #     that is no forwarder is left alone;
@@ -105,6 +106,7 @@ case "$1" in
             exec { "/bin/sh" } "qemu-system-stub", "-c", q{n=0; while kill -0 "$FLTH_TEST_PID" 2>/dev/null && [ "$n" -lt 3600 ]; do sleep 1; n=$((n + 1)); done}, "$ARGV[0]/disk";
         ' "$VAGRANT_DOTFILE_PATH"
         until [ -s "$STUB/qemu.pid" ]; do sleep 0.05; done
+        "$FLTH_TEST_QMP_START" "$(cat "$STUB/qemu.pid")"
         ;;
     halt)
         # QEMU and virtiofsd, from the provider's own records. Not the forwarders:
@@ -297,73 +299,40 @@ vm_stays_up() {
     clean_up
 }
 
-# --- The paths that leave the VM up.
+# --- A session's end leaves the shared guest up, whoever booted it.
 
-export FLTH_KEEP_VM=1
-vm_stays_up keep-process process "$ONE"
-vm_stays_up keep-group group "$ONE"
-unset FLTH_KEEP_VM
+vm_stays_up process process "$ONE"
+vm_stays_up group group "$ONE"
 
 export HOLD_AFTER_UP=1
 vm_stays_up held process "$ONE"
 unset HOLD_AFTER_UP
 
-sleep 300 &
-other=$!
-(cd "$ONE" && "$VM" session-begin "$other")
-vm_stays_up other-session process "$ONE"
-kill -KILL "$other" 2>/dev/null
-wait "$other" 2>/dev/null
-
 UP_FROM="$ONE"
 vm_stays_up other-worktree process "$TWO"
 UP_FROM=""
 
-# --- The path that brings it down: nothing is left, as before.
-
-start_session teardown "$ONE"
-if wait_until 300 file_exists "$CASE/ready"; then
-    ok "teardown: the command booted the VM"
-else
-    bad "teardown: the command never finished booting ($(cat "$CASE/log"))"
-fi
-qemu="$(pid_of qemu)"
-virtiofsd="$(pid_of virtiofsd)"
-forwarder="$(pid_of notify-forwarder)"
-descendant="$(cat "$CASE/descendant" 2>/dev/null)"
-signal_session process
-check_eq "$STATUS" 143 "teardown: the session exits 143"
-for pid in "$qemu" "$virtiofsd" "$forwarder" "$descendant"; do
-    if wait_until 30 dead "$pid"; then
-        ok "teardown: pid $pid has ended"
-    else
-        bad "teardown: pid $pid outlived the session"
-    fi
-done
-(cd "$ONE" && "$VM" status) > /dev/null 2>&1
-check_eq "$?" 1 "teardown: the VM is down"
-if wait_until 30 forwarders_gone; then
-    ok "teardown: no forwarder is left"
-else
-    bad "teardown: a forwarder outlived the session"
-fi
-clean_up
-
-# --- And a command that simply ends.
+# --- And a command that simply ends: the guest stays, and a down leaves nothing.
 
 export ENDS_ITSELF=1
 start_session normal-end "$ONE"
 wait "$SESSION"
 check_eq "$?" 0 "normal end: the session keeps the command's status"
-if [ -z "$(pid_of qemu)$(pid_of virtiofsd)" ]; then
-    ok "normal end: the VM and virtiofsd were stopped"
+if alive "$(pid_of qemu)" && alive "$(pid_of virtiofsd)"; then
+    ok "normal end: the VM and virtiofsd stay up for the next run"
 else
-    bad "normal end: QEMU or virtiofsd is left"
+    bad "normal end: QEMU or virtiofsd was stopped"
+fi
+(cd "$ONE" && "$VM" down) > /dev/null 2>&1
+if [ -z "$(pid_of qemu)$(pid_of virtiofsd)" ]; then
+    ok "normal end: a down stops the VM and virtiofsd"
+else
+    bad "normal end: QEMU or virtiofsd is left after the down"
 fi
 if wait_until 30 forwarders_gone; then
     ok "normal end: no forwarder is left"
 else
-    bad "normal end: a forwarder outlived the session"
+    bad "normal end: a forwarder outlived the down"
 fi
 unset ENDS_ITSELF
 clean_up
@@ -372,8 +341,8 @@ clean_up
 
 sleep 300 &
 unrelated=$!
-mkdir -p "$FLTH_CACHE_DIR/machines/session-vm-daemons/vagrant/machines/default/qemu"
-echo "$unrelated" >> "$FLTH_CACHE_DIR/machines/session-vm-daemons/vagrant/machines/default/qemu/notify_watcher_host_pid"
+mkdir -p "$FLTH_CACHE_DIR/machines/shared-debian-12/vagrant/machines/default/qemu"
+echo "$unrelated" >> "$FLTH_CACHE_DIR/machines/shared-debian-12/vagrant/machines/default/qemu/notify_watcher_host_pid"
 (cd "$ONE" && "$VM" down) > /dev/null 2>&1
 if alive "$unrelated"; then
     ok "an unrelated process with a recorded pid is left alone"
@@ -387,7 +356,7 @@ wait "$unrelated" 2>/dev/null
 # line the harness cannot read must not lose the watcher: it removes the record
 # afterwards, so the plugin's own hook has nothing left to stop (#82).
 
-record="$FLTH_CACHE_DIR/machines/session-vm-daemons/vagrant/machines/default/qemu/notify_watcher_host_pid"
+record="$FLTH_CACHE_DIR/machines/shared-debian-12/vagrant/machines/default/qemu/notify_watcher_host_pid"
 for action in down destroy; do
     ( exec -a notify-forwarder-stub sleep 300 ) &
     recorded=$!

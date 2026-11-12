@@ -108,10 +108,9 @@ jobs:
         run: |
           set -euo pipefail
           export VAGRANT_DOTFILE_PATH="$RUNNER_TEMP/machine/vagrant"
-          export FLTH_SHARE_DIR="$RUNNER_TEMP/share"
-          export FLTH_REPO_DIR="$GITHUB_WORKSPACE"
+          export FLTH_VM_QMP="$RUNNER_TEMP/qmp.sock" FLTH_VM_SLOTS=32 FLTH_VM_MEM_DIR="$RUNNER_TEMP/mem"
           export FLTH_VM_CONSOLE_LOG="$RUNNER_TEMP/machine/console.log"
-          mkdir -p "$VAGRANT_DOTFILE_PATH" "$FLTH_SHARE_DIR"
+          mkdir -p "$VAGRANT_DOTFILE_PATH" "$FLTH_VM_MEM_DIR"
           cd vagrant
           vagrant validate
 

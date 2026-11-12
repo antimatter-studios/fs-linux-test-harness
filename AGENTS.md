@@ -2,8 +2,8 @@
 
 A generic Linux test VM for repositories that need a real Linux kernel and
 real Linux tools to test against. It owns the VM's lifecycle (`up`, `run`,
-`exec`, `put`, `down`, `reap`, `hold`, `destroy`), the machine-wide slot lock
-that bounds running VMs per host (one by default), the shared directory, the consumer
+`exec`, `put`, `down`, `reap`, `hold`, `destroy`), on one guest that every
+consumer on the host shares, the shared directory, the consumer
 repository mounted at `/repo`, and the guest's own poweroff deadline. It knows
 nothing about what a consumer tests: no filesystem, no toolchain, no package.
 A consumer checks it out as a sibling (`../fs-linux-test-harness`), pinned by
@@ -13,7 +13,7 @@ This file is the fast path for an agent picking up work here. It points at the
 existing docs rather than duplicating them:
 
 - **README** → `## The contract`, `## Consumer test contract`, `## The VM`,
-  `## The slot lock`, `## What stops a VM`, `## CI and automated merging`.
+  `## One guest for every consumer`, `## What stops a VM`, `## CI and automated merging`.
 - **CHANGELOG.md** → what each tag contains, and `[Unreleased]`.
 - **`.github-guard`** → the one required check, `ci-ok`.
 
@@ -277,7 +277,10 @@ chore host:check      # what this host is missing to run the VM
 
 `tests/run.sh` finds every `tests/*.sh` by glob, apart from `lib.sh`, `run.sh`
 and `smoke.sh`, so a new test file needs no registration. `shellcheck` and
-`ruby` are **required**: a missing one fails the run, it does not skip.
+`ruby` are **required**: a missing one fails the run, it does not skip. The files
+run several at once (`run_suites` in `tests/lib.sh`; `FLTH_TEST_JOBS`, by default
+the host's CPUs up to four), each printed whole and in order (#215), so a test must
+not depend on another running at the same time or not: its sandbox is its own.
 
 The host scripts support system Bash 3.2 and Ruby 2.6. VM-free guest scripts
 need a separate Bash 4.2+ interpreter: on macOS use
@@ -314,15 +317,15 @@ engine changes, proves the host setup installs and the Vagrantfile
 validates under the real forked provider on `macos-15`, and nothing more.
 
 **Do not boot VMs from an agent on a shared host** unless you were asked to.
-A VM takes gigabytes and the global slot, and it queues every other
-repository behind it. Run the VM-free tests locally and let the `smoke` job
-boot the guest.
+A VM takes gigabytes, and the smoke run's guest sits beside the one every
+consumer on the host shares. Run the VM-free tests locally and let the `smoke`
+job boot the guest.
 
 ## The house style of a test
 
 `tests/lib.sh` supplies `ok`/`bad`, `check_eq`/`check_contains`/`check_lacks`,
 `new_sandbox` (a `mktemp -d` with `FLTH_CACHE_DIR` and `FLTH_STATE_DIR` inside
-it, so the real slot and machines are never touched) and `finish <name>`, which
+it, so the real machines are never touched) and `finish <name>`, which
 prints `PASS  <name> (N checks)` and sets the exit status.
 
 - **`make_stub_harness`** copies `scripts/` into the sandbox with
@@ -356,42 +359,41 @@ prints `PASS  <name> (N checks)` and sets the exit status.
 
 - **Vagrant is only ever driven through `scripts/vm.sh`.** The Vagrantfile
   reads `FLTH_*` variables that `engine_prepare` exports, and it stops at the
-  first missing one if run by hand. A `vagrant reload` from anywhere else is
-  invisible to the slot apart from its missing process: see "The slot lock" in
-  the README for what covers it (`vm.sh reload`, `vm-slot.sh renew`, and the
-  absence window that is all that is left without them, #122).
-- **One VM per project, and its guest mounts one worktree.** The machine
-  directory is keyed by `[project] name`, so every checkout and worktree of a
-  project shares it, while `/repo` is the worktree that booted it. A command
-  from another worktree fails naming that worktree, and its session or reap
-  leaves the VM running (`tests/vm-worktree.sh`, #112). Sessions from one
-  worktree share the guest: the reaper leaves it alone while any session's
-  process is alive, and the last session out brings it down.
-- **`FLTH_SHARED_ROOT` changes what a machine is.** The machine is
-  `machines/shared-<guest>/`, its `/repo` and `/share` mount the shared directory,
-  and each run binds its own tree and share over them in a private mount namespace
-  (`scripts/lib/guest-run.sh`, sent to the guest at boot). Calls into the guest go
-  through `guest_call_script`. `tests/stubs/engine.sh` runs that script here with
-  `mount`, `unshare` and `nsenter` stubbed by `make_stub_guest_tools`, and
-  `tests/smoke-shared/guest.sh` holds a real guest to it.
-- **A run's writes are gone when its boot stops.** Every boot is
-  disposable (QEMU `snapshot=on`) except the provisioning boot that
-  applies a changed setup script, which is stopped and confirmed stopped
-  before anything runs. A test that wants the guest to remember something
-  between boots is asking for the state bleed this exists to prevent;
-  `tests/disposable.sh` holds the orchestration to it, `tests/smoke.sh`
-  proves it on a real disk. The one exception is a consumer's declared
-  cache (`[cache] size`, mounted at `/cache`): a second disk, attached
-  through `extra_qemu_args` and never as a provider disk, because the
-  provider applies `snapshot=on` to every disk it attaches.
+  first missing one if run by hand.
+- **There is one guest, and nobody has a VM of their own (#220).** The machine is
+  `machines/shared-<guest>/`, and it shares no host directory at boot: each run
+  attaches its own tree while the guest runs (#222), a `vhost-user-fs` device on a
+  free root port, served by a virtiofsd of its own (`engine_attach_tree` in
+  `scripts/lib/engine-vagrant.sh`, through `scripts/lib/qmp.pl`), and mounts it
+  over `/repo` in a private mount namespace (`scripts/lib/guest-run.sh`, sent to the
+  guest at boot). Calls into the guest go through `guest_call_script`, after
+  `shared_attach`. `tests/stubs/engine.sh` records attachments and runs the guest's
+  side here with logging stand-ins for `mount`, `unshare` and `nsenter`; tests that
+  drive the real engine get a stand-in QMP (`tests/stubs/qmp-server.pl`, started by
+  `$FLTH_TEST_QMP_START`) and virtiofsd (`tests/stubs/virtiofsd`).
+- **A virtiofsd must never go while the guest can use its mount.** A request sent
+  after the daemon has gone never completes, and removing the device then wedges
+  hot-plug for the whole guest until it reboots. So a run ends in the guest before
+  its device is removed, the device goes before its daemon is stopped, and a daemon
+  that died anyway has its device removed before anything else runs in that run.
+  Keep that order in any new path that ends a run.
+- **A run's writes are gone when its boot stops.** Every boot is disposable
+  (QEMU `snapshot=on`), and each consumer's setup runs again on the next boot it
+  joins. A test that wants the guest to remember something between boots is
+  asking for the state bleed this exists to prevent; `tests/disposable.sh` holds
+  the orchestration to it, `tests/smoke.sh` proves it on a real disk. A
+  consumer's declared cache (`[cache] size`, mounted at `/cache`) is a directory
+  of the guest's and lasts as long as the guest. The engine still carries the
+  provisioning boot, the kept macOS kernel and the cache disk the removed
+  private VM used, which nothing calls now (#221).
 - **Status 255 from a call into the guest is ssh's or the script's.** `vm.sh`
   keeps it and reports what it found on stderr (`report_lost_guest`, #105). A
   new path into the guest goes through `guest_run` or it gets a bare 255.
 - **On macOS the guest's kernel is not on its disk.** The box's own
   Vagrantfile starts QEMU with `-kernel` and `-initrd` naming files beside the
-  box, with no firmware. A provisioning boot copies the disk's newest kernel
-  to `machines/<project>/boot/` and later boots run it (#80). `tests/boot-kernel.sh`
-  pins which boot runs what, and the last step of `tests/smoke.sh` proves it.
+  box, with no firmware, so a kernel a setup installs is never run. The shared
+  guest refuses such a setup anyway, naming both kernels (#157), and the kernel
+  step of `tests/smoke.sh` proves it.
 - **On macOS nothing in the guest listens for host file events.** The forwarder
   plugin stays enabled, because disabling it stops the boot, but its guest
   receiver wrote into the files an event named and truncated one it read as
@@ -402,19 +404,19 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   a line up to plugin 0.7.5, and a pid and its identity from 0.7.7. A host may have
   either, so `engine_vagrant_stop_forwarders` reads both, and the session end stops
   them on a guest that powered itself off, where no halt runs (#135).
-- **`deadline_minutes` is an idle timeout.** Every `run` and `exec` re-arms it
+- **The deadline (`FLTH_SHARED_DEADLINE`) is an idle timeout.** Every `run` and `exec` re-arms it
   as the call starts and ends, so a single call longer than it (a whole
   `guest-test` run is one call) is still cut off.
 - **A scheduled shutdown would refuse logins.** logind writes `/run/nologin`
   for the last five minutes, and a deadline of five or less is inside them from
   the start, so `deadline.sh` takes `pam_nologin` out of the guest's sshd
-  stack (#150). A smoke consumer with a five-minute deadline holds it to that.
+  stack (#150). The smoke run's five-minute guest holds it to that.
 - **Unix socket paths are limited to about 104 bytes.** Sockets the harness
   makes live under `FLTH_STATE_DIR`, never under the caller's `TMPDIR`.
-  `FLTH_STATE_DIR` also holds the machine-wide slot, so moving it for one
-  repository splits the lock.
-- **`unknown` is never `stopped`.** A state that could not be read keeps the
-  slot. Do not "simplify" that away.
+  `FLTH_CACHE_DIR` holds the shared machine, so moving it for one repository
+  gives that repository a guest of its own.
+- **`unknown` is never `stopped`.** A state that could not be read is not taken
+  for a stop, so nothing boots beside it. Do not "simplify" that away.
 - **Work in a worktree with its own `tmp/`**, and point `TMPDIR` at it, so
   sandboxes stay off a shared `/tmp`. `tmp/` is gitignored.
 

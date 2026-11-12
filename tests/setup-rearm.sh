@@ -13,7 +13,9 @@ make_stub_harness
 VM="$STUB_HARNESS/scripts/vm.sh"
 
 C="$SANDBOX/consumer"
-make_consumer "$C" setup-rearm '[vm]' 'deadline_minutes = 5'
+make_consumer "$C" setup-rearm
+# The shared guest's deadline is the host's to set, not a consumer's (#220).
+export FLTH_SHARED_DEADLINE=5
 export SETUP_LOG="$SANDBOX/setup.log"
 STUB="$FLTH_TEST_STUB"
 

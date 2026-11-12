@@ -2,21 +2,23 @@
 #
 # smoke.sh — the harness end to end, through a REAL VM.
 #
-# Boots tests/smoke-consumer on this host (KVM on Linux, HVF on macOS) and
-# checks every promise the harness makes against the machine itself:
+# Boots the shared guest for tests/smoke-consumer on this host (KVM on Linux, HVF
+# on macOS), as every consumer's is booted (#220), and checks every promise the
+# harness makes against the machine itself:
 #
-#   up / setup    the VM boots, the consumer's setup installs its tooling
-#                 inside it, the guest deadline is armed
+#   up / setup    the shared guest boots, the consumer's setup installs its
+#                 tooling inside it, the guest deadline is armed
+#   attach        each run's tree is a virtiofs device attached to the running
+#                 guest, and a session's is detached when it ends, its daemon
+#                 after its device (#222)
 #   disposable    a run that leaves a file, a loop device and a mount
 #                 behind changes not one byte of the machine's disk, and
 #                 the next boot sees none of it
-#   cache         the declared cache (#39) is a mount of its own, with the
-#                 root's filesystem, and what a run leaves there is still
-#                 there after the boot that wrote it has stopped
+#   cache         the declared cache is a directory of the guest's at /cache,
+#                 and it goes with the boot like everything else (#186)
 #   overlay       what the guest deletes goes back to the host: the overlay,
 #                 as QEMU's monitor measures it, does not keep it (#105)
 #   apt-ready     a held dpkg lock is found and named, as dpkg sees it
-#   slot          a second consumer cannot boot while this one holds it
 #   run / share   exit status and output come back; files cross both ways
 #                 and nothing in the guest writes to what the host staged
 #   direct I/O    a file on either share opens with O_DIRECT, as an image
@@ -27,32 +29,33 @@
 #                 repository the harness mounts there
 #   lost guest    a guest paused or powered off under a running call ends that
 #                 call with what stopped it, not a bare 255 (#105)
-#   boot signal   a session signalled during a boot leaves no guest, although
-#                 FLTH_KEEP_VM=1 asks, and the next call has its shares (#134)
-#   reload        the guest really reboots in place and keeps its slot (#122)
-#   hold / reap   a held VM survives the reaper; a leaked one does not
-#   signal        a VM that stays up after a session is signalled keeps /share
-#                 and /repo, and the command's descendants still end (#130)
-#                 A signal also stops the guest command that session started, what
-#                 it moved to another process group, and nothing of another
-#                 session's (#139)
+#   boot signal   a session signalled during a boot leaves no guest, and the
+#                 next call has its shares (#134)
+#   reload        the guest really reboots in place (#122)
+#   hold / reap   the reaper leaves the shared guest up, held or not
+#   signal        the guest stays up after a session is signalled and keeps
+#                 /share and /repo, and the command's descendants still end
+#                 (#130). A signal also stops the guest command that session
+#                 started, what it moved to another process group, and nothing
+#                 of another session's (#139)
 #   poweroff      a guest that powers itself off leaves no forwarder when its
 #                 session ends (#135)
 #   short deadline a guest whose deadline is already in logind's last five minutes
 #                 takes setup and new logins, then powers off on time (#150)
-#   test          a passing suite passes and tears down; a CORRUPTED one
-#                 FAILS with a non-zero exit and still tears down;
-#                 FLTH_KEEP_VM=1 keeps the VM
-#   down/destroy  confirmed, and the slot released
+#   kernel        a consumer whose setup installs a kernel is refused, naming
+#                 both kernels: the shared guest does not restart for it (#157)
+#   test          a passing suite passes and the guest stays up; a CORRUPTED
+#                 one FAILS with a non-zero exit
+#   down/destroy  confirmed
+#   shared guest  two consumers join one guest at once (tests/smoke-shared)
 #
-# The VM is destroyed on every exit path. Uses the machine's real slot, so
-# on a shared host it queues behind other repositories like anything else.
+# The VM is destroyed on every exit path. The machine is in a cache directory of
+# its own, so the shared guest the consumers on this host use is not touched.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CONSUMER="$REPO/tests/smoke-consumer"
 VM="$REPO/scripts/vm.sh"
-SLOT="$REPO/scripts/vm-slot.sh"
 # Which pinned guest boots: FLTH_SMOKE_GUEST, debian-12 by default, as every
 # consumer's is. Each guest has its own copy of the consumer's config, the
 # same but for `[vm] guest`, so CI boots every guest a consumer can pin (#70).
@@ -68,7 +71,12 @@ case "$SMOKE_GUEST" in
         ;;
     *) echo "smoke: FLTH_SMOKE_GUEST must be debian-12 or debian-13, got '$SMOKE_GUEST'" >&2; exit 2 ;;
 esac
-unset FLTH_KEEP_VM
+unset FLTH_SHARED_DEADLINE
+# A machine of the smoke run's own, beside the one this host's consumers share.
+# chores.yml's net for a smoke run that never ends names the same directory.
+export FLTH_CACHE_DIR="${FLTH_SMOKE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fs-linux-test-harness-smoke}"
+# The shared machine's size, as a CI runner can give it.
+export FLTH_SHARED_MEMORY=2G FLTH_SHARED_CPUS=2 FLTH_SHARED_DISK=16G
 # Looks often enough to be seen here, with the limits as a consumer gets them.
 export FLTH_WATCHDOG_INTERVAL=5
 
@@ -94,12 +102,6 @@ boot_or_stop() {
     fi
 }
 state() { "$VM" status >/dev/null 2>&1 && echo running || echo not-running; }
-slot_holder() { "$SLOT" status | awk '$1 == "held" && $2 == "by" && $3 == "flth-smoke" && $4 == "for" { print $3 }'; }
-slot_contender() {
-    local state="$CONTENDER/slot-state"
-    FLTH_STATE_DIR="$state" FLTH_SLOT_COUNT=1 "$SLOT" acquire || return
-    (cd "$CONTENDER" && FLTH_CONFIG='' FLTH_STATE_DIR="$state" FLTH_SLOT_COUNT=1 FLTH_SLOT_WAIT=0 "$VM" up)
-}
 
 qemu_process() {
     local identity
@@ -107,7 +109,14 @@ qemu_process() {
     [ -n "$identity" ] || return 1
     ps -eo pid=,args= | awk -v want="$identity/" '$2 ~ /qemu-system-/ && index($0, want) > 0'
 }
-qemu_memory() { qemu_process | sed -n 's/.*mem-path=\([^, ]*\).*/\1/p'; }
+# A memory file the provider named; the harness's own backend is a directory, in
+# which QEMU unlinks the file it makes, so there is nothing to reclaim (#222).
+qemu_memory() {
+    local path
+    path="$(qemu_process | sed -n 's/.*mem-path=\([^, ]*\).*/\1/p')"
+    [ -f "$path" ] && printf '%s\n' "$path"
+    return 0
+}
 memory_stamp() { ruby -e 's = File.stat(ARGV[0]); puts "#{s.dev}:#{s.ino}"' "$1"; }
 check_artifacts_gone() {
     local memory="$1" action="$2" artifact identity remaining=""
@@ -121,9 +130,11 @@ check_artifacts_gone() {
     check_eq "$remaining" '' "$action removes unused virtiofs socket pidfiles"
 }
 
-# A process naming this consumer's directory and the forwarder: on a Mac the watcher
-# and, from plugin 0.7.7, the process supervising it. The stock provider on Linux
-# starts neither. A stop takes a few seconds, so this waits for the count to reach 0.
+# A process naming the shared directory and the forwarder: on a Mac the watcher and,
+# from plugin 0.7.7, the process supervising it. The stock provider on Linux starts
+# neither. A stop takes a few seconds, so this waits for the count to reach 0. A
+# shared guest of this host's consumers watches the same directory, so on a Mac it
+# has to be down for this to answer for the smoke guest alone.
 forwarders_left() {
     ps -axww -o command= |
         awk -v want="$CONSUMER" 'index($0, want) > 0 && /[n]otify-forwarder/ { n++ } END { print n + 0 }'
@@ -162,14 +173,12 @@ CONTENDER="$(mktemp -d)"
 cleanup() {
     step "cleanup: destroy the smoke VM"
     "$VM" destroy >/dev/null 2>&1 || "$VM" destroy
-    kernel_vm destroy >/dev/null 2>&1 || kernel_vm destroy
-    deadline_vm destroy >/dev/null 2>&1 || deadline_vm destroy
     rm -rf "$CONTENDER"
 }
-# The second consumer, whose setup installs a kernel (#80).
+# The second consumer, whose setup installs a kernel (#157).
 kernel_vm() { FLTH_CONFIG="$REPO/tests/smoke-kernel-consumer/fs-linux-test-harness.toml" "$VM" "$@"; }
-# The third, whose deadline is five minutes (#150).
-deadline_vm() { FLTH_CONFIG="$DEADLINE_CONFIG" "$VM" "$@"; }
+# The third, on a guest whose deadline is five minutes (#150): the host's to set.
+deadline_vm() { FLTH_SHARED_DEADLINE=5 FLTH_CONFIG="$DEADLINE_CONFIG" "$VM" "$@"; }
 trap cleanup EXIT
 
 step "host tools"
@@ -188,12 +197,37 @@ boot_or_stop "$rc"
 echo "  (boot + setup took $(( $(date +%s) - t0 ))s)"
 check_eq "$(state)" running "the VM is running"
 memory="$(qemu_memory)"
-if [ "$(uname -s)" = Darwin ]; then
-    check_true '[ -n "$memory" ] && [ -f "$memory" ]' "the running QEMU's shared-memory file is observed" "no shared-memory file was found for the running QEMU"
-fi
-check_eq "$(slot_holder)" flth-smoke "and holds the machine-wide slot"
-check_eq "$("$VM" run hostname 2>/dev/null)" flth-smoke "the guest's hostname is the project name"
-check_contains "$("$VM" run 'uname -a' 2>/dev/null)" "Linux flth-smoke" "uname -a runs in the guest"
+smoke_config="$("$VM" config)"
+check_contains "$smoke_config" "machine=$FLTH_CACHE_DIR/machines/shared-$SMOKE_GUEST" "the machine is the shared guest's, named for its release"
+check_contains "$(qemu_process)" "share=on" "guest memory is a shared backend, which a virtiofsd can reach"
+
+step "attach: each run's tree is a device of its own (#222)"
+# The oracles are QEMU's own QMP, the guest's findmnt, and the process
+# table: what the harness says is attached has to be what QEMU and the guest have.
+qmp="$(printf '%s\n' "$smoke_config" | sed -n 's/^qmp=//p')"
+standing="$(printf '%s\n' "$smoke_config" | sed -n 's/^run.standing=//p')"
+devices() { perl "$REPO/scripts/lib/qmp.pl" "$qmp" '{"execute":"qom-list","arguments":{"path":"/machine/peripheral"}}' 2>/dev/null; }
+check_contains "$(devices)" "\"fs-$standing\"" "QEMU has the standing run's device"
+check_eq "$("$VM" run "findmnt -n -o FSTYPE $repo_guest" 2>/dev/null)" virtiofs "and the run sees its tree at $repo_guest over virtiofs"
+check_eq "$("$VM" run "findmnt -n -o SOURCE $repo_guest" 2>/dev/null)" "$standing" "tagged with its run id"
+attach_dir="$CONTENDER/attach"
+mkdir -p "$attach_dir"
+attach_machine="$(printf '%s\n' "$smoke_config" | sed -n 's/^machine=//p')"
+"$VM" session bash -c '
+    "$1" run true || exit
+    printf "%s\n" "$FLTH_RUN_ID" > "$2/run"
+    sed -n "s/^pid //p" "$3/attached/$FLTH_RUN_ID" > "$2/pid"
+    "$1" run "findmnt -n -o SOURCE '"$repo_guest"'" > "$2/source"
+' flth-attach "$VM" "$attach_dir" "$attach_machine" 2>"$attach_dir/err"
+check_eq "$?" 0 "a session runs on its own tree ($(tail -n 1 "$attach_dir/err"))"
+session_run="$(cat "$attach_dir/run" 2>/dev/null)"
+check_eq "$(cat "$attach_dir/source" 2>/dev/null)" "$session_run" "a device tagged with the session's run"
+check_true '! devices | grep -q "\"fs-$session_run\""' "and when it ended its device was removed from QEMU" "its device is still in QEMU"
+attach_pid="$(cat "$attach_dir/pid" 2>/dev/null)"
+check_true '[ -n "$attach_pid" ] && ! kill -0 "$attach_pid" 2>/dev/null' "and its virtiofsd ($attach_pid) is gone" "its virtiofsd is still running"
+check_contains "$(devices)" "\"fs-$standing\"" "while the standing run keeps its own"
+check_eq "$("$VM" run hostname 2>/dev/null)" "shared-$SMOKE_GUEST" "the guest's hostname is the shared machine's name"
+check_contains "$("$VM" run 'uname -a' 2>/dev/null)" "Linux shared-$SMOKE_GUEST" "uname -a runs in the guest"
 check_contains "$("$VM" run 'mkfs.ext4 -V 2>&1 | head -1' 2>/dev/null)" "mke2fs" "the consumer's setup installed its tooling inside the VM"
 # The guest's serial console is logged in the machine directory, for a
 # failed boot to show (#61). The oracle is the guest's own kernel: the
@@ -229,12 +263,10 @@ disk="$(find "$machine" -name 'linked-box.img' 2>/dev/null | head -1)"
 check_true '[ -f "$disk" ]' "the machine's disk is at $disk" "no linked-box.img under $machine"
 sum() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | awk '{print $1}'; }
 before="$(sum "$disk")"
-check_eq "$("$VM" config | sed -n 's/^disk.setup=//p')" "$(sum "$CONSUMER/setup.sh")" "the disk is recorded as carrying this setup"
 cache_guest="$(sed -n 's/^FLTH_CACHE_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
 check_eq "$("$VM" run "findmnt -n -o FSTYPE $cache_guest" 2>/dev/null)" "$("$VM" run 'findmnt -n -o FSTYPE /' 2>/dev/null)" \
-    "the declared cache is mounted at $cache_guest, with the filesystem the guest's root uses"
-check_contains "$("$VM" run "findmnt -n -o SOURCE $cache_guest" 2>/dev/null)" "/dev/vd" "a disk of its own, not the root or a share"
-check_true '[ -f "$machine/cache.img" ]' "its disk is in the machine directory" "no cache.img under $machine"
+    "the declared cache is mounted at $cache_guest, a directory of the guest's own disk"
+check_true '[ ! -e "$machine/cache.img" ]' "and no disk of its own" "a cache disk was made under $machine"
 "$VM" run "echo kept > $cache_guest/flth-smoke-kept-this" 2>/dev/null
 check_eq "$?" 0 "a run writes into the cache"
 "$VM" run 'set -e
@@ -258,25 +290,14 @@ t0=$(date +%s)
 rc=$?
 check_eq "$rc" 0 "the next boot comes up"
 boot_or_stop "$rc"
-echo "  (a cold boot of a provisioned machine took $(( $(date +%s) - t0 ))s)"
+echo "  (a cold boot and the setup took $(( $(date +%s) - t0 ))s)"
 check_eq "$("$VM" run 'test -e /var/lib/flth-smoke-left-this && echo left || echo gone' 2>/dev/null)" gone "the file the run left is gone"
 check_eq "$("$VM" run 'losetup -a | grep -c flth-smoke' 2>/dev/null)" 0 "and so is its loop device"
 check_eq "$("$VM" run 'findmnt -n /mnt/flth-smoke >/dev/null && echo mounted || echo unmounted' 2>/dev/null)" unmounted "and its mount"
 check_eq "$("$VM" run 'test -e /var/tmp/flth-smoke.img && echo kept || echo gone' 2>/dev/null)" gone "and the image behind them"
-check_contains "$("$VM" run 'mkfs.ext4 -V 2>&1 | sed -n 1p' 2>/dev/null)" "mke2fs" "while what setup installed is still there"
-check_eq "$("$VM" run "cat $cache_guest/flth-smoke-kept-this" 2>/dev/null)" kept \
-    "and what the run left in the declared cache survived the stop and the disposable boot"
-
-step "slot: a second consumer cannot boot"
-printf '[project]\nname = "flth-smoke-contender"\n[setup]\nscript = "setup.sh"\n' > "$CONTENDER/fs-linux-test-harness.toml"
-echo true > "$CONTENDER/setup.sh"
-out="$(slot_contender 2>&1)"
-rc=$?
-check_true '[ "$rc" -ne 0 ]' "the contender's up fails (exit $rc)" "the contender booted a second VM"
-check_contains "$out" "held by flth-smoke" "it is told who holds the slot"
-check_contains "$out" "not booting a second VM" "and that it did not boot"
-check_eq "$(cd "$CONTENDER" && FLTH_CONFIG='' "$VM" status >/dev/null 2>&1 && echo running || echo not-running)" not-running "no second VM process exists"
-check_eq "$(slot_holder)" flth-smoke "the slot is still held by the smoke consumer"
+check_contains "$("$VM" run 'mkfs.ext4 -V 2>&1 | sed -n 1p' 2>/dev/null)" "mke2fs" "while the setup ran again on the new boot"
+check_eq "$("$VM" run "cat $cache_guest/flth-smoke-kept-this 2>/dev/null || echo gone" 2>/dev/null)" gone \
+    "and what the run left in the declared cache went with the boot too (#186)"
 
 step "run and share"
 "$VM" run 'echo out; echo err >&2; exit 7' > "$CONTENDER/out" 2> "$CONTENDER/err"
@@ -432,33 +453,14 @@ check_eq "$(cat "$CONTENDER/lost.out")" "" "and none of that is on stdout"
 monitor cont >/dev/null
 check_eq "$("$VM" run 'echo back' 2>/dev/null)" back "the guest carries on when QEMU lets it"
 
-step "reload: the VM restarts in place and keeps its slot"
+step "reload: the VM restarts in place"
 boot_before="$("$VM" run 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)"
-worktree_machine="$("$VM" config | sed -n 's/^machine=//p')"
-worktree_boot="$(cat "$worktree_machine/mounted-worktree-boot" 2>/dev/null)"
 "$VM" reload
 check_eq "$?" 0 "reload stops the VM and boots it again"
 check_eq "$(state)" running "the VM is back"
-check_eq "$(slot_holder)" flth-smoke "and holds the slot it held before"
 boot_after="$("$VM" run 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)"
 check_true '[ -n "$boot_after" ] && [ "$boot_after" != "$boot_before" ]' "the guest really rebooted" \
     "the guest's boot id did not change across the reload ($boot_before, $boot_after)"
-
-step "worktree: a record left by a previous boot is unknown (#120)"
-check_true '[ -n "$worktree_boot" ]' "the previous boot had a worktree identity" "the previous boot had no worktree identity"
-current_worktree_boot="$(cat "$worktree_machine/mounted-worktree-boot" 2>/dev/null)"
-check_true '[ -n "$current_worktree_boot" ] && [ "$current_worktree_boot" != "$worktree_boot" ]' \
-    "the host identifies the guest's new boot" "the host did not identify a new boot"
-printf '%s\n' "$CONTENDER/old-worktree" > "$worktree_machine/mounted-worktree"
-printf '%s\n' "$worktree_boot" > "$worktree_machine/mounted-worktree-boot"
-check_eq "$("$VM" exec 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)" "$boot_after" \
-    "a stale record does not refuse a legitimate command to the rebooted guest"
-check_eq "$("$VM" run "test -d $repo_guest && echo mounted" 2>/dev/null)" mounted \
-    "run also reaches the guest despite the stale record"
-check_true '! "$VM" status 2>&1 | grep -F "$CONTENDER/old-worktree"' \
-    "status does not name the previous boot's worktree" "status still names the previous boot's worktree"
-printf '%s\n' "$CONSUMER" > "$worktree_machine/mounted-worktree"
-printf '%s\n' "$current_worktree_boot" > "$worktree_machine/mounted-worktree-boot"
 
 step "hold and reap"
 "$VM" hold
@@ -467,10 +469,11 @@ check_eq "$("$VM" run 'test -e /run/fs-linux-test-harness-held && ! test -e /run
 "$VM" reap
 check_eq "$(state)" running "reap leaves a held VM running"
 machine="$("$VM" config | sed -n 's/^machine=//p')"
-rm -f "$machine/keep-running"   # a VM nothing accounted for: the leak the reaper exists for
+rm -f "$machine/keep-running"
 "$VM" reap
-check_eq "$(state)" not-running "reap stops a leaked VM"
-check_true '[ "$(slot_holder)" != flth-smoke ]' "and releases the slot" "reap left the slot held"
+check_eq "$(state)" running "reap leaves an unheld shared guest running too: it is there for the next run"
+"$VM" down
+check_eq "$(state)" not-running "and down, with nobody using it, stops it"
 
 step "guest-test: the suite runs inside the guest"
 "$VM" guest-test > "$CONTENDER/guest-test.log" 2>&1
@@ -480,12 +483,11 @@ check_eq "$rc" 0 "vm.sh guest-test exits 0 for a passing in-guest suite"
 check_contains "$(cat "$CONTENDER/guest-test.log")" "in-guest suite: $repo_guest as root" \
     "the command ran in the guest, from the repository mount"
 check_eq "$(cat "$("$VM" share)/results/verdict" 2>/dev/null)" pass "and its results are on the share"
-check_eq "$(state)" not-running "the VM is torn down afterwards"
+check_eq "$(state)" running "the guest stays up for the next run"
 
 "$VM" guest-test corrupt > "$CONTENDER/guest-test-corrupt.log" 2>&1
 rc=$?
 check_true '[ "$rc" -ne 0 ]' "a corrupted image fails guest-test too (exit $rc)" "a corrupted in-guest run passed"
-check_eq "$(state)" not-running "and it still tears down"
 
 step "test: a passing suite"
 "$VM" test
@@ -493,8 +495,7 @@ check_eq "$?" 0 "vm.sh test exits 0 for a passing suite"
 results="$("$VM" share)/results"
 check_eq "$(cat "$results/verdict" 2>/dev/null)" pass "the verdict collected on the host is pass"
 check_contains "$(cat "$results/e2fsck.log" 2>/dev/null)" "Pass 5: Checking group summary information" "e2fsck ran to completion, and its log came back"
-check_eq "$(state)" not-running "the VM is torn down afterwards"
-check_true '[ "$(slot_holder)" != flth-smoke ]' "and the slot released" "test left the slot held"
+check_eq "$(state)" running "the guest stays up for the next run"
 
 step "test: a corrupted image MUST fail"
 "$VM" test corrupt
@@ -502,7 +503,6 @@ rc=$?
 check_true '[ "$rc" -ne 0 ]' "vm.sh test exits non-zero ($rc) when the suite finds corruption" "a corrupted image passed"
 check_eq "$(cat "$results/verdict" 2>/dev/null)" fail "the verdict collected on the host is fail"
 check_contains "$(cat "$results/cmp.log" 2>/dev/null)" differ "because the content check found the flipped byte"
-check_eq "$(state)" not-running "the VM is torn down after a failure too"
 
 step "signal: a VM that stays up keeps its shares (#130)"
 # Each call has a limit of its own: a dead share holds whatever reads it, in the
@@ -513,7 +513,7 @@ signal_dir="$CONTENDER/signal"
 mkdir -p "$signal_dir"
 # Not through `bounded`: a function run in the background is a subshell, and $! has
 # to be the session itself for the signal below to reach it.
-FLTH_KEEP_VM=1 perl -e 'alarm shift; exec @ARGV or exit 127' 1800 "$VM" session bash -c '
+perl -e 'alarm shift; exec @ARGV or exit 127' 1800 "$VM" session bash -c '
     "$1" up || exit
     sleep 600 &
     echo "$!" > "$2/descendant"
@@ -539,7 +539,7 @@ if [ -n "$signal_descendant" ] && [ "$signal_survived" = 0 ]; then
 else
     bad "the command's descendant survived the session"
 fi
-check_eq "$(state)" running "the VM stays up, as FLTH_KEEP_VM=1 asks"
+check_eq "$(state)" running "the guest stays up for the next run"
 signal_share="$("$VM" share)"
 printf 'from the host\n' > "$signal_share/signal-marker"
 bounded 120 "$VM" run 'timeout -s KILL 30 cat /share/signal-marker' > "$signal_dir/share" 2>/dev/null
@@ -557,7 +557,7 @@ step "signal: it stops the guest command it started, and only that (#139)"
 # so the shell does not exec it.
 guest_runs() { bounded 120 "$VM" run "pgrep -c -x -f '$1'" 2>/dev/null | tr -d ' \n'; }
 guest_call_session() {
-    FLTH_KEEP_VM=1 perl -e 'alarm shift; exec @ARGV or exit 127' 600 "$VM" session bash -c '"$1" run "$2"' \
+    perl -e 'alarm shift; exec @ARGV or exit 127' 600 "$VM" session bash -c '"$1" run "$2"' \
         flth-guest-call "$VM" "$1" >> "$signal_dir/guest-call.log" 2>&1 &
     guest_call=$!
 }
@@ -608,10 +608,10 @@ check_eq "$?" 0 "a session whose guest powered itself off ends cleanly"
 check_eq "$(state)" not-running "and the VM is down"
 check_no_forwarders "a session ended on a powered-off guest"
 
-step "test: FLTH_KEEP_VM=1"
-FLTH_KEEP_VM=1 "$VM" test
+step "test: the guest a run booted stays up"
+"$VM" test
 check_eq "$?" 0 "the suite passes"
-check_eq "$(state)" running "and the VM is left running, as asked"
+check_eq "$(state)" running "and the guest it booted is left running for the next run"
 
 step "a lost guest: one that powers itself off (#105)"
 "$VM" exec 'systemctl poweroff; sleep 300' > "$CONTENDER/poweroff.out" 2> "$CONTENDER/poweroff.err"
@@ -623,7 +623,7 @@ check_contains "$lost" "[console]" "with the tail of the console"
 step "boot signal: a boot that a signal stopped is not a VM to keep (#134)"
 boot_signal_dir="$CONTENDER/boot-signal"
 mkdir -p "$boot_signal_dir"
-FLTH_KEEP_VM=1 perl -e 'alarm shift; exec @ARGV or exit 127' 1800 "$VM" session bash -c '
+perl -e 'alarm shift; exec @ARGV or exit 127' 1800 "$VM" session bash -c '
     "$1" up || exit
     : > "$2/booted"
     sleep 600
@@ -639,8 +639,7 @@ check_true '[ ! -e "$boot_signal_dir/booted" ]' "the signal lands during the boo
 kill -TERM "$boot_signal_session" 2>/dev/null
 wait "$boot_signal_session"
 check_eq "$?" 143 "a session signalled during a boot exits 143"
-check_eq "$(state)" not-running "and leaves no guest without its shares, although FLTH_KEEP_VM=1 asks"
-check_true '[ "$(slot_holder)" != flth-smoke ]' "and gives the slot back" "it kept the slot"
+check_eq "$(state)" not-running "and leaves no guest without its shares"
 bounded 1800 "$VM" run "timeout -s KILL 30 findmnt -n /share > /dev/null && timeout -s KILL 30 findmnt -n $repo_guest > /dev/null && echo mounted" > "$boot_signal_dir/run" 2>/dev/null
 check_eq "$(cat "$boot_signal_dir/run")" mounted "the next run boots a guest with /share and $repo_guest mounted"
 
@@ -648,7 +647,6 @@ step "down"
 "$VM" down
 check_eq "$?" 0 "vm.sh down succeeds"
 check_eq "$(state)" not-running "the VM is confirmed stopped"
-check_true '[ "$(slot_holder)" != flth-smoke ]' "and the slot released" "down left the slot held"
 check_no_forwarders "vm.sh down"
 
 step "destroy"
@@ -656,7 +654,6 @@ step "destroy"
 check_eq "$?" 0 "vm.sh destroy succeeds"
 check_contains "$("$VM" status 2>&1)" "(absent)" "the VM no longer exists"
 check_no_forwarders "vm.sh destroy"
-check_true '[ ! -e "$machine/cache.img" ]' "and its cache went with it" "destroy left $machine/cache.img behind"
 check_artifacts_gone "$memory" destroy
 
 step "an abrupt QEMU stop: the next boot reclaims abandoned memory"
@@ -700,14 +697,14 @@ check_no_forwarders "vm.sh destroy after an abrupt stop"
 step "short deadline: the guest takes logins until it powers off on time (#150)"
 # The oracles are the guest's own: logind writes /run/nologin for a poweroff less
 # than five minutes away, sshd decides a login with it there, and logind's record
-# says when the poweroff is. The status of `up` is the setup's first login, on the
-# provisioning boot and on the next. A new connection bypasses the harness's shared
+# says when the poweroff is. The status of `up` is the setup's first login. A new
+# connection bypasses the harness's shared
 # one, which sshd has already let in. How long the guest stays up is timed from the
 # last call, whose start is the last re-arm: the rate limit is past by then.
 deadline_vm destroy >/dev/null 2>&1 || true
 deadline_vm up
 rc=$?
-check_eq "$rc" 0 "a five-minute deadline lets the setup finish on both boots"
+check_eq "$rc" 0 "a five-minute deadline lets the setup finish"
 boot_or_stop "$rc"
 check_eq "$(deadline_vm run 'test -e /run/nologin && echo present' 2>/dev/null)" present \
     "the first command runs with logind's /run/nologin in place"
@@ -738,36 +735,32 @@ check_contains "$(tail -n 40 "$deadline_console" 2>/dev/null)" "Power down" "and
 deadline_vm down
 check_eq "$?" 0 "down clears up after a guest that powered itself off"
 deadline_vm destroy
-check_eq "$?" 0 "the third consumer's VM is destroyed"
+check_eq "$?" 0 "the five-minute guest is destroyed"
 
-step "kernel: the next boot runs the kernel a provisioning boot installed (#80)"
-# The oracles are the guest's own: dpkg says which kernel the setup's package
-# installed, and the running kernel says what it is. On Linux the guest's GRUB
-# chooses it; on macOS the box starts QEMU on a kernel beside the box, and the
-# harness has to carry the disk's across.
+step "kernel: a setup that installs a kernel is refused on the shared guest (#157)"
+# The shared guest does not restart for one consumer's setup, so its tests would run
+# on the guest's kernel while the join reported success. The oracle is the guest's
+# own /boot and `uname -r`, as the refusal names them.
 kernel_vm destroy >/dev/null 2>&1 || true
 t0=$(date +%s)
-kernel_vm up
+kernel_out="$(kernel_vm up 2>&1)"
 rc=$?
-check_eq "$rc" 0 "a setup that installs a kernel boots"
-boot_or_stop "$rc"
-echo "  (provisioning and the next boot took $(( $(date +%s) - t0 ))s)"
-installed="$(kernel_vm run 'dpkg-query -W -f="\${Depends}" "linux-image-$(dpkg --print-architecture)"' 2>/dev/null | sed -n 's/^linux-image-\([^ ,|]*\).*/\1/p')"
-check_true '[ -n "$installed" ]' "the guest's dpkg names the kernel the setup installed: $installed" "the guest's dpkg names no kernel for the setup's package"
-check_eq "$(kernel_vm run 'uname -r' 2>/dev/null)" "$installed" "the guest runs it"
-check_eq "$(kernel_vm run 'test -d "/lib/modules/$(uname -r)" && modprobe loop && echo loaded' 2>/dev/null)" loaded \
-    "and loads a module from the tree it installed"
-check_eq "$(kernel_vm run "findmnt -n -o TARGET /share; findmnt -n -o TARGET $repo_guest" 2>/dev/null | paste -sd, -)" "/share,$repo_guest" \
-    "and both shares mount under it"
-kernel_vm down
-check_eq "$?" 0 "the VM stops"
-kernel_vm up
+echo "  (the boot and the setup took $(( $(date +%s) - t0 ))s)"
+check_true '[ "$rc" -ne 0 ]' "the join of a consumer whose setup installs a kernel fails (exit $rc)" "it joined as if its kernel ran"
+# Asked of that guest over its own SSH config, which the refusal does not stand in
+# front of. Not as the smoke consumer: this consumer pins no guest, so it joins the
+# default one, which is not the smoke consumer's on a debian-13 run.
+running_kernel="$(ssh -F "$(kernel_vm config | sed -n 's/^machine=//p')/ssh-config" \
+    -o ControlPath=none -T default 'uname -r' 2>/dev/null </dev/null)"
+check_true '[ -n "$running_kernel" ]' "the guest answers uname -r" "the guest did not answer uname -r"
+check_contains "$kernel_out" "this shared guest runs $running_kernel" "naming the kernel the guest runs"
+check_contains "$kernel_out" "setup installed kernel " "and the one the setup installed"
+kernel_out="$(kernel_vm exec true 2>&1)"
 rc=$?
-check_eq "$rc" 0 "a later cold boot comes up"
-boot_or_stop "$rc"
-check_eq "$(kernel_vm run 'uname -r' 2>/dev/null)" "$installed" "and runs it too"
+check_true '[ "$rc" -ne 0 ]' "and a later call of that consumer's is refused too" "a later call ran on the wrong kernel"
+check_contains "$kernel_out" "setup installed kernel " "saying why"
 kernel_vm destroy
-check_eq "$?" 0 "the second consumer's VM is destroyed"
+check_eq "$?" 0 "that guest is destroyed"
 
 # shellcheck source=tests/smoke-shared/guest.sh
 . "$REPO/tests/smoke-shared/guest.sh"

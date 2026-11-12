@@ -10,8 +10,8 @@
 # 60 minutes and the job ends CANCELLED, with no verdict and nothing for
 # `Collect results` to upload.
 #
-# smoke.sh is run here unmodified, from a copy of the harness whose vm.sh,
-# vm-slot.sh and host-tools.sh are stubs: `up` fails, every call is logged.
+# smoke.sh is run here unmodified, from a copy of the harness whose vm.sh and
+# host-tools.sh are stubs: `up` fails, every call is logged.
 # No VM is involved.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -36,9 +36,8 @@ case "\$1" in
     *)       exit 1 ;;
 esac
 EOF
-printf '#!/usr/bin/env bash\necho free\n' > "$H/scripts/vm-slot.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$H/scripts/host-tools.sh"
-chmod +x "$H/scripts/vm.sh" "$H/scripts/vm-slot.sh" "$H/scripts/host-tools.sh" "$H/tests/smoke.sh"
+chmod +x "$H/scripts/vm.sh" "$H/scripts/host-tools.sh" "$H/tests/smoke.sh"
 
 out="$("$H/tests/smoke.sh" 2>&1)"
 rc=$?

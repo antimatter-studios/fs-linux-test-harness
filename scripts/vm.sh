@@ -8,19 +8,19 @@
 #   vm.sh put <file>       copy a file into the shared directory; print its guest path
 #   vm.sh share            print the host path of the shared directory
 #   vm.sh provision        boot if needed, re-run the setup script unconditionally
-#   vm.sh reload           restart the running VM in place, keeping its slot
-#   vm.sh test [args...]   boot, run the consumer's [test] command, tear down
-#   vm.sh guest-test [args...]  boot, run the [test] guest_command INSIDE the guest, tear down
+#   vm.sh reload           restart the shared guest in place, if nobody else is using it
+#   vm.sh test [args...]   boot if needed, run the consumer's [test] command as a run of its own
+#   vm.sh guest-test [args...]  boot if needed, run the [test] guest_command INSIDE the guest
 #   vm.sh session <cmd...> run a command on the host inside a session: the VM comes down when it ends
-#   vm.sh down             halt, confirm it stopped, release the slot
+#   vm.sh down             stop the shared guest and confirm it stopped, if nobody is using it
 #   vm.sh status           exit 0 when the VM is running, 1 otherwise
 #   vm.sh hold             keep the VM up: reap leaves it, the guest deadline is cancelled
 #   vm.sh reap             stop a VM nothing cleaned up (the safety net)
-#   vm.sh destroy          delete the VM and its disk, release the slot
+#   vm.sh destroy          delete the shared guest and its disk, if nobody is using it
 #   vm.sh config           print the resolved configuration
 #
 # NOT IN THE USAGE, AND NO CHORE TASK, ON PURPOSE: `session-begin <pid>`,
-# `session-end <pid>`, `boot-finished`, `run-id` and `guest-tree` are vm-session.sh's
+# `session-end <pid>`, `tree-lost <run>`, `run-id` and `guest-tree` are vm-session.sh's
 # and guest-test's plumbing, the calls that make a session visible to the reaper,
 # tell it whether there is a VM it may keep and set up a run on a shared guest.
 # `up-boot` is the boot `up` starts in a process group of its own (vm_up). A
@@ -31,26 +31,21 @@
 # The consumer is found from fs-linux-test-harness.toml in the working
 # directory or a parent, or from FLTH_CONFIG. See README.md.
 #
-# The VM is kept running between invocations on purpose: booting is the
-# slow part, and an iterate-and-check loop should pay it once. What stops
-# it is, in order: `down` (a chore `defer:`, or a vm-session.sh session
-# ending, which leaves a held VM up), `reap` (a chore `after_all`), and
-# the guest's own poweroff deadline.
+# EVERY CONSUMER USES ONE GUEST, shared by every consumer on the host (#153, #220).
+# It is kept running between invocations on purpose: booting is the slow part, and
+# the next run, of this consumer or another, should not pay it again. What stops it
+# is `down` with nobody using it, a boot that did not finish, the watchdog, and the
+# guest's own poweroff deadline.
 #
-# WHAT A BOOT WRITES IS GONE WHEN IT STOPS. The machine's disk carries the
-# consumer's setup and nothing else: every boot that runs anything is
-# disposable (lib/engine.sh, engine_up), and only a provisioning boot —
-# one that applies a setup script the disk does not carry yet, and is
-# stopped before anything runs — writes it. See provision_disk. The one
-# thing a run writes that is kept is what it puts in a cache the consumer
-# declared ([cache] size), which is a disk of its own at FLTH_CACHE_GUEST.
+# WHAT A BOOT WRITES IS GONE WHEN IT STOPS. The machine's disk is the box's and
+# carries nobody's setup: every boot is disposable (lib/engine.sh, engine_up), and
+# each consumer's setup runs when it joins, on the boot it joined.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 # shellcheck source=lib/common.sh
 . "$(dirname "$SELF")/lib/common.sh"
 
-SLOT="$FLTH_HARNESS/scripts/vm-slot.sh"
 HOST_TOOLS="$FLTH_HARNESS/scripts/host-tools.sh"
 BOOT_ATTEMPTS=3
 BOOT_RETRY_WAIT=5
@@ -79,25 +74,13 @@ require_host_tools() {
     fi
 }
 
-# What a boot of the machine's disk starts from: the hash of the setup
-# script the disk carries, recorded when a provisioning boot stopped
-# cleanly. Absent when the disk carries none, or nobody knows.
-base_record() { printf '%s/base.sha256\n' "$FLTH_MACHINE_DIR"; }
-
-# Present while the VM is up on a provisioning boot, whose writes are
-# kept. Nothing is run there: see refuse_provisioning_boot.
-provisioning_marker() { printf '%s/provisioning\n' "$FLTH_MACHINE_DIR"; }
-
-# `boot` provisions only when the disk does not carry the script; `force`
-# (`vm.sh provision`) re-applies it regardless.
+# `boot` applies the setup only when the guest does not carry the script yet;
+# `force` (`vm.sh provision`) re-applies it regardless.
 PROVISION_MODE=boot
 
 # What started this process. The boot `up` starts is a process of its own and is
 # handed its caller's, so what it records names the same invocation (vm_up).
 VM_PARENT="$PPID"
-
-# Set by apply_setup when the setup script actually ran in the guest.
-SETUP_APPLIED=0
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -109,35 +92,27 @@ sha256_of() {
 
 # Run the consumer's setup script inside the guest.
 #
-#   boot    after a boot: run it unless the guest records this exact
-#           script as already applied
-#   auto    the VM was already up: trust the host's record of what was
-#           applied, and only ask the guest when the script has changed
+#   boot    run it unless the guest records this exact script as
+#           already applied on this boot
 #   force   run it regardless
 #
-# The guest's stamp is the authority, because it lives with the disk the
-# tooling was installed on. The host's stamp only saves an ssh round
-# trip on every `run` against a VM that is already up.
+# The guest's stamp is the authority: it lives with the boot the tooling
+# was installed on, and goes with it.
 #
 # The script travels base64-encoded inside the command, so nothing in it
 # can be mistaken for the end of anything, and it runs with stdin from
 # /dev/null so an `apt-get` inside cannot swallow what follows. Its output
 # goes to stderr, so the stdout of `vm.sh run` is only the command's.
 apply_setup() {
-    local mode="$1" script hash host_stamp guest force=0 payload out rc stamp take_turn="" with_tree=""
+    local mode="$1" script hash guest force=0 payload out rc stamp take_turn with_tree
+    # The setup reads this consumer's tree, which is the run's device.
+    shared_attach || return
     script="$FLTH_ROOT/$CFG_setup_script"
     hash="$(sha256_of "$script")" || return
-    host_stamp="$FLTH_MACHINE_DIR/setup.sha256"
-
-    if [ "$mode" = auto ] && [ "$(cat "$host_stamp" 2>/dev/null || true)" = "$hash" ]; then
-        return 0
-    fi
     [ "$mode" = force ] && force=1
     payload="$(base64 < "$script")" || return
-    SETUP_APPLIED=0
-    stamp=/var/lib/fs-linux-test-harness/setup.sha256
 
-    # ON A SHARED GUEST each consumer has a stamp of its own and its setup runs with
+    # ON THE SHARED GUEST each consumer has a stamp of its own and its setup runs with
     # its own tree. Two setups at once would collide on the package manager's lock,
     # and nothing merges them, so they take turns. The stamp is read again after the
     # wait: another suite of this consumer may have applied it. They install
@@ -149,34 +124,32 @@ apply_setup() {
     # compared before and after it, and a new one that is not the running kernel is
     # recorded for this consumer: this join and every later one on this boot refuse,
     # naming both. Another consumer's join is not affected.
-    local kernel_check="" kernel_after=""
-    if flth_shared; then
-        stamp="/var/lib/fs-linux-test-harness/setup-$CFG_project_name.sha256"
-        kernel_check="kernel_record=/var/lib/fs-linux-test-harness/setup-$CFG_project_name.kernel
+    local kernel_check kernel_after
+    stamp="/var/lib/fs-linux-test-harness/setup-$CFG_project_name.sha256"
+    kernel_check="kernel_record=/var/lib/fs-linux-test-harness/setup-$CFG_project_name.kernel
 running=\"\$(uname -r)\"
 kernels() { local k; for k in /boot/vmlinuz-*; do [ -e \"\$k\" ] && printf '%s\\n' \"\${k##*/vmlinuz-}\"; done; return 0; }
 refuse_kernel() { [ -s \"\$kernel_record\" ] || return 0; echo \"kernel \$(cat \"\$kernel_record\") \$running\"; exit 0; }
 kernels_before=\"\$(kernels)\""
-        take_turn="exec 9> $FLTH_GUEST_RUNS/setup.lock
+    take_turn="exec 9> $FLTH_GUEST_RUNS/setup.lock
 flock -n 9 || { echo '[vm] waiting for another consumer'\\''s setup to finish' >&2; flock 9; }
 if [ $force = 0 ] && [ \"\$(cat \"\$stamp\" 2>/dev/null || true)\" = '$hash' ]; then
     refuse_kernel
     exit 0
 fi
 kernels_before=\"\$(kernels)\""
-        kernel_after="installed=\"\$(kernels | grep -Fxv -f <(printf '%s\\n' \"\$kernels_before\") | grep -Fxv \"\$running\" | tail -n 1 || true)\"
+    kernel_after="installed=\"\$(kernels | grep -Fxv -f <(printf '%s\\n' \"\$kernels_before\") | grep -Fxv \"\$running\" | tail -n 1 || true)\"
 if [ -n \"\$installed\" ]; then
     mkdir -p \"\$(dirname \"\$kernel_record\")\"
     printf '%s\\n' \"\$installed\" > \"\$kernel_record\"
 fi"
-        with_tree="bash $FLTH_GUEST_RUNS/run.sh setup $(shared_run_places)"
-    fi
+    with_tree="bash $FLTH_GUEST_RUNS/run.sh setup $(shared_run_places)"
 
     guest="set -euo pipefail
 stamp=$stamp
 $kernel_check
 if [ $force = 0 ] && [ \"\$(cat \"\$stamp\" 2>/dev/null || true)\" = '$hash' ]; then
-    ${kernel_check:+refuse_kernel}
+    refuse_kernel
     exit 0
 fi
 $take_turn
@@ -188,7 +161,7 @@ rm -f \"\$tmp\"
 mkdir -p \"\$(dirname \"\$stamp\")\"
 printf '%s\n' '$hash' > \"\$stamp\"
 $kernel_after
-${kernel_check:+refuse_kernel}
+refuse_kernel
 echo applied"
 
     rc=0
@@ -197,7 +170,6 @@ echo applied"
     # leaves the whole of it to reach the first command.
     out="$(guest_call_held "$guest")" || rc=$?
     if [ "$rc" -ne 0 ]; then
-        rm -f "$host_stamp"
         echo "vm: the setup script ($CFG_setup_script) failed inside the VM." >&2
         echo "    The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
         exit 1
@@ -211,8 +183,6 @@ echo applied"
             exit 1
             ;;
     esac
-    printf '%s\n' "$hash" > "$host_stamp" || return
-    [ "$out" = applied ] && SETUP_APPLIED=1
     return 0
 }
 
@@ -220,8 +190,8 @@ echo applied"
 shared_kernel_record() { printf '%s/kernel-refused-%s\n' "$FLTH_MACHINE_DIR" "$CFG_project_name"; }
 shared_kernel_explain() {
     echo "vm: $CFG_project_name's setup installed kernel $1, and this shared guest runs $2." >&2
-    echo "    A shared guest does not restart for one consumer's setup, so its tests would run on $2." >&2
-    echo "    Run $CFG_project_name on a guest of its own: unset FLTH_SHARED_ROOT for it." >&2
+    echo "    The shared guest does not restart for one consumer's setup, so its tests would run on $2." >&2
+    echo "    Every consumer uses this guest: a setup that installs a kernel cannot be run on it (#207)." >&2
 }
 
 # ONE UP AT A TIME PER MACHINE. A test process that runs its oracle tests
@@ -233,6 +203,8 @@ shared_kernel_explain() {
 # reads the state afresh and finds the VM running. An owner that died
 # leaves a lock whose pid is gone, which the next caller takes over.
 UP_LOCK_WAIT_SECS="${FLTH_UP_LOCK_WAIT_SECS:-2700}"
+# Whether this process holds the lock, so that what it calls does not wait for itself.
+UP_LOCK_HELD=0
 
 up_lock_take() {
     local waited=0 owner
@@ -259,6 +231,7 @@ up_lock_try() {
         rm -rf "$lock"
     done
     echo "$$" > "$lock/pid"
+    UP_LOCK_HELD=1
     trap 'rm -rf "$FLTH_MACHINE_DIR/up.lock"' EXIT
 }
 
@@ -267,6 +240,7 @@ up_lock_try() {
 # other. The EXIT trap covers up's own `exit` paths.
 up_lock_drop() {
     rm -rf "$FLTH_MACHINE_DIR/up.lock"
+    UP_LOCK_HELD=0
     trap - EXIT
 }
 
@@ -274,7 +248,7 @@ up_lock_drop() {
 # and the shares are mounted late, so a signal between the two ends the boot and
 # leaves a guest with /share and /repo never mounted. It answers ssh and its state
 # reads running, so a run against it exits 0 having seen empty directories. Measured
-# on an Apple Silicon host with FLTH_KEEP_VM=1.
+# on an Apple Silicon host with a session that kept its VM.
 #
 # So a marker exists from before a boot starts until the engine says it finished,
 # and is written and removed under the up lock. A marker with no live process
@@ -343,9 +317,32 @@ vm_watchdog_end() {
     if up_lock_try; then have_lock=1; fi
     rm -f "$FLTH_MACHINE_DIR/watchdog.pid"
     engine_down --force >/dev/null 2>&1 || true
-    release_if_confirmed_stopped || true
+    confirmed_stopped || true
     [ "$have_lock" = 0 ] || up_lock_drop
     for pid in $pids; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+}
+
+# THE WATCHDOG FOUND A RUN'S virtiofsd GONE (#222): its device goes before anything
+# else runs there, then the run ends, and the suites on that run are told why and
+# stopped, as for a guest the watchdog ends. Other runs are not touched.
+vm_tree_lost() {
+    local run="$1" attached=0 marker pid start told reason
+    engine_tree_attached "$run" || attached=$?
+    [ "$attached" = 3 ] || return 0
+    reason="the virtiofsd serving run $run's tree has gone"
+    told="$(watchdog_told)"
+    mkdir -p "$told"
+    engine_detach_tree "$run" || true
+    engine_run "bash $FLTH_GUEST_RUNS/run.sh end $run" >&2 || true
+    for marker in "$(sessions_dir)"/*; do
+        [ -f "$marker" ] || continue
+        [ "$(cut -f4 "$marker" 2>/dev/null || true)" = "$run" ] || continue
+        IFS=$'\t' read -r pid start _ < "$marker" || true
+        case "$pid" in '' | *[!0-9]*) continue ;; esac
+        [ "$(process_start "$pid" || true)" = "$start" ] || continue
+        printf '%s\n' "$reason" > "$told/$pid"
         kill -TERM "$pid" 2>/dev/null || true
     done
 }
@@ -363,16 +360,14 @@ vm_watchdog_told() {
 
 boot_vm() {
     : > "$(unfinished_boot_marker)" || return
-    boot_engine "$@" || return
-    if flth_shared; then
-        shared_prepare_guest || return
-        shared_boot_identity > "$(shared_boot_record)" || return
-        # A refusal is for the boot that holds the kernel it named.
-        local refused
-        for refused in "$FLTH_MACHINE_DIR"/kernel-refused-*; do
-            [ ! -f "$refused" ] || rm -f "$refused"
-        done
-    fi
+    boot_engine || return
+    shared_prepare_guest || return
+    shared_boot_identity > "$(shared_boot_record)" || return
+    # A refusal is for the boot that holds the kernel it named.
+    local refused
+    for refused in "$FLTH_MACHINE_DIR"/kernel-refused-*; do
+        [ ! -f "$refused" ] || rm -f "$refused"
+    done
     rm -f "$(unfinished_boot_marker)"
 }
 
@@ -400,7 +395,6 @@ stop_unfinished_boot() {
     engine_alive "$(engine_identity)" || alive=$?
     if [ "$alive" -eq 1 ]; then
         rm -f "$(unfinished_boot_marker)"
-        "$SLOT" release
     else
         echo "[vm] stopping $CFG_project_name: its boot did not finish, so it has no shares and nothing keeps it." >&2
         vm_down
@@ -413,56 +407,6 @@ refuse_unfinished_boot() {
     [ -f "$(unfinished_boot_marker)" ] || return 0
     echo "vm: $CFG_project_name's last boot did not finish, or is still running, so its guest has no shares." >&2
     echo "    Nothing ran. 'chore vm:up' replaces it." >&2
-    exit 1
-}
-
-# vm-session.sh asks before it keeps a VM for FLTH_KEEP_VM=1.
-vm_boot_finished() {
-    if boot_stopped_short; then
-        return 1
-    fi
-    return 0
-}
-
-# THE MACHINE IS NAMED FOR THE PROJECT AND THE GUEST'S /repo IS ONE WORKTREE.
-# Every worktree of a repository shares a machine, and its guest mounts the one
-# that booted it, so a command from another worktree would run against the wrong
-# files while reporting success or an unrelated failure (#112). Each boot records
-# its worktree and the running VM process's identity. A record from another
-# boot, or one whose boot cannot be identified, says nothing about the guest's
-# current mount and is treated like no record.
-mounted_worktree_record() { printf '%s\n' "$FLTH_MACHINE_DIR/mounted-worktree"; }
-mounted_worktree_boot_record() { printf '%s\n' "$FLTH_MACHINE_DIR/mounted-worktree-boot"; }
-
-# Print the worktree the guest has mounted, when that is not this one.
-mounted_elsewhere() {
-    local mounted recorded current pending owner
-    if flth_shared; then
-        return 1
-    fi
-    mounted="$(cat "$(mounted_worktree_record)" 2>/dev/null || true)"
-    [ -n "$mounted" ] && [ "$mounted" != "$FLTH_ROOT" ] || return 1
-    recorded="$(cat "$(mounted_worktree_boot_record)" 2>/dev/null || true)"
-    if [ -n "$recorded" ]; then
-        current="$(engine_boot_identity)" || return 1
-        [ "$recorded" = "$current" ] || return 1
-    else
-        pending="$(cat "$FLTH_MACHINE_DIR/up.lock/mounted-worktree" 2>/dev/null || true)"
-        [ "$pending" = "$mounted" ] || return 1
-        owner="$(cat "$FLTH_MACHINE_DIR/up.lock/pid" 2>/dev/null || true)"
-        case "$owner" in '' | *[!0-9]*) return 1 ;; esac
-        kill -0 "$owner" 2>/dev/null || return 1
-    fi
-    printf '%s\n' "$mounted"
-}
-
-# For a caller that knows the VM is up.
-refuse_other_worktree() {
-    local mounted
-    mounted="$(mounted_elsewhere)" || return 0
-    echo "vm: $CFG_project_name's VM has $mounted mounted at $FLTH_REPO_GUEST, and this is $FLTH_ROOT." >&2
-    echo "    Nothing ran: this command would have used the other worktree's files." >&2
-    echo "    Run it from that worktree, or again once that VM has stopped. 'chore vm:down' stops it, ending any run there." >&2
     exit 1
 }
 
@@ -544,11 +488,11 @@ vm_up() {
         fi
     fi
     if [ "$rc" -ne 0 ]; then
-        release_if_confirmed_stopped || true
+        confirmed_stopped || true
     fi
     up_lock_drop
     trap - HUP INT TERM
-    if [ "$rc" -eq 0 ] && flth_shared; then
+    if [ "$rc" -eq 0 ]; then
         # Outside the lock: a consumer's setup can take many minutes, and nothing
         # about another suite joining depends on it. The guest serialises them.
         apply_setup "$([ "$PROVISION_MODE" = force ] && echo force || echo boot)" || rc=$?
@@ -592,15 +536,9 @@ vm_up_locked() {
     case "$state" in
         running)
             # No host-tool check on this path: `run` comes through here on
-            # every call, and a VM that is up needs nothing installed.
-            refuse_other_worktree
-            refuse_provisioning_boot
-            if flth_shared; then
-                refuse_other_boot
-                return 0
-            fi
-            apply_setup auto || return
-            forget_disk_if_setup_ran || return
+            # every call, and a VM that is up needs nothing installed. The
+            # setup is vm_up's, after the lock.
+            refuse_other_boot
             return 0
             ;;
         unknown)
@@ -612,39 +550,13 @@ vm_up_locked() {
             echo "vm: could not read the VM's state; not booting until it can be read." >&2
             exit 1
             ;;
-        absent)
-            # A machine that does not exist has no disk to carry anything.
-            rm -f "$(base_record)" || return
-            engine_forget_kernel || return
-            ;;
     esac
     require_host_tools
 
-    # TAKE THE SLOT BEFORE BOOTING, and only when actually booting. A VM
-    # that is already up took it when it started, so asking again would
-    # deadlock a second `up` against itself.
-    "$SLOT" acquire || {
-        echo "vm: could not get the VM slot; not booting a second VM." >&2
-        exit 1
-    }
-    record_boot_invocation || return
-    # Not running, so not on a provisioning boot, whatever a marker says.
-    rm -f "$(provisioning_marker)" || return
-
-    echo "[vm] booting $CFG_project_name (a first boot downloads the box and provisions)..." >&2
-    # A shared guest's disk carries nobody's setup: each consumer's runs when it
-    # joins, on the boot it joined, and goes with that boot.
-    if flth_shared; then
-        boot_vm
-        return
-    fi
-    if [ "$PROVISION_MODE" = force ] || ! engine_kernel_known ||
-        [ "$(cat "$(base_record)" 2>/dev/null || true)" != "$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" ]; then
-        provision_disk || return
-    fi
-    boot_vm || return
-    apply_setup boot || return
-    forget_disk_if_setup_ran
+    # The guest's disk carries nobody's setup: each consumer's runs when it joins,
+    # on the boot it joined, and goes with that boot.
+    echo "[vm] booting the shared guest for $CFG_project_name (a first boot downloads the box)..." >&2
+    boot_vm
 }
 
 # THE GUEST'S CONSOLE, WHEN A BOOT FAILS (#61). A boot that never
@@ -739,13 +651,16 @@ report_lost_guest() {
         echo "vm: $free MB free on the host's disk holding the overlay ($dir)${overlay:+; the overlay is $overlay}." >&2
     fi
     show_console "$LOST_GUEST_CONSOLE_LINES"
-    if flth_shared && [ "$answered" = 0 ]; then
+    if [ "$answered" = 0 ]; then
         echo "vm: this guest is shared, so every suite using it lost it too: $(shared_suites)." >&2
     fi
 }
 
 # A call into the guest. Keeps its status, and reports when that is ssh's own.
-guest_run() { guest_call_held "$(guest_call_script "$1")"; }
+guest_run() {
+    shared_attach || return
+    guest_call_held "$(guest_call_script "$1")"
+}
 
 # The same, outside any run of a shared guest. A setup is what makes the tools every
 # run uses, and it enters a namespace of its own (`run.sh setup`), so it must not go
@@ -762,46 +677,6 @@ guest_call_held() {
     return "$rc"
 }
 
-# RENEWS THE SLOT'S LEASE WHILE AN ATTEMPT RUNS. Its stop waits for a renewal in
-# progress, because the next check-memory refuses a record that changes under it.
-# The nap is real time: a test's stub `sleep` must not make this spin. It ends
-# with the shell that started it, however that shell ends, within one tick.
-LEASE_KEEPER=""
-lease_keeper_start() {
-    local interval="${FLTH_SLOT_RENEW_SECS:-$((${FLTH_SLOT_BOOT_GRACE:-180} / 3))}" owner
-    [ "$interval" -gt 0 ] || interval=1
-    # The exec makes this shell the parent, on a Bash with no BASHPID. An async
-    # subshell cannot trap INT there, so a signal to the group only ends this
-    # through its owner going.
-    owner="$(exec sh -c 'echo "$PPID"')"
-    (
-        stopping=0
-        nap=""
-        # A trap ends `wait` at once, and a foreground sleep only after its second,
-        # which every boot would pay.
-        trap 'stopping=1; [ -z "$nap" ] || kill "$nap" 2>/dev/null' TERM
-        ticks=0
-        while [ "$stopping" = 0 ] && kill -0 "$owner" 2>/dev/null; do
-            command -p sleep 1 &
-            nap=$!
-            wait "$nap" || true
-            ticks=$((ticks + 1))
-            if [ "$ticks" -ge "$interval" ] && [ "$stopping" = 0 ]; then
-                ticks=0
-                "$SLOT" renew || true
-            fi
-        done
-    ) </dev/null >/dev/null 2>&1 &
-    LEASE_KEEPER=$!
-}
-
-lease_keeper_stop() {
-    [ -n "$LEASE_KEEPER" ] || return 0
-    kill -TERM "$LEASE_KEEPER" 2>/dev/null || true
-    wait "$LEASE_KEEPER" 2>/dev/null || true
-    LEASE_KEEPER=""
-}
-
 # Boot, retrying.
 #
 # RETRIED, because the forwarded SSH port is not always free the instant
@@ -816,49 +691,35 @@ lease_keeper_stop() {
 # own, and reported as what it was: no VM started, so there is no console to show
 # and nothing to force down. A boot failure keeps the retries above.
 #
-# THE WAIT FITS INSIDE WHAT IS WAITING ON IT. The slot's lease is renewed by
-# check-memory before each attempt, and a holder with no VM is only trusted for
-# FLTH_SLOT_BOOT_GRACE (180 s), so no single wait reaches that. The bound is well
-# inside the up lock's wait (FLTH_UP_LOCK_WAIT_SECS), the slot's (FLTH_SLOT_WAIT),
-# and the shortest job limit around a first boot in the family, 45 minutes. The
-# time an attempt takes counts, so a catalog that fails slowly is bounded too.
+# THE WAIT FITS INSIDE WHAT IS WAITING ON IT: well inside the up lock's wait
+# (FLTH_UP_LOCK_WAIT_SECS) and the shortest job limit around a first boot in the
+# family, 45 minutes. The time an attempt takes counts, so a catalog that fails
+# slowly is bounded too.
 #
-# AN ATTEMPT OUTLASTS THE LEASE (#161). Vagrant can spend minutes before QEMU
-# exists: a box download, a loaded host. For all of that no VM is running and the
-# process that will start one is alive, so the lease is kept fresh while the
-# attempt runs, by a process that goes when the attempt ends or its owner does.
+# THE HOST'S MEMORY IS MEASURED BEFORE EACH ATTEMPT. A guest asks for gigabytes,
+# and a full machine does not fail cleanly: it kills background work with no
+# message connecting the two. So a boot the host has no room for is refused,
+# naming the numbers.
 boot_engine() {
-    local attempt=1 box_spent=0 box_wait="$BOX_RETRY_FIRST_WAIT" failure started identity up_rc
+    local attempt=1 box_spent=0 box_wait="$BOX_RETRY_FIRST_WAIT" failure started up_rc
     while :; do
-        if ! "$SLOT" check-memory; then
-            release_if_confirmed_stopped || true
+        if ! host_memory_check; then
+            confirmed_stopped || true
             return 1
         fi
         mkdir -p "$FLTH_MACHINE_DIR" || return
-        rm -f "$(mounted_worktree_boot_record)" || return
-        printf '%s\n' "$FLTH_ROOT" > "$(mounted_worktree_record)" || return
-        printf '%s\n' "$FLTH_ROOT" > "$FLTH_MACHINE_DIR/up.lock/mounted-worktree" || return
         started="$SECONDS"
-        lease_keeper_start
         up_rc=0
-        engine_up "$@" || up_rc=$?
-        lease_keeper_stop
+        engine_up || up_rc=$?
         if [ "$up_rc" = 0 ]; then
-            if identity="$(engine_boot_identity)" && [ -n "$identity" ]; then
-                printf '%s\n' "$identity" > "$(mounted_worktree_boot_record)" || return
-            fi
             watchdog_start
             return 0
         fi
-        # No VM from here to the next attempt, and that attempt may have lasted
-        # up to its whole timeout. A failure here stops nothing: the next attempt
-        # refuses to start without a reservation.
-        "$SLOT" renew || true
         if failure="$(engine_box_failure)"; then
             box_spent=$((box_spent + SECONDS - started))
             if [ "$box_spent" -ge "$BOX_RETRY_BOUND" ]; then
                 echo "vm: the box could not be fetched: $failure, and was still failing after ${box_spent}s. No VM was started." >&2
-                release_if_confirmed_stopped || true
+                confirmed_stopped || true
                 exit 1
             fi
             [ "$box_wait" -le $((BOX_RETRY_BOUND - box_spent)) ] || box_wait=$((BOX_RETRY_BOUND - box_spent))
@@ -874,7 +735,7 @@ boot_engine() {
         show_console || true
         if [ "$attempt" -ge "$BOOT_ATTEMPTS" ]; then
             echo "vm: the VM would not boot after $BOOT_ATTEMPTS attempts." >&2
-            release_if_confirmed_stopped || true
+            confirmed_stopped || true
             exit 1
         fi
         echo "[vm] boot failed, retrying in ${BOOT_RETRY_WAIT}s (attempt $attempt of $BOOT_ATTEMPTS)..." >&2
@@ -885,85 +746,71 @@ boot_engine() {
     done
 }
 
-# THE ONLY BOOT WHOSE WRITES REACH THE DISK. Applies the setup script on
-# a --persist boot, then stops it and CONFIRMS the stop before anything
-# else boots: a disposable boot started over a disk still being written
-# would read a half-written one. Called with the slot held.
-#
-# A setup script that fails leaves this boot up to be inspected, as
-# before; while it is up nothing is run on it (refuse_provisioning_boot),
-# because whatever a run wrote would be kept.
-provision_disk() {
-    local hash
-    hash="$(sha256_of "$FLTH_ROOT/$CFG_setup_script")" || return
-    echo "[vm] provisioning boot: applying $CFG_setup_script to the machine's disk..." >&2
-    : > "$(provisioning_marker)" || return
-    boot_vm --persist || return
-    apply_setup "$PROVISION_MODE" || return
-    if ! engine_keep_kernel; then
-        echo "vm: the newest kernel on the disk could not be kept for the next boot, so the disk is not" >&2
-        echo "    recorded as provisioned. The VM is left running so it can be inspected; 'chore vm:down' stops it." >&2
-        exit 1
-    fi
-    # Graceful halt flushes the guest's caches; this makes sure of it.
-    engine_run sync >/dev/null 2>&1 || true
-    # The setup can have outlived the boot grace, and a waiter must not find an
-    # old lease and no VM between this stop and the next boot. A failure here
-    # stops nothing: the next boot refuses to start without a reservation.
-    "$SLOT" renew || true
-    engine_down || true
-    if [ "$(engine_state)" != stopped ]; then
-        echo "vm: the provisioning boot could not be confirmed stopped, so its writes are not known to be" >&2
-        echo "    on the disk; nothing is booted over it. 'chore vm:status', then 'chore vm:down' or 'chore vm:destroy'." >&2
-        exit 1
-    fi
-    rm -f "$(provisioning_marker)" || return
-    printf '%s\n' "$hash" > "$(base_record)"
-}
-
-# A provisioning boot's writes are kept, so a run there would reach the
-# disk every later boot starts from.
-refuse_provisioning_boot() {
-    [ -f "$(provisioning_marker)" ] || return 0
-    echo "vm: $CFG_project_name is up on its provisioning boot, whose writes are kept on its disk," >&2
-    echo "    so nothing is run there. Another 'up' may be provisioning it: try again when that is done." >&2
-    echo "    If its setup failed and it was left up to be inspected, 'chore vm:down' stops it," >&2
-    echo "    and the next boot provisions again." >&2
-    exit 1
-}
-
-# The setup script ran on a disposable boot, so the disk does not carry
-# it, whatever the record said: drop the record, and the next cold boot
-# provisions.
-forget_disk_if_setup_ran() {
-    if [ "$SETUP_APPLIED" = 1 ]; then
-        rm -f "$(base_record)" || return
-    fi
-    return 0
-}
-
-# Release the slot ON THE STRENGTH OF A CONFIRMED STOP, never of an
-# attempt. A halt that reported success while the VM kept running must
-# keep the slot, or the next repository exceeds the configured limit; and
-# a state that could not be read is not a stop.
-release_if_confirmed_stopped() {
+# A STOP IS WHAT THE STATE SAYS, never what an attempt reported. A halt that
+# reported success while the VM kept running is not a stop, and a state that
+# could not be read is not one either.
+confirmed_stopped() {
     local state
     state="$(engine_state)"
     case "$state" in
         stopped | absent)
-            rm -f "$(provisioning_marker)" "$(unfinished_boot_marker)"
-            "$SLOT" release
+            rm -f "$(unfinished_boot_marker)"
             return 0
             ;;
         running)
-            echo "vm: the VM is still running; the slot is kept." >&2
+            echo "vm: the VM is still running." >&2
             ;;
         *)
-            echo "vm: could not read the VM's state; the slot is kept rather than" >&2
-            echo "    released on a guess. 'chore vm:status' shows it; 'chore vm:destroy' reclaims it." >&2
+            echo "vm: could not read the VM's state, so it is not taken to be stopped." >&2
+            echo "    'chore vm:status' shows it; 'chore vm:destroy' reclaims it." >&2
             ;;
     esac
     return 1
+}
+
+# THE HOST HAS ROOM FOR THE GUEST, or the boot is refused. The guest's memory and
+# HOST_MEMORY_RESERVE_MIB for the host must both fit in what the host has
+# available: MemAvailable on Linux, free, inactive and speculative pages on macOS.
+# A measurement that could not be made refuses too, since a guess is how a full
+# machine starts.
+HOST_MEMORY_RESERVE_MIB=2048
+
+guest_memory_mib() {
+    case "$CFG_vm_memory" in
+        *G) echo "$(( ${CFG_vm_memory%G} * 1024 ))" ;;
+        *M) echo "${CFG_vm_memory%M}" ;;
+    esac
+}
+
+host_memory_mib() {
+    case "$(uname -s)" in
+        Linux)
+            awk '/^MemAvailable:/ {print int($2 / 1024); found=1} END {if (!found) exit 1}' /proc/meminfo ;;
+        Darwin)
+            local stats
+            stats="$(vm_stat)" || return 1
+            printf '%s\n' "$stats" | awk '
+                /page size of/ {for (field=1; field<=NF; field++) if ($field == "bytes)") size=$(field-1)}
+                /^Pages (free|inactive|speculative):/ {gsub(/\./, "", $NF); pages+=$NF; found++}
+                END {if (!size || found != 3) exit 1; print int(pages * size / 1048576)}' ;;
+        *) return 1 ;;
+    esac
+}
+
+host_memory_check() {
+    local available requested
+    requested="$(guest_memory_mib)"
+    available="$(host_memory_mib)" || available=""
+    case "$available" in
+        '' | *[!0-9]*)
+            echo "vm: the host's free memory could not be measured, so the shared guest is not booted." >&2
+            return 1 ;;
+    esac
+    if [ "$available" -lt "$((requested + HOST_MEMORY_RESERVE_MIB))" ]; then
+        echo "vm: not enough host memory for the shared guest: $available MiB available, and it needs" >&2
+        echo "    $requested MiB for the guest and $HOST_MEMORY_RESERVE_MIB MiB left for the host. FLTH_SHARED_MEMORY asks for less." >&2
+        return 1
+    fi
 }
 
 vm_down() {
@@ -977,42 +824,17 @@ vm_down() {
     # wedged at shutdown -- is forced before down gives up (#51). An
     # ordinary boot runs on a throwaway overlay, so nothing is lost by
     # forcing it.
-    #
-    # A PROVISIONING boot is the exception (#57): its writes are kept on
-    # the disk every later boot starts from, and killing it can leave that
-    # disk damaged -- measured once as a root filesystem with errors and a
-    # guest that stopped in its initramfs on every boot after. So the guest
-    # is synced before it is forced, and a provisioning boot that still had
-    # to be forced is destroyed: the next boot provisions again from a
-    # clean disk rather than trusting one that may be damaged.
     if [ "$(engine_state 2>/dev/null)" = running ]; then
-        if [ -f "$(provisioning_marker)" ]; then
-            engine_run sync >/dev/null 2>&1 || true
-            echo "vm: the provisioning boot's graceful halt left it running; forcing it down." >&2
-            engine_down --force || true
-            case "$(engine_state 2>/dev/null)" in
-                stopped | absent)
-                    echo "vm: a provisioning boot that had to be forced may have left its disk damaged," >&2
-                    echo "    so the machine is destroyed; the next boot provisions again from a clean disk." >&2
-                    engine_destroy || true
-                    rm -f "$(base_record)" "$FLTH_MACHINE_DIR/setup.sha256"
-                    ;;
-            esac
-        else
-            echo "vm: the graceful halt left the VM running; forcing it down." >&2
-            engine_down --force || true
-        fi
+        echo "vm: the graceful halt left the VM running; forcing it down." >&2
+        engine_down --force || true
     fi
-    if ! release_if_confirmed_stopped; then
+    if ! confirmed_stopped; then
         echo "vm: halt did not leave the VM confirmed stopped." >&2
         exit 1
     fi
 }
 
 vm_hold() {
-    if engine_alive "$(engine_identity)"; then
-        refuse_other_worktree
-    fi
     mkdir -p "$FLTH_MACHINE_DIR"
     : > "$FLTH_HOLD"
     if engine_run "touch $FLTH_GUEST_HOLD_MARKER; shutdown -c" >/dev/null 2>&1; then
@@ -1023,8 +845,9 @@ vm_hold() {
     fi
 }
 
-# The safety net, run from a chore `lifecycle: after_all`: an invocation
-# cleans up only a VM it booted. Another run's idle VM is not a leak.
+# The safety net, run from a chore `lifecycle: after_all`. The shared guest is
+# there for the next run, so an idle one is not a leak: what this stops is a boot
+# that did not finish, and the list it tidies is of suites that have gone.
 #
 # It FAILS SOFT by design: chore reports an after_all failure without
 # failing the run, and turning an unrelated `chore build` red because
@@ -1033,40 +856,21 @@ vm_hold() {
 # The probe is a process check, not an engine call: it runs on every
 # invocation, so it has to cost milliseconds.
 vm_reap() {
-    local others invocation owner mounted
     if ! engine_alive "$(engine_identity)"; then
-        return 0
-    fi
-    if flth_shared; then
-        shared_reap
         return 0
     fi
     if stop_unfinished_boot; then
         return 0
     fi
-    if mounted="$(mounted_elsewhere)"; then
-        echo "[vm] left running: it has $mounted mounted, and this is $FLTH_ROOT." >&2
-        return 0
-    fi
-    if [ -f "$FLTH_HOLD" ]; then
-        echo "[vm] left running: it was held with 'chore vm:hold'. 'chore vm:down' stops it." >&2
-        return 0
-    fi
-    others="$(live_sessions)"
-    if [ -n "$others" ]; then
-        echo "[vm] left running: another invocation is using it (pid ${others//$'\n'/, })." >&2
-        return 0
-    fi
-    invocation="$(chore_invocation direct)"
-    if [ -n "$invocation" ]; then
-        owner="$(cat "$FLTH_MACHINE_DIR/boot-invocation" 2>/dev/null || true)"
-        if [ "$invocation" = unknown ] || [ "$invocation" != "$owner" ]; then
-            echo '[vm] left running: another invocation owns this VM; after_all stops only its own VM.' >&2
-            return 0
-        fi
-    fi
-    echo "vm: a VM was left running by something that did not clean up — stopping it." >&2
-    vm_down
+    live_sessions >/dev/null
+    # A device whose run has no live session: one killed outright, before it could end
+    # its run. A worktree's standing run has no session, and keeps its device.
+    local run
+    while IFS= read -r run; do
+        case "$run" in '' | *-worktree) continue ;; esac
+        shared_run_gone "$run"
+    done < <(engine_attached_runs)
+    echo "[vm] left running: the shared guest stays up for the next run. 'chore vm:down' stops it when nobody is using it." >&2
 }
 
 # SESSIONS: "IN USE" AS A STATE THE REAPER CAN SEE.
@@ -1086,50 +890,12 @@ vm_reap() {
 # pid, so a pid the system has since handed to something else does not
 # keep a VM alive.
 #
-# The same rule applies when a session ends: two sessions on one machine
-# (two worktrees of one project share it) must not have the first to
-# finish stop the VM under the second. The last one out brings it down.
 # The markers live in the machine directory, set once a consumer is
-# loaded.
+# loaded, and they are the list of suites using the shared guest.
 sessions_dir() { printf '%s/sessions\n' "$FLTH_MACHINE_DIR"; }
 
 process_start() {
     ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
-}
-
-chore_invocation() {
-    local pid="$VM_PARENT" command parent arguments start depth=0
-    while [ "$pid" -gt 1 ] && [ "$depth" -lt 64 ]; do
-        command="$(ps -o comm= -p "$pid" 2>/dev/null | sed 's/^ *//')" || { echo unknown; return 0; }
-        if [ "${command##*/}" = chore ]; then
-            start="$(process_start "$pid")"
-            [ -n "$start" ] || { echo unknown; return 0; }
-            printf '%s\t%s\n' "$pid" "$start"
-            return 0
-        fi
-        if [ "${1:-}" = direct ]; then
-            case "${command##*/}" in sh | bash | zsh) ;; *) return 0 ;; esac
-            arguments="$(ps -o args= -p "$pid" 2>/dev/null)" || { echo unknown; return 0; }
-            case "$arguments" in *' -c '*) ;; *) return 0 ;; esac
-        fi
-        parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || { echo unknown; return 0; }
-        case "$parent" in '' | *[!0-9]*) break ;; esac
-        [ "$parent" != "$pid" ] || break
-        pid="$parent"
-        depth=$((depth + 1))
-    done
-    return 0
-}
-
-record_boot_invocation() {
-    local invocation start
-    invocation="$(chore_invocation)"
-    if [ -z "$invocation" ]; then
-        start="$(process_start "$VM_PARENT")"
-        invocation=unknown
-        [ -z "$start" ] || invocation="$(printf '%s\t%s' "$VM_PARENT" "$start")"
-    fi
-    printf '%s\n' "$invocation" > "$FLTH_MACHINE_DIR/boot-invocation"
 }
 
 # The pids of live sessions on this machine, one per line, except $1.
@@ -1160,61 +926,56 @@ vm_session_begin() {
     start="$(process_start "$pid")"
     [ -n "$start" ] || flth_die "session-begin: no running process $pid"
     mkdir -p "$(sessions_dir)"
-    if flth_shared; then
-        shared_register "$pid" "$start"
-        return 0
-    fi
-    printf '%s\t%s\n' "$pid" "$start" > "$(sessions_dir)/$pid"
+    shared_register "$pid" "$start"
 }
 
-#
-# A HELD VM IS NOT THE SESSION'S TO STOP (#36). `chore vm:up` holds the VM
-# so it outlives the invocation that booted it, and the reaper respects
-# that; a session's end did not, so a test run started beside a VM a
-# person was working in took it down. A session ends exactly as reap
-# would treat it: a held VM stays up, and keeps its slot.
+# A SESSION'S END STOPS NOTHING BUT ITS RUN: the guest is there for the next one.
 vm_session_end() {
-    local pid="$1" others run=""
-    if flth_shared; then
-        run="$(cut -f4 "$(sessions_dir)/$pid" 2>/dev/null || true)"
-    fi
+    local pid="$1" run
+    run="$(cut -f4 "$(sessions_dir)/$pid" 2>/dev/null || true)"
     rm -f "$(sessions_dir)/$pid"
-    if flth_shared; then
-        shared_session_ended "$pid" "$run"
-        return 0
+    shared_session_ended "$pid" "$run"
+    shared_tell_oops
+}
+
+# A GUEST WITH LITTLE MEMORY LEFT (#185). Six suites building at once ran a 10G guest
+# out of memory, and none of them was told. A suite joining is told the numbers and who
+# is using it when what the guest has available is under FLTH_SHARED_MIN_AVAILABLE
+# (2048 MiB). It still joins: whether it fits is the suite's to know.
+shared_tell_room() {
+    local numbers total available floor="${FLTH_SHARED_MIN_AVAILABLE:-2048}"
+    case "$floor" in '' | *[!0-9]*) floor=2048 ;; esac
+    numbers="$(engine_run "awk '\$1 == \"MemTotal:\" { t = \$2 } \$1 == \"MemAvailable:\" { a = \$2 } END { print int(t / 1024), int(a / 1024) }' /proc/meminfo" 2>/dev/null)" || return 0
+    read -r total available <<< "$numbers"
+    case "$total$available" in '' | *[!0-9]*) return 0 ;; esac
+    [ "$total" -gt 0 ] && [ "$available" -lt "$floor" ] || return 0
+    echo "vm: the shared guest has $available MiB of $total MiB available, in use by: $(shared_suites)." >&2
+    echo "    A suite that needs more may be killed for memory. FLTH_SHARED_MEMORY sizes the guest at its next boot." >&2
+}
+
+# A KERNEL THAT HAS OOPSED KEEPS ANSWERING (#196), so a suite on it goes on and reports
+# what follows as its own result. The console is on the host and starts afresh with
+# each boot, so an oops in it is this boot's. A suite is told as it joins and as it
+# ends, naming the first oops and the process it hit; a single call is not.
+shared_tell_oops() {
+    local file first
+    file="$(engine_console_log)"
+    [ -s "$file" ] || return 0
+    first="$(LC_ALL=C awk '
+        oops != "" && /Comm: / {
+            p = $0; sub(/.*PID: */, "", p); pid = p; sub(/ .*/, "", pid)
+            name = p; sub(/.*Comm: */, "", name); sub(/ .*/, "", name)
+            print oops ", in process " pid " (" name ")"; exit
+        }
+        oops == "" && /Oops: .*\[#[0-9]+\]/ { oops = substr($0, index($0, "Oops: ")); sub(/[[:space:]]+$/, "", oops) }
+        ' "$file" 2>/dev/null || true)"
+    if [ -z "$first" ]; then
+        first="$(LC_ALL=C grep -m1 -oE 'Oops: .*\[#[0-9]+\].*' "$file" 2>/dev/null || true)"
     fi
-    if stop_unfinished_boot; then
-        return 0
-    fi
-    if [ -f "$FLTH_HOLD" ]; then
-        echo "[vm] left running: it was held with 'chore vm:hold'. 'chore vm:down' stops it." >&2
-        return 0
-    fi
-    others="$(live_sessions "$pid")"
-    if [ -n "$others" ]; then
-        echo "[vm] left running: another invocation is using it (pid ${others//$'\n'/, }); the last one to finish brings it down." >&2
-        return 0
-    fi
-    # NOTHING TO HALT when no VM process is running: a test run whose
-    # tests never needed the VM ends here, at the cost of a process check,
-    # instead of the engine's slowest answer. The slot is still given back
-    # if this machine holds it — on the same evidence the slot's waiters
-    # use to call a holder dead. A process table that cannot be read (2)
-    # is not that evidence, and takes the full `down`.
-    local alive=0 mounted
-    engine_alive "$(engine_identity)" || alive=$?
-    if [ "$alive" -eq 1 ]; then
-        # A guest that powered itself off also ends here, and no halt will run
-        # for it, so what its boot left on the host stops now (#135).
-        engine_stop_host_daemons
-        "$SLOT" release
-        return 0
-    fi
-    if mounted="$(mounted_elsewhere)"; then
-        echo "[vm] left running: it has $mounted mounted, and this is $FLTH_ROOT." >&2
-        return 0
-    fi
-    vm_down
+    [ -n "$first" ] || return 0
+    echo "vm: the shared guest's kernel has oopsed: $first." >&2
+    echo "    What a suite saw on it since may be the kernel's failure, not its own. The console is $file;" >&2
+    echo "    'chore vm:down' then a new boot gives a kernel that has not." >&2
 }
 
 # THE LIST OF SUITES USING A SHARED GUEST (#153). The session markers are the list:
@@ -1269,10 +1030,48 @@ shared_new_run_id() {
 shared_run_places() {
     local cache=-
     [ -z "$FLTH_SHARED_CACHE" ] || cache="/var/lib/fs-linux-test-harness/caches/$CFG_project_name"
-    printf '%s %s %s %s' \
-        "$(quote_for_guest "$FLTH_REPO_GUEST/$FLTH_SHARED_RELATIVE")" \
-        "$(quote_for_guest "$FLTH_SHARE_GUEST/$FLTH_SHARED_RELATIVE/$CFG_share_dir")" \
-        "$cache" "$CFG_project_name"
+    printf '%s %s %s %s' "$(shared_run_id)" "$(quote_for_guest "$CFG_share_dir")" "$cache" "$CFG_project_name"
+}
+
+# THE RUN'S TREE IS A DEVICE OF ITS OWN (#222), attached to the running guest the
+# first time the run needs it, tagged with the run id, and mounted over /repo in the
+# run's namespace (lib/guest-run.sh). A call outside any session uses its worktree's
+# standing run, whose device lasts as long as the guest. Attaching takes the up
+# lock, so two calls of one run attach it once, and a free slot is taken by one.
+shared_attach() {
+    local run rc=0
+    run="$(shared_run_id)"
+    engine_tree_attached "$run" || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        3) shared_tree_lost "$run" ;;
+    esac
+    if [ "$UP_LOCK_HELD" = 1 ]; then
+        engine_attach_tree "$run" "$FLTH_ROOT"
+        return
+    fi
+    up_lock_take
+    rc=0
+    engine_tree_attached "$run" || rc=$?
+    if [ "$rc" != 0 ] && ! engine_attach_tree "$run" "$FLTH_ROOT"; then
+        up_lock_drop
+        return 1
+    fi
+    up_lock_drop
+}
+
+# A RUN WHOSE virtiofsd HAS GONE. A request the guest sends to a device whose daemon
+# has gone never completes, and removing the device after one wedges hot-plug for the
+# whole guest. So the device goes first, before anything else runs in that run, and
+# only then are the run's processes stopped and its namespace dropped. The call that
+# found it fails with the interrupted status: the suite did not fail, its tree went.
+shared_tree_lost() {
+    local run="$1"
+    echo "vm: the virtiofsd serving $FLTH_ROOT to run $run has gone. Its device is removed before anything" >&2
+    echo "    else runs there, and the run is ended. This is not a failure of the suite: run it again." >&2
+    engine_detach_tree "$run" || true
+    engine_run "bash $FLTH_GUEST_RUNS/run.sh end $run" >&2 || true
+    exit "$WATCHDOG_STATUS"
 }
 
 shared_in_run() {
@@ -1280,17 +1079,12 @@ shared_in_run() {
         "$(quote_for_guest "$1")"
 }
 
-# Whether a call into the guest goes in the run. Off, it goes as it always has.
-guest_call_script() {
-    if flth_shared; then
-        shared_in_run "$1"
-    else
-        printf '%s\n' "$1"
-    fi
-}
+# Every call into the guest goes in its run.
+guest_call_script() { shared_in_run "$1"; }
 
 # A guest-test's run has its own copy of the tree (lib/guest-run.sh).
 vm_guest_tree() {
+    shared_attach || return
     engine_run "bash $FLTH_GUEST_RUNS/run.sh tree $(shared_run_id) $(shared_run_places) $(quote_for_guest "$CFG_share_dir")" >&2
 }
 
@@ -1313,7 +1107,6 @@ bash $FLTH_GUEST_RUNS/run.sh prepare" >&2
 SHARED_CALL_ENTRY=""
 
 shared_call_begin() {
-    flth_shared || return 0
     case "$(shared_run_id)" in *-worktree) ;; *) return 0 ;; esac
     mkdir -p "$(sessions_dir)"
     SHARED_CALL_ENTRY="$(sessions_dir)/$$"
@@ -1327,48 +1120,56 @@ guest_run_listed() {
     return "$rc"
 }
 
-# WHAT A BOOT FIXED FOR EVERYONE WHO JOINS. The guest sees one host directory and carries
-# one lib/guest-run.sh. A join with another directory would mount a path that is not
-# there, and one from a harness with another tool would call it with the wrong words,
-# so it is refused here, where it can say why. Nobody is stopped for it: the guest is
-# in use, and it can be joined with its own settings, or later by a new boot.
+# WHAT A BOOT FIXED FOR EVERYONE WHO JOINS: the lib/guest-run.sh it carries. A join
+# from a harness with another tool would call it with the wrong words, so it is
+# refused here, where it can say why. Nobody is stopped for it: the guest is in use,
+# and it can be joined by that version, or later by a new boot.
 shared_boot_record() { printf '%s/shared-boot\n' "$FLTH_MACHINE_DIR"; }
 
 shared_boot_identity() {
-    printf '%s\t%s\n' "$FLTH_SHARED_ROOT" "$(flth_hash8 "$(cat "$FLTH_HARNESS/scripts/lib/guest-run.sh")")"
+    flth_hash8 "$(cat "$FLTH_HARNESS/scripts/lib/guest-run.sh")"
 }
 
 refuse_other_boot() {
-    local recorded root
+    local recorded
     recorded="$(cat "$(shared_boot_record)" 2>/dev/null || true)"
     [ "$recorded" != "$(shared_boot_identity)" ] || return 0
     if [ -z "$recorded" ]; then
         echo "vm: the shared guest has no record of how it was booted, so joining it is refused." >&2
     else
-        root="${recorded%%$'\t'*}"
-        if [ "$root" != "$FLTH_SHARED_ROOT" ]; then
-            echo "vm: the shared guest was booted with FLTH_SHARED_ROOT=$root, and this call has $FLTH_SHARED_ROOT." >&2
-        else
-            echo "vm: the shared guest was booted by another version of the harness." >&2
-        fi
+        echo "vm: the shared guest was booted by another version of the harness." >&2
     fi
-    echo "    Nothing ran. Join with what it was booted with, or again once it has stopped." >&2
+    echo "    Nothing ran. Join with that version, or again once it has stopped." >&2
     exit 1
 }
 
 # A run nobody is on the list for any more: stop what it left and delete its root,
 # if the guest is there to ask. Nothing depends on this having worked. What it fails
 # to free goes with the boot.
+#
+# THE RUN ENDS IN THE GUEST BEFORE ITS DEVICE IS DETACHED: its processes are stopped,
+# its loop devices detached and its namespace dropped, so nothing can use the mount
+# when the device and then its virtiofsd go (#222). A daemon that has already gone
+# is the exception: its device goes first (shared_tree_lost says why).
 shared_run_gone() {
-    local run="$1" marker
+    local run="$1" marker attached=0
     [ -n "$run" ] || return 0
     for marker in "$(sessions_dir)"/*; do
         [ -f "$marker" ] || continue
         [ "$(cut -f4 "$marker" 2>/dev/null || true)" != "$run" ] || return 0
     done
-    engine_alive "$(engine_identity)" || return 0
-    engine_run "bash $FLTH_GUEST_RUNS/run.sh end $run" >&2 ||
-        echo "vm: run $run could not be cleaned up in the guest; what it left goes when the guest stops." >&2
+    engine_tree_attached "$run" || attached=$?
+    if [ "$attached" = 3 ]; then
+        engine_detach_tree "$run" || true
+        attached=1
+    fi
+    if engine_alive "$(engine_identity)"; then
+        engine_run "bash $FLTH_GUEST_RUNS/run.sh end $run" >&2 ||
+            echo "vm: run $run could not be cleaned up in the guest; what it left goes when the guest stops." >&2
+    fi
+    if [ "$attached" = 0 ] && ! engine_detach_tree "$run"; then
+        echo "vm: run $run's tree is still attached; it goes when the guest stops." >&2
+    fi
 }
 
 # The live suites, as `name (pid N)`, comma-separated.
@@ -1394,18 +1195,14 @@ shared_session_ended() {
     up_lock_try || return 0
     if [ -z "$(live_sessions "$1")" ]; then
         engine_stop_host_daemons
-        "$SLOT" release
+        rm -f "$(unfinished_boot_marker)"
     fi
     up_lock_drop
 }
 
-# `vm.sh down`. A private VM stops; a shared guest stops only if nobody is using it.
+# `vm.sh down`. The shared guest stops only if nobody is using it.
 vm_shutdown() {
     local suites
-    if ! flth_shared; then
-        vm_down
-        return
-    fi
     up_lock_take
     suites="$(shared_suites)"
     if [ -n "$suites" ]; then
@@ -1416,42 +1213,11 @@ vm_shutdown() {
     up_lock_drop
 }
 
-shared_reap() {
-    if stop_unfinished_boot; then
-        return 0
-    fi
-    live_sessions >/dev/null
-    echo "[vm] left running: the shared guest stays up for the next run. 'chore vm:down' stops it when nobody is using it." >&2
-}
-
-# Re-apply the setup script to the disk, even when unchanged. That takes a
-# provisioning boot, so a running VM is stopped first — unless another
-# invocation is using it, which is refused rather than pulled from under
-# it. A held VM is held again afterwards.
+# Re-apply this consumer's setup script, even when unchanged. The shared guest is
+# not stopped for one consumer's setup: it runs again in place.
 vm_provision() {
-    local held=0 others
-    # A shared guest is not stopped for one consumer's setup. It runs again in place.
-    if flth_shared; then
-        PROVISION_MODE=force
-        vm_up
-        return
-    fi
-    if [ "$(engine_state)" = running ]; then
-        refuse_other_worktree
-        others="$(live_sessions)"
-        if [ -n "$others" ]; then
-            echo "vm: not provisioning: another invocation is using the VM (pid ${others//$'\n'/, })," >&2
-            echo "    and a provisioning boot needs it stopped. Run it again once that has finished." >&2
-            exit 1
-        fi
-        [ -f "$FLTH_HOLD" ] && held=1
-        vm_down
-    fi
     PROVISION_MODE=force
     vm_up
-    if [ "$held" = 1 ]; then
-        vm_hold
-    fi
 }
 
 # The live sessions this call is not itself running inside.
@@ -1469,11 +1235,11 @@ other_sessions() {
     done < <(live_sessions)
 }
 
-# RESTART THE VM IN PLACE AND KEEP ITS SLOT (#122). The engine's own restart is
-# not used: the harness has to renew the lease before the stop and confirm the
-# stop before the boot, and `down` then `up` would give the slot away between
-# them. The boot is an ordinary disposable one. The VM's owner does not change,
-# so a reap treats it as it did before.
+# RESTART THE GUEST IN PLACE (#122). The engine's own restart is not used: the
+# harness has to confirm the stop before the boot, and an `up` between a `down`
+# and an `up` would boot beside a guest still stopping. The lock is held across
+# both. The boot is an ordinary disposable one, and only this consumer's setup
+# runs again on it: another consumer's runs when that one next joins.
 vm_reload() {
     local rc=0
     up_lock_take
@@ -1496,8 +1262,6 @@ vm_reload_locked() {
             exit 1
             ;;
     esac
-    refuse_other_worktree
-    refuse_provisioning_boot
     others="$(other_sessions)"
     if [ -n "$others" ]; then
         echo "vm: not reloading: another invocation is using the VM (pid ${others//$'\n'/, })." >&2
@@ -1505,47 +1269,38 @@ vm_reload_locked() {
         exit 1
     fi
     require_host_tools
-    "$SLOT" renew || {
-        echo "vm: the VM was left running: restarting it would not keep it within the VM limit." >&2
-        exit 1
-    }
     engine_down || true
     if [ "$(engine_state 2>/dev/null)" = running ]; then
         echo "vm: the graceful halt left the VM running; forcing it down." >&2
         engine_down --force || true
     fi
     if [ "$(engine_state)" != stopped ]; then
-        echo "vm: the VM could not be confirmed stopped, so nothing is booted beside it, and the slot is kept." >&2
+        echo "vm: the VM could not be confirmed stopped, so nothing is booted beside it." >&2
         echo "    'chore vm:status', then 'chore vm:down' or 'chore vm:destroy'." >&2
         exit 1
     fi
     boot_vm || return 1
     apply_setup boot
-    forget_disk_if_setup_ran
     if [ -f "$FLTH_HOLD" ]; then
         vm_hold
     fi
 }
 
 vm_destroy() {
-    if flth_shared; then
-        local suites
-        up_lock_take
-        suites="$(shared_suites)"
-        if [ -n "$suites" ]; then
-            echo "vm: not destroying the shared guest: it is in use by $suites." >&2
-            exit 1
-        fi
+    local suites
+    up_lock_take
+    suites="$(shared_suites)"
+    if [ -n "$suites" ]; then
+        echo "vm: not destroying the shared guest: it is in use by $suites." >&2
+        exit 1
     fi
-    rm -f "$FLTH_HOLD" "$FLTH_MACHINE_DIR/setup.sha256" "$(base_record)"
+    rm -f "$FLTH_HOLD"
     engine_destroy || true
-    if ! release_if_confirmed_stopped; then
+    if ! confirmed_stopped; then
         echo "vm: destroy did not leave the VM confirmed gone." >&2
         exit 1
     fi
-    if flth_shared; then
-        up_lock_drop
-    fi
+    up_lock_drop
 }
 
 vm_status() {
@@ -1553,23 +1308,17 @@ vm_status() {
     state="$(engine_state)"
     case "$state" in
         running)
-            echo "vm: $CFG_project_name is running"
-            local mounted
-            if mounted="$(mounted_elsewhere)"; then
-                echo "vm: its guest has $mounted mounted at $FLTH_REPO_GUEST, and this is $FLTH_ROOT"
-            fi
+            echo "vm: the shared guest is running"
             if boot_stopped_short; then
                 echo "vm: its last boot did not finish, so its guest has no shares. 'chore vm:up' replaces it."
             fi
-            if flth_shared; then
-                echo "vm: in use by: $(shared_suites)"
-            fi
+            echo "vm: in use by: $(shared_suites)"
             if [ -s "$FLTH_MACHINE_DIR/watchdog.last" ]; then
                 echo "vm: watchdog: $(cat "$FLTH_MACHINE_DIR/watchdog.last")"
             fi
             ;;
         *)
-            echo "vm: $CFG_project_name is not running ($state)"
+            echo "vm: the shared guest is not running ($state)"
             if [ -f "$(watchdog_record)" ]; then
                 echo "vm: the watchdog ended it: $(cat "$(watchdog_record)")"
             fi
@@ -1579,9 +1328,8 @@ vm_status() {
 }
 
 # Run the consumer's [test] command on the host, from the repository
-# root, with the VM up — and bring it down afterwards with vm-session.sh's
-# rules: a failed teardown fails the run, the work's own failure wins
-# when both fail, and FLTH_KEEP_VM=1 leaves the VM up.
+# root, with the guest up, as a run of its own (vm-session.sh). The guest
+# stays up for the next run.
 #
 # Extra arguments are appended to the command. The command reaches the
 # guest through FLTH_VM (this script), so it can `run` and `put`.
@@ -1589,27 +1337,16 @@ vm_test() {
     [ -n "$CFG_test_command" ] ||
         flth_die "$FLTH_CONFIG has no [test] command"
     cd "$FLTH_ROOT"
-    # ON A SHARED GUEST THE SESSION STAYS ABLE TO HEAR A SIGNAL. A script that sources
-    # the session has its command in the foreground, so a TERM to that shell alone
-    # waits for the command, for the length of the suite. Here a signal to one suite
+    # THE SESSION STAYS ABLE TO HEAR A SIGNAL. A script that sources the session has
+    # its command in the foreground, so a TERM to that shell alone waits for the
+    # command, for the length of the suite. On the shared guest a signal to one suite
     # has to stop it while others run, and a session running a command passes it on.
-    if flth_shared; then
-        FLTH_VM="$SELF" FLTH_SHARE_HOST="$FLTH_SHARE_HOST" FLTH_SHARE_GUEST="$FLTH_SHARE_GUEST" \
-        FLTH_TEST_COMMAND="$CFG_test_command" \
-            exec "$FLTH_HARNESS/scripts/vm-session.sh" bash -c '
-                "$FLTH_VM" up || exit
-                exec bash -c "$FLTH_TEST_COMMAND \"\$@\"" flth-test "$@"
-            ' flth-session "$@"
-    fi
-    cd "$FLTH_ROOT"
     FLTH_VM="$SELF" FLTH_SHARE_HOST="$FLTH_SHARE_HOST" FLTH_SHARE_GUEST="$FLTH_SHARE_GUEST" \
     FLTH_TEST_COMMAND="$CFG_test_command" \
-        exec bash -c '
-            . "$1"
-            shift
+        exec "$FLTH_HARNESS/scripts/vm-session.sh" bash -c '
             "$FLTH_VM" up || exit
-            bash -c "$FLTH_TEST_COMMAND \"\$@\"" flth-test "$@"
-        ' flth-session "$FLTH_HARNESS/scripts/vm-session.sh" "$@"
+            exec bash -c "$FLTH_TEST_COMMAND \"\$@\"" flth-test "$@"
+        ' flth-session "$@"
 }
 
 # THE GUEST DEADLINE MEASURES IDLENESS, NOT LIFETIME. deadline.sh arms
@@ -1745,7 +1482,7 @@ EOF
 # It also skips the setup check: the suite's task brought the VM up, and
 # the setup script cannot change while it runs.
 vm_exec() {
-    if flth_shared && [ -s "$(shared_kernel_record)" ]; then
+    if [ -s "$(shared_kernel_record)" ]; then
         shared_kernel_explain "$(cat "$(shared_kernel_record)")" "the kernel it booted with"
         exit 1
     fi
@@ -1759,8 +1496,6 @@ vm_exec() {
         echo "    or use 'chore vm:run -- <command>', which boots on demand." >&2
         exit 1
     fi
-    refuse_other_worktree
-    refuse_provisioning_boot
     refuse_unfinished_boot
     shared_call_begin
     guest_run_listed "$*"
@@ -1776,7 +1511,7 @@ vm_exec() {
 # happens, the exit status is the command's, and anything the run should
 # leave behind goes in the shared directory, which both sides see.
 #
-# Torn down afterwards under vm-session.sh's rules, exactly like `test`.
+# A run of its own, under vm-session.sh's rules, exactly like `test`.
 vm_guest_test() {
     [ -n "$CFG_test_guest_command" ] ||
         flth_die "$FLTH_CONFIG has no [test] guest_command"
@@ -1785,20 +1520,12 @@ vm_guest_test() {
     for arg in "$@"; do
         script="$script $(quote_for_guest "$arg")"
     done
-    if flth_shared; then
-        FLTH_VM="$SELF" FLTH_GUEST_SCRIPT="$script" \
-            exec "$FLTH_HARNESS/scripts/vm-session.sh" bash -c '
-                "$FLTH_VM" up || exit
-                "$FLTH_VM" guest-tree || exit
-                exec "$FLTH_VM" exec "$FLTH_GUEST_SCRIPT"
-            '
-    fi
     FLTH_VM="$SELF" FLTH_GUEST_SCRIPT="$script" \
-        exec bash -c '
-            . "$1"
+        exec "$FLTH_HARNESS/scripts/vm-session.sh" bash -c '
             "$FLTH_VM" up || exit
-            "$FLTH_VM" exec "$FLTH_GUEST_SCRIPT"
-        ' flth-session "$FLTH_HARNESS/scripts/vm-session.sh"
+            "$FLTH_VM" guest-tree || exit
+            exec "$FLTH_VM" exec "$FLTH_GUEST_SCRIPT"
+        '
 }
 
 # One argument, as the guest's shell will read it. Single quotes so
@@ -1825,13 +1552,13 @@ repo.guest=$FLTH_REPO_GUEST
 setup.script=$CFG_setup_script
 test.command=$CFG_test_command
 test.guest_command=$CFG_test_guest_command
-cache.size=${CFG_cache_size:-none}
-cache.guest=$([ -n "$CFG_cache_size" ] && echo "$FLTH_CACHE_GUEST" || echo none)
+cache.size=${FLTH_SHARED_CACHE:-none}
+cache.guest=$([ -n "$FLTH_SHARED_CACHE" ] && echo "$FLTH_CACHE_GUEST" || echo none)
 machine=$FLTH_MACHINE_DIR
-shared.root=${FLTH_SHARED_ROOT:-none}
-disk.setup=$(cat "$(base_record)" 2>/dev/null || echo none)
+run.standing=$(shared_run_prefix)-worktree
+qmp=${FLTH_VM_QMP:-none}
+slots=${FLTH_SHARED_SLOTS:-32}
 identity=$(engine_identity)
-slot=$FLTH_STATE_DIR/slot.lock
 EOF
 }
 
@@ -1849,7 +1576,7 @@ case "$command" in
         shift
         exec "$(dirname "$SELF")/vm-session.sh" "$@"
         ;;
-    up | up-boot | run | watchdog-end | watchdog-told | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | boot-finished | run-id | guest-tree) ;;
+    up | up-boot | run | watchdog-end | watchdog-told | tree-lost | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | run-id | guest-tree) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -1862,7 +1589,11 @@ flth_load || exit 1
 engine_prepare
 
 case "$command" in
-    up) vm_up ;;
+    up)
+        vm_up
+        shared_tell_oops
+        shared_tell_room
+        ;;
     up-boot)
         [ $# -eq 2 ] || flth_die "usage: vm.sh up-boot <provision mode> <pid>"
         vm_up_boot "$1" "$2"
@@ -1882,9 +1613,6 @@ case "$command" in
     put)
         [ $# -eq 1 ] || flth_die "usage: vm.sh put <file>"
         [ -f "$1" ] || flth_die "no such file: $1"
-        if engine_alive "$(engine_identity)"; then
-            refuse_other_worktree
-        fi
         engine_copy "$1"
         ;;
     share) echo "$FLTH_SHARE_HOST" ;;
@@ -1898,9 +1626,9 @@ case "$command" in
     reap) vm_reap ;;
     destroy) vm_destroy ;;
     config) vm_config ;;
-    boot-finished) vm_boot_finished ;;
     watchdog-end) vm_watchdog_end "$1" ;;
     watchdog-told) vm_watchdog_told "$1" ;;
+    tree-lost) vm_tree_lost "$1" ;;
     run-id) shared_new_run_id ;;
     guest-tree) vm_guest_tree ;;
     session-begin | session-end)

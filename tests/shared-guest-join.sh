@@ -9,7 +9,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 make_stub_harness
-export FLTH_SLOT_WAIT=0
 VM="$STUB_HARNESS/scripts/vm.sh"
 TOOLS="$FLTH_TEST_STUB/guest-tools"
 export SETUP_LOG="$SANDBOX/setup.log"
@@ -21,8 +20,10 @@ make_consumer "$SRC/cached" join-cached '[cache]' 'size = "2G"'
 make_consumer "$SANDBOX/elsewhere" join-elsewhere
 mkdir -p "$FLTH_TEST_STUB/guest-repo/one" "$FLTH_TEST_STUB/guest-proc"
 
-one() { (cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
-two() { (cd "$SRC/deep/two" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
+one() { (cd "$SRC/one" && "$VM" "$@"); }
+two() { (cd "$SRC/deep/two" && "$VM" "$@"); }
+# A consumer's standing run, whose id is its device's tag.
+standing() { "$1" config | sed -n 's/^run.standing=//p'; }
 setups() { grep -c "setup ran for $1" "$SETUP_LOG" 2>/dev/null | tr -d ' '; }
 ups() { stub_calls | grep -c '^up' | tr -d ' '; }
 
@@ -32,15 +33,15 @@ check_eq "$(ups)" 1 "with one boot"
 check_lacks "$(stub_calls)" "up --persist" "and no provisioning boot: the disk carries nobody's setup"
 check_eq "$(setups join-one)" 1 "its setup runs"
 check_contains "$(cat "$TOOLS")" "unshare --mount --propagation private bash" "in a namespace of its own"
-check_contains "$(cat "$TOOLS")" "mount --bind /share/one/.vm-share /share" "with its own share"
-check_contains "$(cat "$TOOLS")" "mount --bind $FLTH_TEST_STUB/guest-repo/one $FLTH_TEST_STUB/guest-repo" "and its own tree"
+check_contains "$(cat "$TOOLS")" "mount -t virtiofs $(standing one) $FLTH_TEST_STUB/guest-repo" "and its own tree, the run's device (#222)"
+check_contains "$(cat "$TOOLS")" "mount --bind $FLTH_TEST_STUB/guest-repo/.vm-share /share" "with its own share, in that tree"
 
 two up 2>/dev/null
 check_eq "$?" 0 "the second consumer joins"
 check_eq "$(ups)" 1 "with no boot of its own"
 check_eq "$(setups join-two)" 1 "its setup runs when it first joins"
 check_eq "$(setups join-one)" 1 "and the first one's does not run again"
-check_contains "$(cat "$TOOLS")" "mount --bind /share/deep/two/.vm-share /share" "its share is its own, wherever its tree is"
+check_contains "$(cat "$TOOLS")" "mount -t virtiofs $(standing two) $FLTH_TEST_STUB/guest-repo" "its tree is its own device, wherever its tree is"
 check_contains "$(cat "$TOOLS")" "flock -n 9" "and setups take turns"
 # By the line: a re-arm logs `shutdown ...`, which is no stop.
 check_eq "$(stub_calls | grep -c '^down')" 0 "and nothing stops the guest for it"
@@ -60,19 +61,20 @@ check_eq "$(ups)" 1 "without stopping the guest"
 : > "$TOOLS"
 check_eq "$(one exec 'echo one')" one "the first consumer's calls run"
 check_eq "$(two exec 'echo two')" two "and so do the second's, where a private VM would refuse them"
-check_contains "$(cat "$TOOLS")" "mount --bind $FLTH_TEST_STUB/guest-repo/deep/two $FLTH_TEST_STUB/guest-repo" "each run has its own tree at the path it expects"
+check_contains "$(cat "$TOOLS")" "mount -t virtiofs $(standing two) $FLTH_TEST_STUB/guest-repo" "each run has its own tree at the path it expects"
 check_lacks "$(two status)" "mounted" "and status does not call the other a foreign tree"
 check_eq "$(two share)" "$SRC/deep/two/.vm-share" "a consumer's share is still its own on the host"
-check_contains "$(two config)" "shared.root=$SRC" "and config names what the guest can see"
+check_contains "$(two config)" "run.standing=$(standing two)" "and config names the run its calls outside a session use"
 
 # A DECLARED CACHE is a directory of the guest's, per consumer.
-cached() { (cd "$SRC/cached" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
+cached() { (cd "$SRC/cached" && "$VM" "$@"); }
 : > "$TOOLS"
 cached up 2>/dev/null
 check_eq "$?" 0 "a consumer that declares a cache joins"
 check_contains "$(cat "$TOOLS")" "mount --bind $FLTH_TEST_STUB/guest-lib/caches/join-cached " "and has it in a directory of the guest's"
 check_eq "$(cached exec 'echo cached')" cached "its calls run"
-check_contains "$(cached config)" "cache.size=none" "and the machine carries nobody's cache disk"
+check_eq "$([ -e "$FLTH_TEST_STUB/cache" ] && echo disk)" "" "and the machine carries nobody's cache disk"
+check_contains "$(cached config)" "cache.guest=/cache" "and config names where the run finds it"
 
 # A CONSUMER'S BUILD STATE OUTLIVES ITS RUNS. /var/cache is where a suite keeps its
 # target directory, so a second run does not build from nothing. It is the consumer's,
@@ -144,12 +146,9 @@ FLTH_RUN_ID="$fourth_run" one exec true
 check_contains "$(cat "$TOOLS")" "mount --bind $keep/join-one/var-cache /var/" "and a killed run's is free for the next"
 one session-end "$fourth" 2>/dev/null
 
-# A TREE THE GUEST CANNOT SEE is refused, naming the setting.
-out="$(cd "$SANDBOX/elsewhere" && FLTH_SHARED_ROOT="$SRC" "$VM" up 2>&1)"
-check_eq "$?" 1 "a consumer outside FLTH_SHARED_ROOT is refused"
-check_contains "$out" "is not under FLTH_SHARED_ROOT" "and told why"
-out="$(cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC/not-there" "$VM" status 2>&1)"
-check_eq "$?" 1 "a FLTH_SHARED_ROOT that is not a directory is refused"
+# A TREE ANYWHERE ON THE HOST joins: its run attaches it (#222).
+(cd "$SANDBOX/elsewhere" && "$VM" up) >/dev/null 2>&1
+check_eq "$?" 0 "a consumer in a directory nothing else is in joins"
 
 # A NEW BOOT starts from a disk with nobody's setup on it.
 one down 2>/dev/null
@@ -160,15 +159,5 @@ check_eq "$(setups join-one)" 2 "the next boot's first consumer runs its setup a
 check_eq "$(setups join-two)" "$before" "and nobody else's"
 two up 2>/dev/null
 check_eq "$(setups join-two)" "$((before + 1))" "until that one joins"
-
-# ONLY THE SETTING CHANGES ANY OF THIS.
-one down 2>/dev/null
-: > "$TOOLS"
-stub_reset_calls
-stub_state absent
-(cd "$SRC/one" && "$VM" up) 2>/dev/null
-check_contains "$(stub_calls)" "up --persist" "with the setting off a boot provisions as it did"
-check_eq "$(cat "$TOOLS")" "" "and touches no mount"
-check_contains "$(cd "$SRC/one" && "$VM" config)" "shared.root=none" "and config says so"
 
 finish shared-guest-join

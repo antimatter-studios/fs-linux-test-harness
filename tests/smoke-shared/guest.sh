@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 #
-# guest.sh — sourced by tests/smoke.sh: FLTH_SHARED_ROOT on a real guest (#153).
-# Two consumers join one guest at once. The oracles are the guest's own: findmnt,
+# guest.sh — sourced by tests/smoke.sh: one guest several consumers use at once
+# (#153), each tree attached while the guest runs, from anywhere (#222). Two
+# consumers in unrelated directories join one guest at once. The oracles are the guest's own: findmnt,
 # losetup, and the process table the suites' commands are in.
 
 dir="$(mktemp -d "${TMPDIR:-/tmp}/flth-shared.XXXXXX")"
@@ -29,7 +30,7 @@ make_tree "$two" shared-two jq
 shared_vm() {
     local tree="$1"
     shift
-    (cd "$tree" && FLTH_CONFIG='' FLTH_CACHE_DIR="$dir/cache" FLTH_SHARED_ROOT="$dir" \
+    (cd "$tree" && FLTH_CONFIG='' FLTH_CACHE_DIR="$dir/cache" \
         FLTH_SHARED_MEMORY=2G FLTH_SHARED_CPUS=2 FLTH_SHARED_DISK=16G "$VM" "$@")
 }
 
@@ -80,10 +81,10 @@ step "shared guest: a signal to one suite leaves the other running"
 # Each suite: a session whose one command prints its pid and a loop device it
 # attached by hand, and sleeps.
 suite='truncate -s 16M /var/tmp/img; losetup -f --show /var/tmp/img > /share/loop; echo $$ > /share/pid; exec sleep 600'
-(cd "$one" && FLTH_CONFIG='' FLTH_CACHE_DIR="$dir/cache" FLTH_SHARED_ROOT="$dir" FLTH_SHARED_MEMORY=2G FLTH_SHARED_CPUS=2 FLTH_SHARED_DISK=16G \
+(cd "$one" && FLTH_CONFIG='' FLTH_CACHE_DIR="$dir/cache" FLTH_SHARED_MEMORY=2G FLTH_SHARED_CPUS=2 FLTH_SHARED_DISK=16G \
     exec "$VM" session "$VM" exec "$suite") >/dev/null 2>&1 &
 a_pid=$!
-(cd "$two" && FLTH_CONFIG='' FLTH_CACHE_DIR="$dir/cache" FLTH_SHARED_ROOT="$dir" FLTH_SHARED_MEMORY=2G FLTH_SHARED_CPUS=2 FLTH_SHARED_DISK=16G \
+(cd "$two" && FLTH_CONFIG='' FLTH_CACHE_DIR="$dir/cache" FLTH_SHARED_MEMORY=2G FLTH_SHARED_CPUS=2 FLTH_SHARED_DISK=16G \
     exec "$VM" session "$VM" exec "$suite") >/dev/null 2>&1 &
 b_pid=$!
 tries=0

@@ -5,7 +5,8 @@
 # The stub (tests/stubs/engine.sh) answers the engine interface from
 # files, so every decision can be driven through answers a real VM will
 # not give on demand: a halt that leaves it running, a state nobody can
-# read, a boot that fails twice. The slot is the real one, in a sandbox.
+# read, a boot that fails twice. The machine is the shared guest's, in a
+# sandbox: there is no other (#220).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
@@ -15,20 +16,13 @@ VM="$STUB_HARNESS/scripts/vm.sh"
 C="$SANDBOX/consumer"
 make_consumer "$C" vm-test '[test]' 'command = "./work.sh"' 'guest_command = "./in-guest.sh"'
 export SETUP_LOG="$SANDBOX/setup.log"
-MACHINE="$FLTH_CACHE_DIR/machines/vm-test"
+MACHINE="$FLTH_CACHE_DIR/machines/shared-debian-12"
 IDENTITY="$MACHINE/stub"
+GUEST_STAMP="$FLTH_TEST_STUB/guest-lib/setup-vm-test.sha256"
 
 vm() { (cd "$C" && "$VM" "$@"); }
-slot_holder() { awk -F'\t' '{print $2}' "$FLTH_STATE_DIR/slot.lock/holder" 2>/dev/null; }
 calls_of() { grep -c "^$1\$" "$FLTH_TEST_STUB/calls" | tr -d ' '; }
 setup_runs() { grep -c . "$SETUP_LOG" 2>/dev/null | tr -d ' ' || echo 0; }
-
-# Another consumer's holder, alive, for "someone else has the slot".
-foreign_holder() {
-    mkdir -p "$FLTH_STATE_DIR/slot.lock"
-    printf '%s\t%s\t%s\t%s\n' "/elsewhere/vagrant" other "$(date +%s)" tok-other > "$FLTH_STATE_DIR/slot.lock/holder"
-}
-free_slot() { rm -rf "$FLTH_STATE_DIR/slot.lock"; }
 
 # --- usage ---------------------------------------------------------------
 
@@ -44,15 +38,13 @@ check_contains "$out" "no fs-linux-test-harness.toml" "saying which file it want
 stub_state absent; stub_reset_calls
 vm up 2>/dev/null
 check_eq "$?" 0 "up boots an absent VM"
-check_eq "$(slot_holder)" vm-test "and takes the slot to do it"
 check_eq "$(setup_runs)" 1 "and runs the setup script"
-check_eq "$(cat "$MACHINE/setup.sha256")" "$(sha256sum "$C/setup.sh" | awk '{print $1}')" "and records what it applied"
+check_eq "$(cat "$GUEST_STAMP")" "$(sha256sum "$C/setup.sh" | awk '{print $1}')" "and the guest records what was applied"
 
 stub_reset_calls
 vm up 2>/dev/null
 check_eq "$(calls_of up)" 0 "up on a running VM does not boot again"
-check_eq "$(calls_of run)" 0 "nor ask the guest about setup when the script is unchanged"
-check_eq "$(setup_runs)" 1 "so setup did not run twice"
+check_eq "$(setup_runs)" 1 "and the guest's stamp keeps setup from running twice"
 
 echo 'echo "setup v2 ran" >> "$SETUP_LOG"' >> "$C/setup.sh"
 vm up 2>/dev/null
@@ -61,52 +53,40 @@ check_eq "$(setup_runs)" 3 "a changed setup script is applied to a running VM"
 vm provision 2>/dev/null
 check_eq "$(setup_runs)" 5 "provision re-runs setup even when unchanged"
 
-# A boot of a stopped VM whose guest already has this script applied.
-stub_state stopped; free_slot; rm -f "$MACHINE/setup.sha256"
+# Every boot is disposable, so the next one starts from a disk with nobody's setup.
+vm down 2>/dev/null
 vm up 2>/dev/null
-check_eq "$(setup_runs)" 5 "after a reboot, the guest's own stamp prevents a re-run"
-check_eq "$(cat "$MACHINE/setup.sha256" 2>/dev/null)" "$(sha256sum "$C/setup.sh" | awk '{print $1}')" "and the host record is restored"
+check_eq "$(setup_runs)" 7 "a new boot runs the setup again: the guest's disk carries nobody's"
 
-stub_state unknown; free_slot; stub_reset_calls
+stub_state unknown; stub_reset_calls
 out="$(vm up 2>&1)"
 check_eq "$?" 1 "up refuses to boot on a state that could not be read"
 check_eq "$(calls_of up)" "0" "and does not boot"
-check_eq "$(slot_holder)" "" "and does not take the slot"
-
-stub_state absent; foreign_holder; stub_reset_calls
-out="$(FLTH_SLOT_WAIT=0 vm up 2>&1)"
-check_eq "$?" 1 "up fails when another consumer holds the slot"
-check_eq "$(calls_of up)" 0 "without booting a second VM"
-check_contains "$out" "not booting a second VM" "and says why"
-free_slot
 
 # --- boot retries ---------------------------------------------------------
 
-# An absent VM's first boot is its provisioning boot (tests/disposable.sh).
 stub_state absent; echo 2 > "$FLTH_TEST_STUB/up_failures"; stub_reset_calls
 vm up 2>/dev/null
 check_eq "$?" 0 "a boot that fails twice and then succeeds is an up"
-check_eq "$(calls_of 'up --persist')" 3 "after three attempts"
+check_eq "$(calls_of up)" 3 "after three attempts"
 check_eq "$(calls_of 'down --force')" 2 "forcing the half-started VM down between attempts"
 
 vm down 2>/dev/null; stub_reset_calls
 echo 2 > "$FLTH_TEST_STUB/up_failures"
 vm up 2>/dev/null
-check_eq "$?" 0 "a disposable boot is retried the same way"
+check_eq "$?" 0 "a boot of a stopped machine is retried the same way"
 check_eq "$(calls_of up)" 3 "three attempts"
 
 vm down 2>/dev/null
 stub_state absent; echo 3 > "$FLTH_TEST_STUB/up_failures"; stub_reset_calls
 out="$(vm up 2>&1)"
 check_eq "$?" 1 "three failed boots fail up"
-check_eq "$(calls_of 'up --persist')" 3 "and it stops trying at three"
-check_eq "$(slot_holder)" "" "a failed boot confirmed stopped gives the slot back"
+check_eq "$(calls_of up)" 3 "and it stops trying at three"
 
 stub_state absent; echo 3 > "$FLTH_TEST_STUB/up_failures"; echo unknown > "$FLTH_TEST_STUB/after_failed_up"
 out="$(vm up 2>&1)"
-check_eq "$(slot_holder)" vm-test "a failed boot whose state cannot be read KEEPS the slot"
-check_contains "$out" "the slot is kept rather than" "and says so"
-rm -f "$FLTH_TEST_STUB/after_failed_up"; free_slot
+check_contains "$out" "not taken to be stopped" "a failed boot whose state cannot be read is not taken for stopped"
+rm -f "$FLTH_TEST_STUB/after_failed_up"
 
 # A boot that never answers SSH times out saying only that, so the
 # guest's console is the one account of why: a kernel panic, a root that
@@ -120,7 +100,6 @@ check_contains "$out" "[console] console line 41" "  its last 60 lines"
 check_lacks "$out" "console line 40" "  and no more"
 check_contains "$out" "$FLTH_TEST_STUB/console.log" "  naming the file it came from"
 check_eq "$(grep -c '^\[console\] console line 100$' <<<"$out")" 3 "  after every failed attempt, the last one included"
-free_slot
 
 rm -f "$FLTH_TEST_STUB/console"
 stub_state absent; echo 1 > "$FLTH_TEST_STUB/up_failures"
@@ -132,14 +111,14 @@ seq -f 'console line %g' 1 5 > "$FLTH_TEST_STUB/console"
 out="$(vm up 2>&1)"
 check_lacks "$out" "[console]" "a boot that succeeds prints no console"
 vm down 2>/dev/null
-rm -f "$FLTH_TEST_STUB/console"; free_slot
+rm -f "$FLTH_TEST_STUB/console"
 
 # --- down ---------------------------------------------------------------
 
 stub_state absent; vm up 2>/dev/null; vm hold 2>/dev/null
 vm down 2>/dev/null
 check_eq "$?" 0 "down stops the VM"
-check_eq "$(slot_holder)" "" "and, confirmed stopped, releases the slot"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and it is confirmed stopped"
 check_eq "$([ -f "$MACHINE/keep-running" ] && echo present || echo cleared)" cleared "and clears the hold"
 
 # A guest whose graceful halt does not finish (a long run's guest, slow or
@@ -150,58 +129,31 @@ echo running > "$FLTH_TEST_STUB/after_down"; echo stopped > "$FLTH_TEST_STUB/aft
 out="$(vm down 2>&1)"
 check_eq "$?" 0 "a halt that leaves the VM running is forced, and a forced stop is a clean down"
 check_eq "$(calls_of 'down --force')" 1 "  forcing it once"
-check_eq "$(slot_holder)" "" "  and releasing the slot, the VM confirmed stopped"
 rm -f "$FLTH_TEST_STUB/after_force_down"
 
 check_eq "$(calls_of destroy)" 0 "  and an ordinary boot's disk is thrown away by the stop, never destroyed"
 
-# A PROVISIONING boot's writes are kept on the disk every later boot
-# starts from, so killing it can leave that disk damaged, and then every
-# boot after it fails (#57: the guest stopped in its initramfs, its root
-# filesystem marked as having errors). When its graceful halt does not
-# finish, the guest is synced before it is forced, and a provisioning boot
-# that had to be forced is destroyed, so the next boot provisions again
-# from a clean disk instead of trusting one that may be damaged.
-vm up 2>/dev/null; : > "$MACHINE/provisioning"; stub_reset_calls; : > "$FLTH_TEST_STUB/scripts"
-echo running > "$FLTH_TEST_STUB/after_down"; echo stopped > "$FLTH_TEST_STUB/after_force_down"
-out="$(vm down 2>&1)"
-check_eq "$?" 0 "a provisioning boot whose halt had to be forced is still a clean down"
-check_eq "$(grep -cx sync "$FLTH_TEST_STUB/scripts" | tr -d ' ')" 1 "  the guest is synced before it is forced"
-check_eq "$(calls_of destroy)" 1 "  its disk, which the kill may have damaged, is destroyed"
-check_contains "$out" "provisions again" "  saying the next boot provisions again"
-check_eq "$(slot_holder)" "" "  and the slot is released, the VM being gone"
-rm -f "$FLTH_TEST_STUB/after_down" "$FLTH_TEST_STUB/after_force_down"
-stub_state absent
-
 vm up 2>/dev/null; echo running > "$FLTH_TEST_STUB/after_down"; echo running > "$FLTH_TEST_STUB/after_force_down"
 out="$(vm down 2>&1)"
 check_eq "$?" 1 "a VM that even a forced halt leaves running fails down"
-check_eq "$(slot_holder)" vm-test "and keeps the slot"
 rm -f "$FLTH_TEST_STUB/after_force_down"
 
 echo unknown > "$FLTH_TEST_STUB/after_down"
 out="$(vm down 2>&1)"
 check_eq "$?" 1 "a halt after which the state cannot be read fails down"
-check_eq "$(slot_holder)" vm-test "and NEVER releases the slot on an unread state"
-check_contains "$out" "released on a guess" "saying why"
+check_contains "$out" "not taken to be stopped" "saying why: an unread state is never a stop"
 rm -f "$FLTH_TEST_STUB/after_down"
-
-foreign_holder; stub_state stopped
-vm down 2>/dev/null
-check_eq "$(slot_holder)" other "down on a consumer that does not hold the slot leaves the holder alone"
-free_slot
+stub_state stopped
 
 # --- destroy ------------------------------------------------------------
 
 stub_state absent; vm up 2>/dev/null
 vm destroy 2>/dev/null
 check_eq "$?" 0 "destroy deletes the VM"
-check_eq "$(slot_holder)" "" "and releases the slot once it is confirmed gone"
-check_eq "$([ -f "$MACHINE/setup.sha256" ] && echo present || echo cleared)" cleared "and forgets what setup was applied"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" absent "and it is confirmed gone"
 vm up 2>/dev/null; echo unknown > "$FLTH_TEST_STUB/after_destroy"
 out="$(vm destroy 2>&1)"
 check_eq "$?" 1 "a destroy that cannot be confirmed fails"
-check_eq "$(slot_holder)" vm-test "and keeps the slot"
 rm -f "$FLTH_TEST_STUB/after_destroy"; stub_state stopped; vm down 2>/dev/null
 
 # --- status -------------------------------------------------------------
@@ -213,7 +165,7 @@ stub_state unknown; out="$(vm status)"; check_eq "$?" 1 "and 1 for an unreadable
 
 # --- hold and reap ------------------------------------------------------
 
-stub_state absent; free_slot; vm up 2>/dev/null; stub_reset_calls
+stub_state absent; vm up 2>/dev/null; stub_reset_calls
 out="$(vm hold 2>&1)"
 check_contains "$out" "guest deadline is cancelled" "hold reaches the guest"
 check_contains "$(stub_calls)" "shutdown -c" "and cancels its poweroff timer"
@@ -224,10 +176,10 @@ check_contains "$out" "left running" "and says why"
 
 rm -f "$MACHINE/keep-running"
 out="$(vm reap 2>&1)"
-check_eq "$?" 0 "reap of a leaked VM succeeds"
-check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and stops it"
-check_eq "$(slot_holder)" "" "and releases the slot"
-check_contains "$out" "did not clean up" "and says why it acted"
+check_eq "$?" 0 "reap of an idle shared guest succeeds"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" running "and leaves it up for the next run: it is not a leak"
+check_contains "$out" "stays up for the next run" "and says so"
+vm down 2>/dev/null
 
 stub_reset_calls
 vm reap 2>/dev/null
@@ -249,8 +201,11 @@ check_eq "$out" "/share/file.img" "put prints the guest path"
 check_eq "$(cat "$C/.vm-share/file.img")" payload "and the file is in the consumer's share"
 check_eq "$(vm share)" "$(cd "$C" && pwd -P)/.vm-share" "share prints the host path"
 out="$(vm config)"
-check_contains "$out" "identity=$IDENTITY" "config prints the slot identity"
-check_contains "$out" "slot=$FLTH_STATE_DIR/slot.lock" "and where the slot lives"
+check_contains "$out" "identity=$IDENTITY" "config prints the shared machine's identity"
+check_contains "$out" "machine=$MACHINE" "and the shared machine"
+check_contains "$out" "run.standing=" "and the run a call outside any session uses, whose tree is attached to the guest"
+check_lacks "$out" "shared.root" "and no host directory the guest sees at boot: there is none (#222)"
+check_lacks "$out" "slot.lock" "and no slot lock: there is none"
 check_contains "$out" "repo.guest=/repo" "and where the consumer repository is mounted in the guest"
 check_contains "$out" "cache.guest=none" "and that no cache is kept, none being declared"
 
@@ -313,32 +268,18 @@ vm down 2>/dev/null
 
 work() { printf '#!/usr/bin/env bash\n%s\n' "$1" > "$C/work.sh"; chmod +x "$C/work.sh"; }
 
-stub_state absent; free_slot
+stub_state absent
 work 'echo "args:[$*] vm:$(basename "$FLTH_VM") share:$FLTH_SHARE_HOST" > result.txt; "$FLTH_VM" run "true"'
 vm test one "two words" 2>/dev/null
 check_eq "$?" 0 "test succeeds when the work does"
 check_eq "$(cat "$C/result.txt")" "args:[one two words] vm:vm.sh share:$(cd "$C" && pwd -P)/.vm-share" \
     "the command runs from the repository root with arguments appended and FLTH_VM set"
-check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and the VM is torn down afterwards"
-check_eq "$(slot_holder)" "" "with the slot released"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" running "and the guest stays up for the next run"
+check_eq "$(find "$MACHINE/sessions" -type f 2>/dev/null | wc -l | tr -d ' ')" 0 "with the run off the list"
 
 work 'exit 4'
 vm test 2>/dev/null
 check_eq "$?" 4 "a failing test command fails test with its own status"
-check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and still tears down"
-
-work 'exit 0'; echo running > "$FLTH_TEST_STUB/after_down"
-out="$(vm test 2>&1)"
-check_eq "$?" 1 "work that succeeds with a teardown that fails is a failure"
-check_contains "$out" "TEARDOWN FAILED" "said loudly"
-work 'exit 5'
-vm test 2>/dev/null
-check_eq "$?" 5 "when both fail, the work's status wins"
-rm -f "$FLTH_TEST_STUB/after_down"; vm down 2>/dev/null
-
-work 'exit 0'; stub_state absent
-FLTH_KEEP_VM=1 vm test 2>/dev/null
-check_eq "$(cat "$FLTH_TEST_STUB/state")" running "FLTH_KEEP_VM=1 leaves the VM up"
 vm down 2>/dev/null
 
 make_consumer "$SANDBOX/notest" no-test
@@ -346,74 +287,64 @@ out="$(cd "$SANDBOX/notest" && "$VM" test 2>&1)"
 check_eq "$?" 1 "test without a [test] command fails"
 check_contains "$out" "has no [test] command" "and says so"
 
-# --- reap leaves a VM a live session is using ---------------------------
+# --- reap and the list of suites -------------------------------------------
 
 # A session (vm-session.sh: `vm:test`, `vm:guest-test`, a consumer's
-# fixture build) keeps the VM up without a hold, because a hold has to
-# outlive the invocation that set it. The reaper, run by ANY other chore
-# invocation, must not mistake that for a leak.
-stub_state absent; free_slot
-work '"$FLTH_VM" run true; "$FLTH_VM" reap 2> reap.txt; cat "$FLTH_TEST_STUB/state" > during.txt'
+# fixture build) is on the list of suites using the guest. The reaper, run
+# by ANY other chore invocation, leaves the guest up, and a shutdown
+# request leaves it up while the list names anyone.
+stub_state absent
+work '"$FLTH_VM" run true; "$FLTH_VM" reap 2> reap.txt; "$FLTH_VM" down 2> down.txt; cat "$FLTH_TEST_STUB/state" > during.txt'
 vm test 2>/dev/null
-check_eq "$?" 0 "a session whose VM another invocation tried to reap still succeeds"
-check_eq "$(cat "$C/during.txt")" running "reap, run while a session is using the VM, leaves it running"
-check_contains "$(cat "$C/reap.txt")" "another invocation is using it (pid " "and names the invocation it left it for"
-check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "the session still brings it down when it ends"
-check_eq "$(find "$MACHINE/sessions" -type f 2>/dev/null | wc -l | tr -d ' ')" 0 "and leaves no session marker behind"
+check_eq "$?" 0 "a session whose guest another invocation tried to reap and stop still succeeds"
+check_eq "$(cat "$C/during.txt")" running "reap and down, run while a session is using the guest, leave it running"
+check_contains "$(cat "$C/down.txt")" "in use by vm-test (pid " "and down names the suite it left it for"
+check_eq "$(find "$MACHINE/sessions" -type f 2>/dev/null | wc -l | tr -d ' ')" 0 "and the session leaves no marker behind"
 
-# A marker whose owner is dead is exactly the leak the reaper is for.
+# A marker whose owner is dead is a suite that has gone.
 stub_state running; mkdir -p "$MACHINE/sessions"
 bash -c 'exit 0' & dead=$!; wait "$dead"
-printf '%s\t%s\n' "$dead" "gone" > "$MACHINE/sessions/$dead"
-out="$(vm reap 2>&1)"
-check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "a session marker whose process is dead does not protect the VM"
-check_contains "$out" "did not clean up" "and reap says why it acted"
-check_eq "$([ -e "$MACHINE/sessions/$dead" ] && echo kept || echo removed)" removed "and the stale marker is removed"
+printf '%s\t%s\t%s\t%s\n' "$dead" "gone" vm-test run > "$MACHINE/sessions/$dead"
+vm reap 2>/dev/null
+check_eq "$([ -e "$MACHINE/sessions/$dead" ] && echo kept || echo removed)" removed "reap drops a session marker whose process is dead"
+printf '%s\t%s\t%s\t%s\n' "$dead" "gone" vm-test run > "$MACHINE/sessions/$dead"
+vm down 2>/dev/null
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and such a marker does not keep the guest from a shutdown request"
 
 # A live pid that has since been reused by another process is not the session.
-stub_state running
-printf '%s\t%s\n' "$$" "not-the-start-time-of-this-process" > "$MACHINE/sessions/$$"
-vm reap 2>/dev/null
-check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "a marker whose pid now belongs to another process does not protect the VM"
-rm -rf "$MACHINE/sessions"; free_slot
-
-# Two sessions on one machine:
-# the first to finish leaves the VM to the one still running.
-stub_state absent
-work '"$FLTH_VM" run true; ( cd "'"$C"'" && bash -c "set -e; . \"'"$STUB_HARNESS"'/scripts/vm-session.sh\"; true" ) 2> inner.txt; cat "$FLTH_TEST_STUB/state" > during.txt'
-vm test 2>/dev/null
-check_eq "$(cat "$C/during.txt")" running "a session that ends while another is using the VM leaves it running"
-check_contains "$(cat "$C/inner.txt")" "another invocation is using it" "and says so"
-check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and the last session out brings it down"
+stub_state running; mkdir -p "$MACHINE/sessions"
+printf '%s\t%s\t%s\t%s\n' "$$" "not-the-start-time-of-this-process" vm-test run > "$MACHINE/sessions/$$"
+vm down 2>/dev/null
+check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "a marker whose pid now belongs to another process does not keep it up"
+rm -rf "$MACHINE/sessions"
 
 # A session's end leaves a HELD VM running (#36). `chore vm:up` holds the
 # VM so it outlives the invocation that booted it; a session that ends
 # beside it — a fixture build, a test run — did not ask for it and must
-# not take it down, any more than the reaper does. The slot stays with
-# the VM that is still running.
-stub_state absent; free_slot
+# not take it down, any more than the reaper does.
+stub_state absent
 vm up 2>/dev/null; vm hold 2>/dev/null
 out="$(cd "$C" && bash -c 'set -e; . "$1"; true' flth-test "$STUB_HARNESS/scripts/vm-session.sh" 2>&1)"
 check_eq "$?" 0 "a session that ends beside a held VM succeeds"
 check_eq "$(cat "$FLTH_TEST_STUB/state")" running "and leaves the held VM running"
 check_eq "$([ -f "$MACHINE/keep-running" ] && echo present || echo cleared)" present "and its hold in place"
-check_eq "$(slot_holder)" vm-test "and the slot with it"
-check_contains "$out" "held" "and says why it left it"
 vm down 2>/dev/null
 check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "vm:down still stops the held VM"
-check_eq "$(slot_holder)" "" "and releases the slot"
 
 # --- guest-test: the suite, run inside the guest -------------------------
 
 # The stub engine runs the guest script on the host and records it, so
 # what the guest is asked to run is checked exactly. The command is the quoted
 # argument of the line that starts it, read back as the guest's shell reads it.
+# Every call goes in its run, so the command is the last argument of the line that
+# enters it, quoted once more.
 guest_script() {
     sed -n "s/^\"\$BASH\" -c '\(.*\)' < \/dev\/null &\$/\1/p" "$FLTH_TEST_STUB/scripts" |
-        tail -1 | sed "s/'\\\\''/'/g"
+        tail -1 | sed "s/'\\\\''/'/g" |
+        sed "s/^bash .* vm-test '\(.*\)'\$/\1/" | sed "s/'\\\\''/'/g"
 }
 
-stub_state absent; free_slot
+stub_state absent
 mkdir -p "$FLTH_TEST_STUB/guest-repo"
 printf '#!/usr/bin/env bash\necho "in-guest args:[$*]"\n' > "$FLTH_TEST_STUB/guest-repo/in-guest.sh"
 chmod +x "$FLTH_TEST_STUB/guest-repo/in-guest.sh"
@@ -422,10 +353,8 @@ check_eq "$?" 0 "guest-test succeeds when the guest command does"
 check_contains "$out" "in-guest args:[one two words]" "and its output reaches the caller"
 check_eq "$(guest_script)" "cd '/repo' && ./in-guest.sh 'one' 'two words'" \
     "the guest runs the [test] guest_command from the repository mount, arguments appended"
-check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "and the VM is torn down afterwards"
-check_eq "$(slot_holder)" "" "with the slot released"
+check_eq "$(cat "$FLTH_TEST_STUB/state")" running "and the guest stays up for the next run"
 
-stub_state absent
 vm guest-test 'a; rm -rf /' >/dev/null 2>&1
 check_eq "$(guest_script)" "cd '/repo' && ./in-guest.sh 'a; rm -rf /'" \
     "an argument's shell characters are quoted for the guest, not run"
@@ -437,12 +366,12 @@ check_contains "$out" "has no [test] guest_command" "and says so"
 
 # --- setup failure --------------------------------------------------------
 
-stub_state absent; free_slot
+stub_state absent
 printf 'exit 9\n' > "$C/setup.sh"
 out="$(vm up 2>&1)"
 check_eq "$?" 1 "a failing setup script fails up"
 check_contains "$out" "failed inside the VM" "saying where"
-check_eq "$([ -f "$MACHINE/setup.sha256" ] && echo recorded || echo none)" none "and nothing is recorded as applied"
+check_eq "$([ -f "$GUEST_STAMP" ] && echo recorded || echo none)" none "and nothing is recorded as applied"
 check_eq "$(cat "$FLTH_TEST_STUB/state")" running "the VM is left up to be inspected"
 vm down 2>/dev/null
 
@@ -455,8 +384,7 @@ vm down 2>/dev/null
 # (antimatter-studios/rust-fs-ext4#487). One up boots; the others wait for it and
 # find the VM running.
 printf 'true\n' > "$C/setup.sh"
-# One boot first, so the disk is provisioned and the race is a plain boot.
-stub_state absent; free_slot; vm up >/dev/null 2>&1; vm down 2>/dev/null
+stub_state absent
 stub_reset_calls
 echo 2 > "$FLTH_TEST_STUB/up_delay"
 ( vm up >/dev/null 2>&1; echo $? > "$SANDBOX/up-1" ) &

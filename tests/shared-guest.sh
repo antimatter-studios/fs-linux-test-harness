@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# shared-guest.sh — FLTH_SHARED_ROOT: one guest several suites use at once
-# (#153). The list of suites using it decides when it may stop: a suite registers
+# shared-guest.sh — one guest several suites use at once (#153), and the only
+# guest there is (#220). The list of suites using it decides when it may stop: a suite registers
 # when its session begins and deregisters when it ends, and a shutdown request
 # stops the guest only when the list is empty. A suite that died is dropped from
 # the list, because it never deregisters.
@@ -12,10 +12,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 make_stub_harness
-# `sleep` is stubbed, so a wait for the slot would spin. Nothing here should wait.
-export FLTH_SLOT_WAIT=0
 VM="$STUB_HARNESS/scripts/vm.sh"
-SLOT="$STUB_HARNESS/scripts/vm-slot.sh"
 MACHINE="$FLTH_CACHE_DIR/machines/shared-debian-12"
 
 SRC="$(cd "$SANDBOX" && pwd -P)/src"
@@ -23,8 +20,8 @@ make_consumer "$SRC/one" shared-one
 make_consumer "$SRC/two" shared-two
 
 # Calls that opted in, from each consumer's directory.
-one() { (cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
-two() { (cd "$SRC/two" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
+one() { (cd "$SRC/one" && "$VM" "$@"); }
+two() { (cd "$SRC/two" && "$VM" "$@"); }
 
 # A live process to stand in for a suite's session, and its end.
 suite() {
@@ -96,13 +93,11 @@ out="$(one reap 2>&1)"
 check_eq "$?" 0 "a reap of an idle shared guest succeeds"
 check_eq "$(downs)" 0 "and leaves it: an idle shared guest is not a leak"
 check_contains "$out" "left running" "and says so"
-check_contains "$("$SLOT" status 2>&1)" "held by" "the slot stays held while it is up"
 
 out="$(two down 2>&1)"
 check_eq "$?" 0 "a shutdown request with an empty list succeeds"
 check_eq "$(downs)" 1 "and asks the guest to stop"
 check_eq "$(cat "$FLTH_TEST_STUB/state")" stopped "the guest stops"
-check_contains "$("$SLOT" status 2>&1)" "free" "and the slot is released"
 
 # A SUITE KILLED OUTRIGHT never deregisters, and must not keep the guest up.
 one up >/dev/null 2>&1
@@ -173,8 +168,8 @@ two session-end "$A" 2>/dev/null
 end_suite "$A"
 two down >/dev/null 2>&1
 
-# A GUEST THAT STOPPED ITSELF has nothing to halt, so the last suite gives its
-# slot back.
+# A GUEST THAT STOPPED ITSELF has nothing to halt, so the last suite's end asks
+# nothing of it.
 one up >/dev/null 2>&1
 suite; A=$SUITE; suites="$suites $A"
 one session-begin "$A" 2>/dev/null
@@ -182,26 +177,25 @@ stub_state stopped
 stub_reset_calls
 one session-end "$A" 2>/dev/null
 check_eq "$?" 0 "the last suite of a guest that stopped itself ends cleanly"
-check_contains "$("$SLOT" status 2>&1)" "free" "and gives the slot back"
+check_eq "$(downs)" 0 "and asks nothing to stop"
 end_suite "$A"
 
-# THE SETTING ITSELF.
-out="$(cd "$SRC/one" && FLTH_SHARED_ROOT=relative/path "$VM" status 2>&1)"
-check_eq "$?" 1 "a relative FLTH_SHARED_ROOT is refused"
-check_contains "$out" "FLTH_SHARED_ROOT must be an absolute path" "naming the setting"
-out="$(cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC/with,comma" "$VM" status 2>&1)"
-check_eq "$?" 1 "a path the VM cannot share is refused"
+# FLTH_SHARED_ROOT IS NOT READ (#222): a run attaches its own tree.
+(cd "$SRC/one" && FLTH_SHARED_ROOT=relative/path "$VM" status) >/dev/null 2>&1
+check_eq "$?" 1 "a FLTH_SHARED_ROOT that names nothing changes nothing: status still answers, not running"
 
-# A CONSUMER THAT DOES NOT OPT IN keeps today's behaviour.
+# A CONSUMER THAT SETS NOTHING joins the same guest (#220): there is no other.
 stub_state absent
 (cd "$SRC/one" && "$VM" up) >/dev/null 2>&1
+check_eq "$?" 0 "a consumer that sets nothing boots"
+check_eq "$([ -e "$FLTH_CACHE_DIR/machines/shared-one" ] && echo own)" "" "and has no machine of its own"
 suite; A=$SUITE; suites="$suites $A"
 (cd "$SRC/one" && "$VM" session-begin "$A") 2>/dev/null
-marker="$FLTH_CACHE_DIR/machines/shared-one/sessions/$A"
-check_eq "$(awk -F'\t' '{print NF}' "$marker")" 2 "with the setting off the entry is what it was"
+marker="$MACHINE/sessions/$A"
+check_eq "$(awk -F'\t' '{print NF}' "$marker" 2>/dev/null)" 4 "its session is on the shared guest's list, with a run"
 stub_reset_calls
 (cd "$SRC/one" && "$VM" session-end "$A") >/dev/null 2>&1
-check_eq "$(downs)" 1 "with the setting off the last session stops the guest"
+check_eq "$(downs)" 0 "and its end leaves the guest up for the next run"
 end_suite "$A"
 
 finish shared-guest

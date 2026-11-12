@@ -19,7 +19,7 @@ if ! command -v ruby >/dev/null 2>&1; then
     finish vagrantfile
 fi
 
-mkdir -p "$SANDBOX/share" "$SANDBOX/fw"
+mkdir -p "$SANDBOX/mem" "$SANDBOX/fw"
 : > "$SANDBOX/fw/edk2-aarch64-code.fd"; : > "$SANDBOX/fw/edk2-arm-vars.fd"
 : > "$SANDBOX/kvm"
 
@@ -104,9 +104,11 @@ evaluate() {
 field() { printf '%s' "$json" | ruby -rjson -e 'd = JSON.parse(STDIN.read); v = ARGV[0].split("/").reduce(d) { |a, k| a.is_a?(Hash) ? a[k] : nil }; puts(v.is_a?(String) ? v : JSON.generate(v))' "$1"; }
 
 export FLTH_VM_NAME=rust-fs-demo FLTH_VM_MEMORY=2G FLTH_VM_CPUS=2 FLTH_VM_DISK=16G FLTH_VM_SSH_PORT=50122
-export FLTH_VM_DEADLINE_MINUTES=480 FLTH_SHARE_DIR="$SANDBOX/share" FLTH_QEMU_DIR="$SANDBOX/fw"
+export FLTH_VM_DEADLINE_MINUTES=480 FLTH_QEMU_DIR="$SANDBOX/fw"
 export FLTH_VM_GUEST=debian-12
-export FLTH_REPO_DIR="$SANDBOX/repo" FLTH_VM_DISPOSABLE=1 FLTH_VM_CACHE_DISK=""
+export FLTH_VM_DISPOSABLE=1 FLTH_VM_CACHE_DISK=""
+# Where a run's tree is attached while the guest runs (#222): tests/vagrantfile-hotplug.sh.
+export FLTH_VM_QMP="$SANDBOX/qmp.sock" FLTH_VM_SLOTS=4 FLTH_VM_MEM_DIR="$SANDBOX/mem"
 export FLTH_VM_CONSOLE_LOG="$SANDBOX/machine/console.log"
 
 P=vm.provider.qemu
@@ -119,11 +121,7 @@ check_eq "$(field config/vm.box_architecture)" arm64 "  arm64"
 check_eq "$(field config/$P.machine)" "virt,accel=kvm,highmem=on" "  KVM, virt machine"
 check_eq "$(field config/$P.cpu)" host "  host CPU"
 check_eq "$(field config/$P.qemu_dir)" "$SANDBOX/fw" "  firmware from FLTH_QEMU_DIR"
-check_contains "$(field config/$P.extra_qemu_args)" "security_model=mapped-xattr" "  shares over 9p"
-check_contains "$(field config/vm.provision)" "guest/mount-share.sh" "  and mounts it in the guest on every boot"
-check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_repo,security_model=none" \
-    "  and shares the consumer repository with the host's real ownership and xattrs"
-check_contains "$(field config/vm.provision)" '"repo"' "  mounting it too, on every boot"
+check_contains "$(field config/$P.extra_qemu_args)" "pcie-root-port" "  with ports a run's tree is attached to"
 check_eq "$(field config/notify_forwarder.enable)" null "  no macOS-only settings"
 check_eq "$(field config/notify_forwarder.binaries)" null "  and no guest receiver to replace"
 check_lacks "$(field config/$P.extra_qemu_args)" "-vga" "  and no display device: the arm64 guests boot through UEFI"
@@ -159,7 +157,7 @@ check_eq "$(field config/vm.box_architecture)" amd64 "  amd64 box"
 check_eq "$(field config/$P.machine)" "q35,accel=kvm" "  KVM, q35 machine"
 check_eq "$(field config/$P.net_device)" "virtio-net-pci" "  PCI network device"
 check_eq "$(field config/$P.qemu_dir)" null "  no UEFI firmware directory"
-check_contains "$(field config/$P.extra_qemu_args)" "mount_tag=flth_share" "  shares over 9p"
+check_contains "$(field config/$P.extra_qemu_args)" "pcie-root-port" "  with ports a run's tree is attached to"
 check_contains "$(field config/$P.extra_qemu_args)" '"-vga","std"' \
     "  a standard VGA after the provider's -vga none, without which Debian 13's GRUB resets the machine (#70)"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  a disposable boot's writes are discarded"
@@ -200,15 +198,9 @@ check_contains "$binaries" "${receiver_sum:-no checksum: the stand-in is missing
 receiver_out="$(cd "$SANDBOX" && bash "$receiver_off" receive -p 29324 2>&1)"
 check_eq "$?|$receiver_out" "0|" "  which exits at once, saying nothing, as the plugin starts it"
 check_lacks "$(grep -v '^[[:space:]]*#' "$receiver_off" 2>/dev/null)" ">" "  and writes to nothing"
-check_contains "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  shares over virtiofs"
-check_contains "$(field config/vm.synced_folder)" '"/repo"' "  the consumer repository among them"
-check_lacks "$(field config/$P.extra_qemu_args)" "-virtfs" "  no 9p"
-check_eq "$(field config/$P.virtiofs_guest_uid)" 1001 "  virtiofs uid matches the box's vagrant user"
-check_eq "$(field config/$P.virtiofsd_bin)" null \
-    "  virtiofsd is the provider's default, the tap's released build, never a hand-placed pre-release binary"
-check_contains "$(field config/$P.extra_virtiofsd_args)" '"--thread-pool-size=1"' \
-    "  one virtiofsd thread: the macOS port switches credentials process-wide"
-check_contains "$(field config/$P.extra_virtiofsd_args)" '"--xattr"' "  extended attributes survive the share"
+check_lacks "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  no folder of the provider's: a run's tree is attached by the harness"
+check_eq "$(field config/$P.virtiofsd_bin)" null "  and the provider is given no virtiofsd"
+check_contains "$(field config/$P.extra_qemu_args)" "memory-backend-file,id=flth_mem" "  guest memory a virtiofsd can reach"
 check_contains "$(field config/vm.provision)" '"guest/apt-ready.sh"' "  the box's first-boot dialog is disabled and the package manager made ready"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  a disposable boot's writes are discarded"
 evaluate darwin23 arm64 0 vagrant-qemu
@@ -249,7 +241,7 @@ check_contains "$args" "serial=flth-cache,addr=0x10" \
     "  on a PCI slot after the machine's own disk, which the BIOS boots"
 check_lacks "$args" "id=flth_cache,file=$cache_disk,format=raw,snapshot" "  and its writes are never sent to the overlay"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  while the machine's own disk stays disposable"
-check_contains "$args" "mount_tag=flth_share" "  and the shares are still there"
+check_contains "$args" "pcie-root-port,id=flth_rp1" "  and the ports for a run's tree are still there, clear of it"
 check_contains "$(field config/vm.provision)" '"path":"guest/mount-cache.sh","args":["flth-cache","/cache"]' \
     "  it is mounted at /cache on every boot"
 FLTH_VM_CACHE_DISK="$cache_disk" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
@@ -316,9 +308,10 @@ refuse_env FLTH_VM_DEADLINE_MINUTES "0"
 refuse_env FLTH_VM_GUEST "ubuntu-24.04"
 refuse_env FLTH_VM_GUEST "debian-12
 config.vm.box = x"
-refuse_env FLTH_SHARE_DIR "relative/share"
-refuse_env FLTH_SHARE_DIR "/tmp/x,readonly=off"
-refuse_env FLTH_REPO_DIR "relative/repo"
+refuse_env FLTH_VM_QMP "relative/qmp.sock"
+refuse_env FLTH_VM_QMP "/tmp/qmp.sock,server=off"
+refuse_env FLTH_VM_SLOTS "0"
+refuse_env FLTH_VM_SLOTS "65"
 refuse_env FLTH_VM_DISPOSABLE "yes"
 refuse_env FLTH_VM_DISPOSABLE "1,file=/etc/shadow"
 refuse_env FLTH_VM_CACHE_DISK "relative/cache.img"

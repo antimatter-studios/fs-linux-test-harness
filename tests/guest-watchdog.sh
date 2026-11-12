@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # One watchdog on the host for a running guest (#190). A stuck process or a guest
-# that stopped answering ends the guest and frees the slot, and every suite on it
+# that stopped answering ends the guest, and every suite on it
 # fails with a status of its own, saying why. A long busy build trips nothing.
 #
 # Real vm.sh, vm-session.sh and vm-watchdog.sh, with the stub engine: what the guest
@@ -17,11 +17,10 @@ VM="$STUB_HARNESS/scripts/vm.sh"
 STUB="$FLTH_TEST_STUB"
 C="$SANDBOX/consumer"
 make_consumer "$C" watched
-MACHINE="$FLTH_CACHE_DIR/machines/watched"
+MACHINE="$FLTH_CACHE_DIR/machines/shared-debian-12"
 ENDED=75
 
 vm() { (cd "$C" && "$VM" "$@"); }
-slot_holder() { awk -F'\t' '{print $2}' "$FLTH_STATE_DIR/slot.lock/holder" 2>/dev/null; }
 state() { cat "$STUB/state"; }
 wait_until() {
     # wait_until <tenths of a second> <command...>
@@ -140,7 +139,6 @@ for name in one two; do
     check_contains "$(cat "$SANDBOX/$name.out")" "sync" "$name names the stuck process"
     check_contains "$(cat "$SANDBOX/$name.out")" "not a failure of the suite" "$name says this is not its own failure"
 done
-check_eq "$(slot_holder)" "" "the slot is free"
 check_contains "$(vm status 2>&1)" "the watchdog ended" "vm.sh status says why it is down"
 check_contains "$(cat "$MACHINE/watchdog.log")" "4242" "the log names the process"
 
@@ -172,7 +170,6 @@ fi
 wait_for_suite "$silent"
 check_eq "$SUITE_STATUS" "$ENDED" "its suite ends with that status"
 check_contains "$(cat "$SANDBOX/silent.out")" "did not answer" "saying the guest did not answer"
-check_eq "$(slot_holder)" "" "and the slot is free"
 reset_suites
 
 # One check that did not answer is a loaded host, not a lost guest.

@@ -15,7 +15,9 @@
 # boot output's follower polling, and it must not spin.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-new_sandbox
+# Short on purpose: the QMP and virtiofsd sockets are under FLTH_STATE_DIR, and a
+# Unix socket path is limited to about 104 bytes.
+TMPDIR="${FLTH_TEST_SOCKET_ROOT:-/tmp}" new_sandbox
 require_guest_bash || exit 1
 
 BIN="$SANDBOX/bin"
@@ -81,7 +83,7 @@ case "$1" in
             answer=503
         fi
         case "$answer" in
-            '') echo running > "$STUBDIR/status"; exit 0 ;;
+            '') echo running > "$STUBDIR/status"; "$FLTH_TEST_QMP_START" ""; exit 0 ;;
             503 | 404) catalog "The requested URL returned error: $answer" ;;
             resolve) catalog "Could not resolve host: vagrantcloud.com" ;;
             download)
@@ -114,7 +116,7 @@ export PATH="$BIN:$PATH"
 CONSUMER="$SANDBOX/consumer"
 make_consumer "$CONSUMER" box-test
 
-# A machine that has never existed, on a host with no slot held.
+# A machine that has never existed.
 SCENARIO=0
 fresh() {
     SCENARIO=$((SCENARIO + 1))
@@ -145,18 +147,17 @@ forced_downs() { grep -c '^vagrant halt -f' "$STUBDIR/log"; }
 waits() { tr '\n' ' ' < "$STUBDIR/waits" | sed 's/ $//'; }
 waited_total() { awk '{ total += $1 } END { print total + 0 }' "$STUBDIR/waits"; }
 longest_wait() { sort -n "$STUBDIR/waits" | tail -n 1; }
-slot_state() { [ -d "$FLTH_STATE_DIR/slot.lock" ] && echo held || echo free; }
 BOUND=900
 
 # --- an outage that ends ------------------------------------------------------
 
 # More failures than the three attempts a boot gets, so the catalog has to be
-# waited for: the provisioning boot then the disposable boot that follows.
-fresh 503 503 503 503 '' ''
+# waited for.
+fresh 503 503 503 503 ''
 out="$(vm up 2>&1)"
 check_eq "$?" 0 "a catalog that answers 503 and recovers is an up"
-check_eq "$(ups)" 6 "the box is asked for until it comes, past the three boot attempts"
-check_eq "$(waits)" "30 60 120 120" "the wait grows, then stays below the slot's boot grace"
+check_eq "$(ups)" 5 "the box is asked for until it comes, past the three boot attempts"
+check_eq "$(waits)" "30 60 120 120" "the wait grows, then stays at two minutes"
 check_eq "$(forced_downs)" 0 "no VM was started, so none is forced down"
 check_contains "$out" "503" "each wait names the status"
 check_contains "$out" "box catalog" "and the catalog"
@@ -180,13 +181,11 @@ check_eq "$([ "$total" -le "$BOUND" ] && echo within || echo over)" within \
     "the wait is bounded overall ($total s against $BOUND s)"
 check_eq "$([ "$total" -ge 300 ] && echo minutes || echo seconds)" minutes \
     "and an outage is waited for over minutes ($total s)"
-check_eq "$(slot_state)" free "a failure confirmed stopped gives the slot back"
-
-# The slot's lease is renewed at each attempt, and a wait longer than the boot
-# grace would let a waiter take it from a holder with no VM to show for it.
-grace="$(sed -n 's/^BOOT_GRACE_SECS="${FLTH_SLOT_BOOT_GRACE:-\([0-9]*\)}"$/\1/p' "$REPO/scripts/vm-slot.sh")"
-check_eq "$([ "$(longest_wait)" -lt "$grace" ] && echo below || echo over)" below \
-    "no wait reaches the slot's boot grace ($(longest_wait) s against $grace s)"
+# No single wait is longer than the ceiling vm.sh names, so a catalog that comes
+# back is noticed within it.
+ceiling="$(sed -n 's/^BOX_RETRY_MAX_WAIT=\([0-9]*\)$/\1/p' "$REPO/scripts/vm.sh")"
+check_eq "$([ "$(longest_wait)" -le "$ceiling" ] && echo within || echo over)" within \
+    "no wait is longer than the ceiling ($(longest_wait) s against $ceiling s)"
 
 # Time spent failing counts, or a catalog that fails slowly outlasts the bound.
 outage 503

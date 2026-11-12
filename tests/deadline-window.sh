@@ -20,8 +20,10 @@ call_after() {
     (cd "$C" && "$VM" exec true) 2>/dev/null
 }
 
+# The shared guest's deadline is the host's to set, not a consumer's (#220).
 consumer_with() {
-    make_consumer "$C" deadline-window '[vm]' "deadline_minutes = $1"
+    make_consumer "$C" deadline-window
+    export FLTH_SHARED_DEADLINE="$1"
     (cd "$C" && "$VM" up) >/dev/null 2>&1
 }
 

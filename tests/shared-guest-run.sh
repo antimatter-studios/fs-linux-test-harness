@@ -8,7 +8,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 make_stub_harness
-export FLTH_SLOT_WAIT=0
 VM="$STUB_HARNESS/scripts/vm.sh"
 SESSION="$STUB_HARNESS/scripts/vm-session.sh"
 TOOLS="$FLTH_TEST_STUB/guest-tools"
@@ -19,10 +18,10 @@ make_consumer "$SRC/one" run-one
 make_consumer "$SRC/two" run-two
 mkdir -p "$FLTH_TEST_STUB/guest-repo" "$FLTH_TEST_STUB/guest-proc"
 
-one() { (cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
+one() { (cd "$SRC/one" && "$VM" "$@"); }
 # A second suite of the same tree. Suites of other consumers are in shared-guest-join.sh.
 two() { one "$@"; }
-other_tree() { (cd "$SRC/two" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
+other_tree() { (cd "$SRC/two" && "$VM" "$@"); }
 
 # A process of the run $1, in the guest. Orphaned, so it is gone once it is killed.
 guest_process() {
@@ -94,7 +93,7 @@ check_eq "$(grep -c '^unshare' "$TOOLS" | tr -d ' ')" "$((before + 1))" "made on
 : > "$TOOLS"
 FLTH_RUN_ID="$RUN_A" one guest-tree 2>/dev/null
 check_eq "$?" 0 "a run takes its own copy of its tree"
-check_contains "$(cat "$TOOLS")" "tar -S -C $FLTH_TEST_STUB/guest-repo/one --exclude-caches-all --exclude=./tmp --exclude=./.vm-share -cf - ." "leaving behind caches, scratch and the share"
+check_contains "$(cat "$TOOLS")" "tar -S -C $FLTH_TEST_STUB/guest-repo --exclude-caches-all --exclude=./tmp --exclude=./.vm-share -cf - ." "leaving behind caches, scratch and the share"
 check_contains "$(cat "$TOOLS")" "mount --bind $root_a/tree $FLTH_TEST_STUB/guest-repo" "mounted where the suite looks"
 check_eq "$(readlink "$root_a/tree/.vm-share")" /share "the share stays reachable by the name it had"
 : > "$TOOLS"
@@ -159,7 +158,7 @@ cat > "$SRC/one/work.sh" <<SCRIPT
 echo "\$FLTH_RUN_ID" > "$SANDBOX/run-seen"
 "$VM" exec 'echo "\$FLTH_RUN_ROOT"' > "$SANDBOX/root-seen"
 SCRIPT
-(cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC" bash work.sh) 2>/dev/null
+(cd "$SRC/one" && bash work.sh) 2>/dev/null
 check_eq "$?" 0 "a script that sources the session runs"
 check_eq "$(cat "$SANDBOX/root-seen")" "$ROOTS/$(cat "$SANDBOX/run-seen")" "and its calls land in the run it was given"
 check_eq "$([ -e "$(cat "$SANDBOX/root-seen")" ] && echo left)" "" "which ends with it"
@@ -167,7 +166,7 @@ check_eq "$([ -e "$(cat "$SANDBOX/root-seen")" ] && echo left)" "" "which ends w
 # guest-test goes through all of it.
 printf '[test]\nguest_command = "echo guest-suite"\n' >> "$SRC/one/fs-linux-test-harness.toml"
 : > "$TOOLS"
-out="$(cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC" "$VM" guest-test 2>/dev/null)"
+out="$(cd "$SRC/one" && "$VM" guest-test 2>/dev/null)"
 check_eq "$?" 0 "guest-test passes"
 check_contains "$out" guest-suite "and runs the suite"
 check_contains "$(cat "$TOOLS")" "--exclude-caches-all" "from its own copy of the tree"
@@ -178,7 +177,7 @@ for kind in 'guest_command' 'command'; do
     printf '[project]\nname = "run-signal"\n\n[setup]\nscript = "setup.sh"\n\n[test]\n%s = "/bin/sleep 120"\n' "$kind" > "$SRC/one/signal.toml"
     task="guest-test"
     if [ "$kind" = command ]; then task="test"; fi
-    (cd "$SRC/one" && FLTH_CONFIG="$SRC/one/signal.toml" FLTH_SHARED_ROOT="$SRC" exec "$VM" "$task") >/dev/null 2>&1 &
+    (cd "$SRC/one" && FLTH_CONFIG="$SRC/one/signal.toml" exec "$VM" "$task") >/dev/null 2>&1 &
     runner=$!
     tries=0
     until [ -f "$FLTH_CACHE_DIR/machines/shared-debian-12/sessions/$runner" ] || [ "$tries" -ge 100 ]; do
@@ -197,14 +196,14 @@ for kind in 'guest_command' 'command'; do
     fi
 done
 
-# A CONSUMER THAT DOES NOT OPT IN: its calls go as they went.
+# A CONSUMER THAT SETS NOTHING (#220): its calls go in a run too, on the one guest.
 one down >/dev/null 2>&1
 : > "$TOOLS"
 (cd "$SRC/one" && "$VM" up) >/dev/null 2>&1
 : > "$FLTH_TEST_STUB/scripts"
-out="$(cd "$SRC/one" && "$VM" exec 'echo private')"
-check_eq "$out" private "with the setting off a call runs"
-check_lacks "$(cat "$FLTH_TEST_STUB/scripts")" "run.sh" "and goes through no run"
-check_eq "$(cat "$TOOLS")" "" "and no mount or namespace is touched"
+out="$(cd "$SRC/one" && "$VM" exec 'echo shared')"
+check_eq "$out" shared "with FLTH_SHARED_ROOT unset a call runs"
+check_contains "$(cat "$FLTH_TEST_STUB/scripts")" "run.sh enter" "and goes through its run"
+check_contains "$(cat "$TOOLS")" "mount --bind" "on the shared guest, whose boot was prepared for runs"
 
 finish shared-guest-run

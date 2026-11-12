@@ -16,6 +16,7 @@ cat > "$HARNESS/vm.sh" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
     session) shift; exec "$SESSION_TEST_BASH" "${0%/*}/vm-session.sh" "$@" ;;
+    run-id) echo session-signals-run ;;
     session-begin) echo "$2" > "$SESSION_TEST_DIR/begin" ;;
     session-end) echo "$2" > "$SESSION_TEST_DIR/end" ;;
     *) exit 1 ;;

@@ -7,7 +7,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 make_stub_harness
-export FLTH_SLOT_WAIT=0
 VM="$STUB_HARNESS/scripts/vm.sh"
 SRC="$(cd "$SANDBOX" && pwd -P)/src"
 make_consumer "$SRC/one" call-one
@@ -16,8 +15,8 @@ mkdir -p "$FLTH_TEST_STUB/guest-repo/one" "$FLTH_TEST_STUB/guest-repo/two" "$FLT
 SESSIONS="$FLTH_CACHE_DIR/machines/shared-debian-12/sessions"
 GO="$SANDBOX/go"
 STARTED="$SANDBOX/started"
-one() { (cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
-two() { (cd "$SRC/two" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
+one() { (cd "$SRC/one" && "$VM" "$@"); }
+two() { (cd "$SRC/two" && "$VM" "$@"); }
 downs() { stub_calls | grep -c '^down' | tr -d ' '; }
 waits="touch '$STARTED'; until [ -f '$GO' ]; do /bin/sleep 0.1; done; echo finished"
 wait_for_start() {
@@ -86,7 +85,7 @@ wait "$SUITE" 2>/dev/null
 
 # A CALL KILLED OUTRIGHT does not keep the guest up, and does not end the standing run.
 rm -f "$GO" "$STARTED"
-(cd "$SRC/one" && FLTH_SHARED_ROOT="$SRC" exec "$VM" exec "/bin/sleep 300") >/dev/null 2>&1 &
+(cd "$SRC/one" && exec "$VM" exec "/bin/sleep 300") >/dev/null 2>&1 &
 CALL=$!
 tries=0
 until [ "$(entries)" = 1 ] || [ "$tries" -ge 300 ]; do /bin/sleep 0.1; tries=$((tries + 1)); done

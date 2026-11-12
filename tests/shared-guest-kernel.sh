@@ -9,7 +9,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 make_stub_harness
-export FLTH_SLOT_WAIT=0
 VM="$STUB_HARNESS/scripts/vm.sh"
 export SETUP_LOG="$SANDBOX/setup.log"
 BOOT="$FLTH_TEST_STUB/guest-boot"
@@ -33,7 +32,7 @@ SETUP
 cat >> "$SRC/same/setup.sh" <<'SETUP'
 : > "$FLTH_TEST_STUB/guest-boot/vmlinuz-6.1.0-42-cloud-arm64"
 SETUP
-in_tree() { local tree="$1"; shift; (cd "$SRC/$tree" && FLTH_SHARED_ROOT="$SRC" "$VM" "$@"); }
+in_tree() { local tree="$1"; shift; (cd "$SRC/$tree" && "$VM" "$@"); }
 
 out="$(in_tree plain up 2>&1)"
 check_eq "$?" 0 "a consumer whose setup installs no kernel joins"
@@ -42,7 +41,7 @@ out="$(in_tree kernel up 2>&1)"
 check_eq "$?" 1 "a consumer whose setup installs a kernel the guest is not on fails its join"
 check_contains "$out" "6.12.57+deb13-arm64" "naming the kernel its setup installed"
 check_contains "$out" "6.1.0-42-cloud-arm64" "and the one the guest runs"
-check_contains "$out" "guest of its own" "and saying what to do instead"
+check_contains "$out" "a setup that installs a kernel cannot be run on it" "and saying why there is nowhere else to run it"
 check_lacks "$out" "the setup script (setup.sh) failed" "and not calling it a failed setup"
 
 out="$(in_tree kernel up 2>&1)"

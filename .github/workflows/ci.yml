@@ -3,7 +3,7 @@ name: CI
 # WHAT A GREEN RUN PROVES, job by job (README "CI and automated merging"):
 #
 #   unit            every script parses and is shellcheck-clean; the config
-#                   parser, the slot lock, the orchestration (against a
+#                   parser, the shared guest's orchestration (against a
 #                   stub engine), the session rules, the Vagrant engine
 #                   (against stub vagrant/ssh/ps), the guest deadline, the
 #                   Vagrantfile for every host, and the no-filesystem-
@@ -11,8 +11,8 @@ name: CI
 #   smoke-x86_64    a REAL VM boots under KVM through the harness, a
 #                   consumer's setup installs its tooling inside it, a
 #                   realistic filesystem suite passes, a corrupted image
-#                   FAILS, and the slot, hold, reap, teardown and destroy
-#                   behave on a real machine.
+#                   FAILS, and the shared guest, hold, reap, shutdown and
+#                   destroy behave on a real machine.
 #   ci-ok           the single required check: green only when every job
 #                   above ran and succeeded.
 

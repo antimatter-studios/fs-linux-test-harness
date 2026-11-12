@@ -67,7 +67,7 @@ chmod +x "$SANDBOX/bin/uname" "$SANDBOX/bin/pgrep" "$SANDBOX/bin/ssh" "$SANDBOX/
 export PATH="$SANDBOX/bin:$PATH"
 make_consumer "$SANDBOX/consumer" up-signals
 export FLTH_CONFIG="$SANDBOX/consumer/fs-linux-test-harness.toml"
-MACHINE="$FLTH_CACHE_DIR/machines/up-signals"
+MACHINE="$FLTH_CACHE_DIR/machines/shared-debian-12"
 
 alive() {
     local state
@@ -149,10 +149,10 @@ signal_case() {
     fi
 }
 
-signal_case TERM process 143 provisioning
-signal_case TERM group 143 provisioning
-signal_case INT process 130 provisioning
-signal_case HUP process 129 provisioning
+signal_case TERM process 143 booting
+signal_case TERM group 143 booting
+signal_case INT process 130 booting
+signal_case HUP process 129 booting
 signal_case TERM process 143 before-qemu
 clean_case
 finish up-signals

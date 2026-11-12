@@ -133,6 +133,10 @@ check_linux() {
     check_vagrant "HashiCorp's apt repository (x86_64), or Vagrant 2.4.x from source on arm64 — see README 'Host setup'"
     have "$qemu" || need "$qemu" "the hypervisor" "apt-get install $pkg"
     have qemu-img || need "qemu-img" "creates the VM's disk overlay" "apt-get install qemu-utils"
+    # Each run's tree is attached to the running guest over virtiofs (#222).
+    if [ -z "${FLTH_VIRTIOFSD:-}" ] && ! have virtiofsd && [ ! -x /usr/libexec/virtiofsd ] && [ ! -x /usr/lib/qemu/virtiofsd ]; then
+        need "virtiofsd" "serves each run's tree to the guest (FLTH_VIRTIOFSD names another)" "apt-get install virtiofsd"
+    fi
     if [ ! -e "$kvm" ]; then
         need "$kvm" "hardware acceleration; software emulation is refused" "enable KVM for this host (kvm module / nested virtualisation)"
     elif [ ! -r "$kvm" ] || [ ! -w "$kvm" ]; then

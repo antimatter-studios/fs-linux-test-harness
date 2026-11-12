@@ -51,7 +51,16 @@ STUB
 cat > "$BIN/ps" <<'STUB'
 #!/usr/bin/env bash
 [ -f "$STUBDIR/ps-fails" ] && exit 1
+# `ps -p <pids>` for pids that have all exited prints nothing and exits 1.
+[ "${1:-}" = -p ] && [ -f "$STUBDIR/ps-p-gone" ] && exit 1
 cat "$STUBDIR/ps" 2>/dev/null
+STUB
+# pgrep finds the pids in $STUBDIR/pgrep, and nothing when there is none: never a
+# QEMU some other run on this host has up.
+cat > "$BIN/pgrep" <<'STUB'
+#!/usr/bin/env bash
+[ -s "$STUBDIR/pgrep" ] || exit 1
+cat "$STUBDIR/pgrep"
 STUB
 chmod +x "$BIN"/*
 export PATH="$BIN:$PATH"
@@ -63,12 +72,14 @@ flth_load
 engine_prepare
 ID="$(engine_identity)"
 
-check_eq "$VAGRANT_DOTFILE_PATH" "$FLTH_CACHE_DIR/machines/engine-test/vagrant" "machine state goes to the consumer's machine directory"
+check_eq "$VAGRANT_DOTFILE_PATH" "$FLTH_CACHE_DIR/machines/shared-debian-12/vagrant" "machine state goes to the shared guest's machine directory"
 check_eq "$VAGRANT_CWD" "$REPO/vagrant" "the Vagrantfile is the harness's own"
 check_eq "$FLTH_VM_NAME|$FLTH_VM_MEMORY|$FLTH_VM_CPUS|$FLTH_VM_DISK|$FLTH_VM_SSH_PORT|$FLTH_VM_DEADLINE_MINUTES" \
-    "engine-test|2G|4|32G|50122|480" "the config reaches the Vagrantfile through FLTH_VM_*"
+    "shared-debian-12|8G|8|64G|50200|480" "the shared machine's settings reach the Vagrantfile through FLTH_VM_*"
+check_eq "${FLTH_SHARE_DIR-unset}|${FLTH_REPO_DIR-unset}" "unset|unset" "and no host directory to share at boot: a run attaches its own (#222)"
 # shellcheck disable=SC2153  # exported by engine_prepare
-check_eq "$FLTH_SHARE_DIR" "$(cd "$SANDBOX/c" && pwd -P)/.vm-share" "and the share as an absolute host path"
+check_contains "$FLTH_VM_QMP" "$FLTH_STATE_DIR/qmp/" "QMP's socket is under FLTH_STATE_DIR, where a socket path is short"
+check_eq "$FLTH_VM_SLOTS|$FLTH_VM_MEM_DIR" "32|$FLTH_STATE_DIR/tmp" "32 slots for runs' trees, and the memory backend beside the overlay"
 check_eq "$ID" "$VAGRANT_DOTFILE_PATH" "the identity is the dotfile path, which QEMU's disk path contains"
 
 # --- firmware links, by host ---------------------------------------------
@@ -107,6 +118,15 @@ check_eq "$(alive)" 2 "an unreadable process table is 2, not 'not running'"
 rm -f "$STUBDIR/ps-fails"; : > "$STUBDIR/ps"
 check_eq "$(alive)" 2 "and so is an empty one"
 printf 'init\n' > "$STUBDIR/ps"
+# A QEMU THAT EXITS BETWEEN pgrep FINDING IT AND ps READING IT (#205). A guest that
+# powered itself off was reported as "the process table could not be read", and the
+# console that said it powered off was never read. The pid pgrep gave is gone, so
+# `ps -p` finds nothing: that is a VM that has stopped, not an unreadable table.
+bash -c 'exit 0' & gone=$!; wait "$gone"
+printf '%s\n' "$gone" > "$STUBDIR/pgrep"
+: > "$STUBDIR/ps-p-gone"
+check_eq "$(alive)" 1 "a QEMU that exited after pgrep found it is not running, not an unreadable table"
+rm -f "$STUBDIR/pgrep" "$STUBDIR/ps-p-gone"
 
 # --- engine_state ---------------------------------------------------------
 
@@ -207,15 +227,13 @@ check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=1" "a plain up
 : > "$STUBDIR/log"
 engine_up --persist 2>/dev/null
 
-# A SHARED MACHINE'S DISK NEVER KEEPS VAGRANT'S KEY (#153), so a later boot must not
-# offer it. A private machine's does, so its copy stays.
+# THE SHARED MACHINE'S DISK NEVER KEEPS VAGRANT'S KEY (#153), so a later boot must not
+# offer it.
 key="$VAGRANT_DOTFILE_PATH/machines/default/qemu/private_key"
 mkdir -p "$(dirname "$key")"
 : > "$key"
-engine_up 2>/dev/null
-check_eq "$([ -f "$key" ] && echo kept)" kept "a private machine's boot keeps Vagrant's key"
-FLTH_SHARED_ROOT=/somewhere engine_up 2>/dev/null
-check_eq "$([ -f "$key" ] && echo kept)" "" "a shared machine's boot forgets it"
+engine_up --persist 2>/dev/null
+check_eq "$([ -f "$key" ] && echo kept)" "" "a boot forgets Vagrant's key"
 check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=0" "up --persist boots a machine whose writes reach its disk"
 check_eq "${FLTH_VM_DISPOSABLE:-unset}" 1 "and only that boot: the next Vagrant call is back to disposable"
 
@@ -246,9 +264,13 @@ check_eq "${FLTH_VM_CACHE_DISK-unset}" "" "no [cache]: the Vagrantfile is told t
 engine_up 2>/dev/null
 check_eq "$(test -e "$FLTH_MACHINE_DIR/cache.img" && echo made || echo none)" none "and a boot makes none"
 
+# The shared guest keeps a consumer's cache in a directory of its own (#153), so no
+# load asks the engine for a disk any more. The engine still makes one when told
+# to, and that is what is pinned here, by setting what a load used to.
 make_consumer "$SANDBOX/cached" cache-test '[cache]' 'size = "1G"'
 export FLTH_CONFIG="$SANDBOX/cached/fs-linux-test-harness.toml"
 flth_load
+CFG_cache_size=1G
 engine_prepare
 disk="$FLTH_MACHINE_DIR/cache.img"
 size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
@@ -263,6 +285,7 @@ engine_up 2>/dev/null
 check_eq "$(dd if="$disk" bs=1 skip=4096 count=10 2>/dev/null)" "built once" "the next boot finds what the last one wrote there"
 make_consumer "$SANDBOX/cached" cache-test '[cache]' 'size = "2G"'
 flth_load
+CFG_cache_size=2G
 engine_prepare
 out="$(engine_up 2>&1)"
 check_eq "$(size_of "$disk")" $((2 * 1024 * 1024 * 1024)) "a changed size gets a disk of the new size"

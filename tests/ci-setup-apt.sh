@@ -47,10 +47,36 @@ if [ -f "$SANDBOX/stalled-mirrors" ] && [ -f "\$FLTH_APT_SOURCES" ]; then
         grep -qF "URIs: \$m" "\$FLTH_APT_SOURCES" && exec sleep 30
     done < "$SANDBOX/stalled-mirrors"
 fi
+# A mirror named in \$SANDBOX/incomplete-mirrors serves an incomplete index (#218):
+# its update says some index files failed and exits 0, as apt-get does, and an
+# install from it finds no package.
+if [ -f "$SANDBOX/incomplete-mirrors" ] && [ -f "\$FLTH_APT_SOURCES" ]; then
+    while read -r m; do
+        grep -qF "URIs: \$m" "\$FLTH_APT_SOURCES" || continue
+        case " \$* " in
+            *" update "*) echo "W: Some index files failed to download. They have been ignored, or old ones used instead."; exit 0 ;;
+            *" install "*) echo "E: Unable to locate package qemu-system-x86" >&2; exit 100 ;;
+        esac
+    done < "$SANDBOX/incomplete-mirrors"
+fi
 [ -f "$SANDBOX/hang" ] && exec sleep 30
 if [ -f "$SANDBOX/hang-once" ]; then rm -f "$SANDBOX/hang-once"; exec sleep 30; fi
 if [ -f "$SANDBOX/fail" ]; then echo "E: the stub mirror refused" >&2; exit 100; fi
 exit 0
+STUB
+# apt-cache policy names a candidate for every package, except from a mirror whose
+# index is incomplete, where it knows none: what apt says of a package it has no
+# list for.
+cat > "$bin/apt-cache" <<STUB
+#!/usr/bin/env bash
+echo "apt-cache \$*" >> "$SANDBOX/calls"
+if [ -f "$SANDBOX/incomplete-mirrors" ] && [ -f "\$FLTH_APT_SOURCES" ]; then
+    while read -r m; do
+        grep -qF "URIs: \$m" "\$FLTH_APT_SOURCES" && exit 0
+    done < "$SANDBOX/incomplete-mirrors"
+fi
+shift
+for p in "\$@"; do printf '%s:\n  Installed: (none)\n  Candidate: 1.0\n' "\$p"; done
 STUB
 # dpkg logs what it was asked.
 cat > "$bin/dpkg" <<STUB
@@ -225,6 +251,46 @@ got="$(FLTH_APT_SOURCES="$SANDBOX/sources.list" bash -c '. "$1"; flth_apt_mirror
 check_eq "$got" "http://azure.archive.ubuntu.com/ubuntu/" "a one-line deb entry's mirror is read, past comments and options"
 got="$(bash -c '. "$1"; flth_apt_mirror' _ "$LIB")"
 check_eq "$got" "" "no sources file names no mirror, so nothing switches"
+
+# AN INDEX THAT DID NOT ALL DOWNLOAD IS NOT A FINISHED ONE (#218). apt-get update
+# exits 0 having ignored index files it could not fetch, and an install from those
+# lists then cannot find packages that are in main, on every retry, because they
+# reuse the same lists. So an update that says so is not done, and an install whose
+# packages have no candidate fetches the index again from the next mirror first.
+fresh_sources() {
+    printf 'Types: deb\nURIs: mirror+file:%s\nSuites: noble\nComponents: main\n\nTypes: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: noble-security\nComponents: main\n' \
+        "$SANDBOX/apt-mirrors.txt" > "$SANDBOX/incomplete.sources"
+}
+fresh_sources
+export FLTH_APT_SOURCES="$SANDBOX/incomplete.sources"
+export FLTH_APT_MIRRORS="http://mirror-two.example/ubuntu/" FLTH_APT_TIMEOUT=2
+printf 'mirror+file:%s\n' "$SANDBOX/apt-mirrors.txt" > "$SANDBOX/incomplete-mirrors"
+run_apt "the package index" update -qq
+check_eq "$rc" 0 "an update that left index files behind is tried again, and the next mirror's finishes"
+check_contains "$out" "apt-get update did not download every index" "it says the first one did not finish"
+check_contains "$(cat "$FLTH_APT_SOURCES")" "URIs: http://mirror-two.example/ubuntu/" "and the sources name the next mirror"
+check_eq "$(printf '%s\n' "$calls" | grep -c '^apt-get .* update' | tr -d ' ')" 2 "which the second update fetched from"
+fresh_sources
+run_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
+check_eq "$rc" 0 "an install whose packages have no candidate in the index succeeds from the next mirror"
+check_contains "$out" "has no candidate for qemu-system-x86" "saying which package the index did not know"
+check_contains "$calls" "apt-cache policy qemu-system-x86 qemu-utils" "which apt-cache policy was asked before the install"
+check_eq "$(printf '%s\n' "$calls" | grep -c '^apt-get .* update' | tr -d ' ')" 1 "the next mirror's index is fetched before the install"
+check_eq "$(printf '%s\n' "$calls" | grep -c '^apt-get .* install' | tr -d ' ')" 1 "and the install is run once, from there"
+fresh_sources
+rm -f "$SANDBOX/incomplete-mirrors"
+run_apt "Vagrant" install -y -qq "vagrant=2.4.9-*"
+check_contains "$calls" "apt-cache policy vagrant" "a pinned version is asked about by the package's name"
+check_eq "$(printf '%s\n' "$calls" | grep -c '^apt-get .* update' | tr -d ' ')" 0 "and a candidate for it needs no new index"
+printf 'mirror+file:%s\n' "$SANDBOX/apt-mirrors.txt" > "$SANDBOX/incomplete-mirrors"
+printf 'http://mirror-two.example/ubuntu/\n' >> "$SANDBOX/incomplete-mirrors"
+fresh_sources
+run_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
+check_eq "$([ "$rc" -ne 0 ] && echo failed)" failed "with every mirror's index incomplete, the install fails"
+check_contains "$out" "has no candidate for qemu-system-x86" "naming the package"
+rm -f "$SANDBOX/incomplete-mirrors"
+unset FLTH_APT_MIRRORS FLTH_APT_TIMEOUT
+export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
 
 # ci-setup-linux.sh calls apt-get only through the bounded call: the
 # package index and QEMU, then HashiCorp's index and Vagrant.
