@@ -41,6 +41,7 @@ if ! command -v ruby >/dev/null 2>&1; then
     failed=1
 else
     ruby -c vagrant/Vagrantfile || failed=1
+    ruby -c scripts/run-profile.rb || failed=1
 fi
 
 # EVERY test file, found rather than listed. This was a list of eight names,

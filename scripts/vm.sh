@@ -192,6 +192,7 @@ shared_kernel_explain() {
     echo "vm: $CFG_project_name's setup installed kernel $1, and this shared guest runs $2." >&2
     echo "    The shared guest does not restart for one consumer's setup, so its tests would run on $2." >&2
     echo "    Every consumer uses this guest: a setup that installs a kernel cannot be run on it (#207)." >&2
+    echo "    Select a run profile with [vm] profile or FLTH_PROFILE to prepare another kernel before suites join." >&2
 }
 
 # ONE UP AT A TIME PER MACHINE. A test process that runs its oracle tests
@@ -359,8 +360,13 @@ vm_watchdog_told() {
 }
 
 boot_vm() {
+    profile_prepare || return
     : > "$(unfinished_boot_marker)" || return
     boot_engine || return
+    if ! profile_verify_guest; then
+        vm_down
+        return 1
+    fi
     shared_prepare_guest || return
     shared_boot_identity > "$(shared_boot_record)" || return
     # A refusal is for the boot that holds the kernel it named.
@@ -456,7 +462,7 @@ vm_up() {
     rm -f "$FLTH_MACHINE_DIR/up.lock/owner"
     case "$-" in *m*) monitor=1 && set +m ;; esac
     if [ "$up_signalled" = 0 ]; then
-        perl -e "$UP_OWN_GROUP" "$BASH" "$SELF" up-boot "$PROVISION_MODE" "$VM_PARENT" 0<&0 6>&- &
+        perl -e "$UP_OWN_GROUP" "$BASH" "$SELF" up-boot "$PROVISION_MODE" "$VM_PARENT" "$FLTH_MACHINE_NAME" 0<&0 6>&- &
         up_child=$!
     fi
     exec 5<&-
@@ -500,7 +506,7 @@ vm_up() {
     return "$rc"
 }
 
-# The boot `up` starts (`up-boot <provision mode> <up's caller>`), in a process group
+# The boot `up` starts (`up-boot <provision mode> <up's caller> <machine>`), in a process group
 # of its own: what a signal to `up` is passed to. Descriptor 5 is the read end of
 # the up lock's owner FIFO, whose writer is `up`: when `up` is gone, however it
 # went, the watcher reads end-of-file and stops the boot.
@@ -710,9 +716,9 @@ boot_engine() {
         mkdir -p "$FLTH_MACHINE_DIR" || return
         started="$SECONDS"
         up_rc=0
-        engine_up || up_rc=$?
+        engine_up "$@" || up_rc=$?
         if [ "$up_rc" = 0 ]; then
-            watchdog_start
+            [ "${1:-}" = --persist ] || watchdog_start
             return 0
         fi
         if failure="$(engine_box_failure)"; then
@@ -1128,6 +1134,7 @@ shared_boot_record() { printf '%s/shared-boot\n' "$FLTH_MACHINE_DIR"; }
 
 shared_boot_identity() {
     flth_hash8 "$(cat "$FLTH_HARNESS/scripts/lib/guest-run.sh")"
+    [ -z "$FLTH_PROFILE_ID" ] || printf '%s\n' "$FLTH_PROFILE_ID"
 }
 
 refuse_other_boot() {
@@ -1300,11 +1307,13 @@ vm_destroy() {
         echo "vm: destroy did not leave the VM confirmed gone." >&2
         exit 1
     fi
+    rm -f "$FLTH_MACHINE_DIR/profile-ready" "$FLTH_MACHINE_DIR/profile-ready.new"
     up_lock_drop
 }
 
 vm_status() {
     local state
+    [ -z "$FLTH_PROFILE_ID" ] || echo "vm: run profile $FLTH_PROFILE_NAME (${FLTH_PROFILE_RELEASE:-box-default})"
     state="$(engine_state)"
     case "$state" in
         running)
@@ -1545,6 +1554,10 @@ vm.disk=$CFG_vm_disk
 vm.ssh_port=$CFG_vm_ssh_port
 vm.deadline_minutes=$CFG_vm_deadline_minutes
 vm.guest=$CFG_vm_guest
+vm.profile=${FLTH_PROFILE_NAME:-none}
+kernel.release=${FLTH_PROFILE_RELEASE:-box-default}
+kernel.modules=$FLTH_PROFILE_MODULES
+profile.fingerprint=${FLTH_PROFILE_ID:-none}
 share.dir=$CFG_share_dir
 share.host=$FLTH_SHARE_HOST
 share.guest=$FLTH_SHARE_GUEST
@@ -1586,6 +1599,9 @@ esac
 shift
 
 flth_load || exit 1
+if [ "$command" = up-boot ] && [ "${3:-}" != "$FLTH_MACHINE_NAME" ]; then
+    flth_die "run profile or base guest changed while taking the boot lock; retry with the selected profile."
+fi
 engine_prepare
 
 case "$command" in
@@ -1595,7 +1611,7 @@ case "$command" in
         shared_tell_room
         ;;
     up-boot)
-        [ $# -eq 2 ] || flth_die "usage: vm.sh up-boot <provision mode> <pid>"
+        [ $# -eq 3 ] || flth_die "usage: vm.sh up-boot <provision mode> <pid> <machine>"
         vm_up_boot "$1" "$2"
         ;;
     run)

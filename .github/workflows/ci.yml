@@ -50,7 +50,9 @@ jobs:
   # true, and ci-ok accepts their skip when, and only when, it is false.
   changes:
     name: changes (does this need the full pipeline?)
-    runs-on: ubuntu-latest
+    # These jobs need only the runner image's shell tools. Keep hosted
+    # capacity for the unit jobs' Ruby and the smoke jobs' privileged KVM setup.
+    runs-on: antimatter-vps-linux-x64
     outputs:
       code: ${{ steps.c.outputs.code }}
     steps:
@@ -177,7 +179,7 @@ jobs:
     name: ci-ok
     if: always()
     needs: [changes, unit, smoke-x86_64]
-    runs-on: ubuntu-latest
+    runs-on: antimatter-vps-linux-x64
     steps:
       - name: Every job ran and succeeded
         env:

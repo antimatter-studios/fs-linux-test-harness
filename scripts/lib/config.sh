@@ -84,6 +84,7 @@ flth_config_key_type() {
         vm.ssh_port)         echo integer ;;
         vm.deadline_minutes) echo integer ;;
         vm.guest)            echo string ;;
+        vm.profile)          echo string ;;
         share.dir)           echo string ;;
         setup.script)        echo string ;;
         test.command)        echo string ;;
@@ -118,6 +119,8 @@ flth_config_load() {
     # Which pinned guest boots: the Debian release, never a box name, so
     # every consumer naming one boots exactly the box the harness pins.
     CFG_vm_guest="debian-12"
+    # shellcheck disable=SC2034  # read by lib/profile.sh
+    CFG_vm_profile=""
     CFG_share_dir=".vm-share"
     CFG_setup_script=""
     # shellcheck disable=SC2034  # read by vm.sh

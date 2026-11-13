@@ -1,6 +1,6 @@
 # fs-linux-test-harness
 
-> Reusable Linux-VM test harness for filesystem driver projects. Provides the environment (one shared guest for every consumer, its lifecycle, shared directories, command execution); each driver repo supplies its own tests and installs its own tooling.
+> Reusable Linux-VM test harness for filesystem driver projects. Provides the environment (one shared guest per run profile, its lifecycle, shared directories, command execution); each driver repo supplies its own tests and installs its own tooling.
 
 [![CI](https://github.com/antimatter-studios/fs-linux-test-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/antimatter-studios/fs-linux-test-harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -409,6 +409,7 @@ chose.
 | *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
 | `[vm] memory`, `[vm] cpus`, `[vm] disk`, `[vm] ssh_port`, `[vm] deadline_minutes` | | | **Read and validated, and not used.** They described the VM of its own a consumer had before the shared guest was the only one. The shared guest's size and deadline are the host's: `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` and `FLTH_SHARED_DEADLINE` (see [Environment](#environment)). They may be removed from a consumer's config. |
 | `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. Each release is a shared guest of its own (`machines/shared-<guest>/`). A consumer needing both runs a second config with its own `[project] name` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
+| `[vm] profile` | string | none | A named run environment from `run-profiles/<name>.toml`. The profile selects the base guest, pinned preparation script and optional exact kernel release and modules. Suites with identical resolved profiles share one VM. `FLTH_PROFILE` overrides this key for an individual suite. See [Run profiles](#run-profiles). |
 
 Paths may contain only letters, digits, `.`, `_`, `-` and `/`, must be
 relative, and must not leave the repository.
@@ -466,6 +467,8 @@ relative, and must not leave the repository.
 | `FLTH_WATCHDOG_LOW_PERCENT` | `5` | Memory or disk left, as a percentage, below which it warns. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
 | `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
+| `FLTH_PROFILE` | `[vm] profile`, or none | Select a named run profile for this suite and its whole session. |
+| `FLTH_PROFILE_DIR` | `<consumer>/run-profiles` | Host directory containing profile manifests and their pinned preparation scripts; use one catalog across repositories if desired. |
 | `FLTH_FIRMWARE_CODE`, `FLTH_FIRMWARE_VARS` | `/usr/share/AAVMF/AAVMF_{CODE,VARS}.fd` | UEFI firmware for arm64 guests on a Linux host. |
 
 ## The VM
@@ -738,9 +741,109 @@ The other answers are a guest that powered itself off, a QEMU that ended with
 no power-off on the console, a guest that does not answer, and one that does,
 where ssh cannot tell a lost connection from a command that exited 255 itself.
 
+## Run profiles
+
+A suite can declare the prepared environment it needs without changing another
+suite's VM. A run profile can isolate tools, system settings or a kernel.
+Put `profile = "kernel-oracle"` in its config's `[vm]` section, or
+select a profile for a tier with an environment variable:
+
+```sh
+FLTH_PROFILE=kernel-oracle chore test:vm
+FLTH_PROFILE=another-kernel chore test:vm
+```
+
+Each selection applies to the whole session, including its `up`, `run`, `exec`,
+`down` and `destroy` calls. Keep that environment for the session's lifetime.
+`vm.sh config` reports the selected profile, release, required modules,
+fingerprint and machine path; `status` also names the profile.
+
+Create `run-profiles/kernel-oracle.toml` beside the consumer config:
+
+```toml
+[profile]
+guest = "debian-12"
+modules = "loop"
+setup = "prepare.sh"
+setup_sha256 = "<64 lowercase hex digits from the preparation script's SHA-256>"
+
+[x86_64]
+release = "6.12.57+deb12-amd64"
+
+[aarch64]
+release = "6.12.57+deb12-arm64"
+```
+
+These releases illustrate the format: choose releases available from your
+pinned package source or kernel artifact. The manifest uses the same strict
+quoted-string TOML subset as the consumer config. `[profile]` is required;
+`[x86_64]` and `[aarch64]` override its fields for the host architecture. A common
+`release` is also allowed. Omit it from every section to retain the pinned box's
+kernel; preparation changes alone still allocate a separate VM. Once any section
+pins a release, every supported host architecture must resolve an exact release.
+Unknown or duplicate sections and keys, invalid module names and missing pinned
+releases fail before an engine is touched. `modules` is
+a whitespace-separated list of names, not paths; ordering and duplicates do not
+change the identity. The profile's `guest` takes precedence over `[vm] guest.
+The existing macOS restriction still applies: its base guest must be Debian 12.
+
+The preparation script lives inside the manifest's directory and runs as root
+before any consumer joins. It receives `FLTH_GUEST=1`, `FLTH_KERNEL_RELEASE` and
+`FLTH_KERNEL_ARCH` (`x86_64` or `aarch64`). `FLTH_KERNEL_RELEASE` is empty when
+the profile keeps the box's kernel. When a release is pinned, install that release's
+kernel, initrd and matching modules at `/boot/vmlinuz-<release>`,
+`/boot/initrd.img-<release>` and `/lib/modules/<release>`. For example, after
+configuring a pinned package source, a Debian preparation can install
+`"linux-image-$FLTH_KERNEL_RELEASE"`. Keep package or artifact versions and
+download checksums in the script: its checksum pins the script's bytes, not
+whatever an unpinned download might return. Compute `setup_sha256` with
+`sha256sum prepare.sh` on Linux or `shasum -a 256 prepare.sh` on macOS. Scripts
+are limited to 64 KiB. Omit both `setup` and `setup_sha256` when the pinned box
+already contains the environment required by the profile. For a preparation-only
+profile, the complete manifest can be:
+
+```toml
+[profile]
+setup = "prepare-tools.sh"
+setup_sha256 = "<64 lowercase hex digits from prepare-tools.sh>"
+```
+
+The first suite takes the profile's boot lock and prepares a persistent disk.
+For an explicit release, the harness checks the installed kernel, initrd, module
+directory and module dependencies and copies the exact boot files and root
+command line to the host. A preparation-only profile keeps the box's boot files
+and records its running release instead. Both paths flush the guest and confirm
+it stopped. Only then is preparation recorded as
+ready. A failed or interrupted preparation is rebuilt on retry. Later boots
+check the cached boot files' integrity, boot the selected kernel with matching
+initrd and disk, check `uname -r`, and load every required module before admitting
+consumers. Corrupt cached files fail with instructions to destroy that selected
+profile and prepare it again.
+
+Every test boot remains disposable. Each consumer's ordinary `[setup]` still
+runs once per boot and its writes disappear when that boot ends. Put differences
+that require separate VMs in the profile preparation; use consumer setup for tools
+that can coexist in one guest. The existing refusal of a consumer setup that installs another
+kernel still applies.
+
+Profiles share by resolved content: architecture, base guest, exact release,
+required modules and preparation bytes. Identical profiles in different
+repositories or under different aliases share a VM; different contents get
+different machines (`machines/shared-<guest>-p<fingerprint-prefix>/`). A changed
+profile never replaces an active guest. Its old guest finishes its sessions and
+idle deadline independently; use the old manifest to address it explicitly.
+Each profile has its own boot lock, suite list, lifecycle and hotplug devices.
+The existing host memory admission check applies before every preparation or
+runtime boot. Profiles do not reserve a machine-wide slot.
+
+Set `FLTH_PROFILE_DIR` to a common catalog directory when several repositories
+use the same definitions. Without a profile, the existing pinned guest and
+`machines/shared-<guest>/` identity are unchanged.
+
 ## One guest for every consumer
 
-Every consumer on a host uses **one guest**, and nobody has a VM of their own.
+Consumers using the same run profile share **one guest**. Without a profile,
+consumers selecting the same base guest keep sharing its default VM.
 Nothing has to be set for it:
 
 ```sh
@@ -790,8 +893,9 @@ first joins a boot, one at a time, and tools install alongside each other. Nothi
 merges the scripts, and two versions of one tool are not provided for. A setup that
 installs a kernel the guest is not running fails that consumer's join, naming both
 kernels, because the shared guest does not restart for one consumer (#157, #207).
-Setup stays with the boot: the disk is never provisioned, so after the guest stops
-each consumer's setup runs again when it joins.
+Setup stays with the boot: after the guest stops each consumer's setup runs again
+when it joins. A run profile's preparation is the persistent base beneath
+these disposable boots.
 
 **The host's memory is checked before every boot attempt.** A guest asks for
 gigabytes, and a full machine does not fail cleanly: it kills background work

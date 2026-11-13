@@ -170,9 +170,23 @@ overlay_mib() {
 }
 
 CONTENDER="$(mktemp -d)"
+profile_active=0
+profile_pids=""
+profile_vm() {
+    local consumer="$1"; shift
+    FLTH_CONFIG="$CONTENDER/profile-$consumer/fs-linux-test-harness.toml" \
+        FLTH_PROFILE_DIR="$CONTENDER/run-profiles" "$VM" "$@"
+}
 cleanup() {
     step "cleanup: destroy the smoke VM"
     "$VM" destroy >/dev/null 2>&1 || "$VM" destroy
+    for profile_pid in $profile_pids; do
+        kill -TERM "$profile_pid" 2>/dev/null || true
+        wait "$profile_pid" 2>/dev/null || true
+    done
+    if [ "$profile_active" != 0 ]; then
+        for profile_consumer in one two; do profile_vm "$profile_consumer" destroy >/dev/null 2>&1 || true; done
+    fi
     rm -rf "$CONTENDER"
 }
 # The second consumer, whose setup installs a kernel (#157).
@@ -755,12 +769,19 @@ running_kernel="$(ssh -F "$(kernel_vm config | sed -n 's/^machine=//p')/ssh-conf
 check_true '[ -n "$running_kernel" ]' "the guest answers uname -r" "the guest did not answer uname -r"
 check_contains "$kernel_out" "this shared guest runs $running_kernel" "naming the kernel the guest runs"
 check_contains "$kernel_out" "setup installed kernel " "and the one the setup installed"
+profile_release="$(printf '%s\n' "$kernel_out" | sed -n 's/.*setup installed kernel \([^, ]*\),.*/\1/p' | head -n 1)"
 kernel_out="$(kernel_vm exec true 2>&1)"
 rc=$?
 check_true '[ "$rc" -ne 0 ]' "and a later call of that consumer's is refused too" "a later call ran on the wrong kernel"
 check_contains "$kernel_out" "setup installed kernel " "saying why"
 kernel_vm destroy
 check_eq "$?" 0 "that guest is destroyed"
+
+# shellcheck source=tests/smoke-profiles/guest.sh
+. "$REPO/tests/smoke-profiles/guest.sh"
+
+# shellcheck source=tests/smoke-profiles/concurrent.sh
+. "$REPO/tests/smoke-profiles/concurrent.sh"
 
 # shellcheck source=tests/smoke-shared/guest.sh
 . "$REPO/tests/smoke-shared/guest.sh"
