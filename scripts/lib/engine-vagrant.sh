@@ -305,7 +305,7 @@ engine_kernel_known() {
 engine_forget_kernel() {
     local dir
     dir="$(engine_vagrant_kernel_dir)"
-    rm -f "$dir/release" "$dir/vmlinuz" "$dir/initrd.img" "$dir/vmlinuz.new" "$dir/initrd.img.new"
+    rm -f "$dir/guest-release" "$dir/release" "$dir/vmlinuz" "$dir/initrd.img" "$dir/vmlinuz.new" "$dir/initrd.img.new" "$dir/cmdline" "$dir/cmdline.new"
     rmdir "$dir" 2>/dev/null || true
 }
 
@@ -398,7 +398,7 @@ engine_box_failure() {
 
 # shellcheck disable=SC2120
 engine_up() {
-    local tmp disposable=1 port dir kernel="" initrd=""
+    local tmp disposable=1 port dir kernel="" initrd="" cmdline=""
     [ "${1:-}" = --persist ] && disposable=0
     # What the last attempt said is not what this one says, if this one fails
     # before it gets to Vagrant.
@@ -407,6 +407,7 @@ engine_up() {
     if [ -s "$dir/release" ]; then
         kernel="$dir/vmlinuz"
         initrd="$dir/initrd.img"
+        [ ! -s "$dir/cmdline" ] || cmdline="$(cat "$dir/cmdline")"
     fi
     tmp="$(engine_vagrant_tmpdir)" || return 1
     engine_vagrant_cache_disk || return 1
@@ -426,14 +427,18 @@ engine_up() {
     # on. The shared machine has no boot whose writes are kept, so the key went with
     # the overlay and every later boot failed with `Authentication failure` until its
     # timeout (measured on an Apple Silicon host, #153). Forgetting the machine's copy
-    # makes each boot a first boot to Vagrant.
-    rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
+    # makes each boot a first boot to Vagrant. A profile's preparation DOES keep
+    # that guest key, so its matching host key survives every later boot too.
+    if [ -z "${FLTH_PROFILE_ID:-}" ]; then
+        rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
+    fi
     # A new guest has no device attached, whatever an earlier one left on record.
     engine_vagrant_forget_attached
     # QEMU starts the log afresh, but a boot that fails before QEMU starts
     # must not leave the last boot's console to be shown as its own.
     rm -f "$(engine_console_log)"
     FLTH_VM_BOOT_KERNEL="$kernel" FLTH_VM_BOOT_INITRD="$initrd" \
+        FLTH_VM_BOOT_CMDLINE="$cmdline" \
         FLTH_VM_DISPOSABLE="$disposable" TMPDIR="$tmp" engine_vagrant_up || return
     engine_ssh_config >/dev/null
 }
@@ -491,6 +496,8 @@ engine_destroy() {
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     engine_vagrant destroy -f >&2 || return
+    # The disk that authorized this key has gone; a fresh box starts with its own.
+    rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
     engine_vagrant_forget_attached
     rm -f "$(engine_vagrant_cache_path)"
     engine_forget_kernel

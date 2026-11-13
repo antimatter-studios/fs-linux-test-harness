@@ -12,6 +12,8 @@ FLTH_HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 . "$FLTH_HARNESS/scripts/lib/config.sh"
 # shellcheck source=scripts/lib/engine.sh
 . "$FLTH_HARNESS/scripts/lib/engine.sh"
+# shellcheck source=scripts/lib/profile.sh
+. "$FLTH_HARNESS/scripts/lib/profile.sh"
 
 # Machines, their disks and the firmware links are CACHE: regenerable,
 # large, and nothing a repository should carry. Sockets and Vagrant's
@@ -34,22 +36,23 @@ flth_die() {
 #                     marker, setup stamps
 #   FLTH_HOLD         the hold marker
 #
-# The machine directory is keyed by the guest release, so every consumer
-# and every checkout of one shares a machine (flth_shared_load).
+# The machine directory is keyed by the resolved run profile, or by the
+# guest release for consumers using its default kernel (flth_shared_load).
 # shellcheck disable=SC2034  # read by the scripts that source this
 flth_load() {
     FLTH_CONFIG="$(flth_find_config)" || return 1
     export FLTH_CONFIG
     flth_config_load "$FLTH_CONFIG" || return 1
+    flth_profile_load || return 1
     FLTH_SHARE_HOST="$FLTH_ROOT/$CFG_share_dir"
     flth_shared_load || return 1
     FLTH_MACHINE_DIR="$FLTH_CACHE_DIR/machines/$FLTH_MACHINE_NAME"
     FLTH_HOLD="$FLTH_MACHINE_DIR/keep-running"
 }
 
-# THE SHARED GUEST (#153, #220, #222). Every consumer's suites use one guest, the
-# one every other consumer on the host uses, and nobody has a VM of their own. The
-# machine is therefore nobody's: it is named for its guest release, and what a
+# THE SHARED GUEST (#153, #220, #222). Suites with the same run environment use
+# one guest. The machine is therefore nobody's: it is named for its profile (or
+# its default guest release), and what a
 # consumer's [vm] section says about memory, CPUs, disk, the SSH port and the
 # deadline is not read. A host with other needs says so here.
 FLTH_SHARED_MEMORY_DEFAULT=8G
@@ -68,6 +71,7 @@ flth_shared_load() {
     FLTH_SHARED_CACHE="$CFG_cache_size"
     CFG_cache_size=""
     FLTH_MACHINE_NAME="shared-$CFG_vm_guest"
+    [ -z "$FLTH_PROFILE_ID" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-p${FLTH_PROFILE_ID:0:20}"
     CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
     CFG_vm_cpus="${FLTH_SHARED_CPUS:-$FLTH_SHARED_CPUS_DEFAULT}"
     CFG_vm_disk="${FLTH_SHARED_DISK:-$FLTH_SHARED_DISK_DEFAULT}"

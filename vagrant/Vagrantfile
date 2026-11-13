@@ -171,8 +171,10 @@ cache_args =
 # disk's newest kernel out when a provisioning boot ends
 # (scripts/lib/engine-vagrant.sh, engine_keep_kernel) and names it here. The
 # provider puts the box's arguments first when it merges the two, and QEMU
-# takes the last -kernel and -initrd it is given. The box's -append stands.
-# Optional, like the cache: empty until a provisioning boot leaves a kernel.
+# takes the last -kernel and -initrd it is given. A run profile also captures
+# the root command line and supplies -append; this enables exact direct boots on
+# Linux too. Without it a Linux guest keeps choosing its kernel through GRUB.
+# Optional, like the cache: empty until a preparation boot leaves a kernel.
 boot_files = %w[FLTH_VM_BOOT_KERNEL FLTH_VM_BOOT_INITRD].map do |name|
   value = ENV[name].to_s
   unless value.empty? || value =~ %r{\A/[A-Za-z0-9._/ -]*\z}
@@ -182,6 +184,12 @@ boot_files = %w[FLTH_VM_BOOT_KERNEL FLTH_VM_BOOT_INITRD].map do |name|
 end
 boot_kernel, boot_initrd = boot_files
 kernel_args = boot_kernel.empty? ? [] : ["-kernel", boot_kernel, "-initrd", boot_initrd]
+boot_cmdline = ENV["FLTH_VM_BOOT_CMDLINE"].to_s
+unless boot_cmdline.empty?
+  raise "FLTH_VM_BOOT_CMDLINE needs a kernel and initrd" if boot_kernel.empty? || boot_initrd.empty?
+  raise "FLTH_VM_BOOT_CMDLINE must be one printable line" unless boot_cmdline =~ /\A[ -~]+\z/
+  kernel_args += ["-append", boot_cmdline]
+end
 
 # A DISPLAY DEVICE ON x86_64 (#70). The provider passes `-vga none`, and
 # the Debian 13 box's GRUB then never hands over to its kernel: it prints
@@ -262,6 +270,14 @@ Vagrant.configure("2") do |config|
   # guest's console (console_args, above), not just the timeout.
   config.vm.boot_timeout = 600
 
+  # The provider forwards SSH itself, using qe.ssh_port below. Its duplicate
+  # high-level network record must not run Vagrant's connection-based collision
+  # probe: some hosts accept connections even to unbound ports, which exhausts
+  # the correction range and replaces our bind-selected port with an occupied
+  # one. Disabled records bypass that probe; the QEMU provider still uses the
+  # SSH record's host port. A genuine bind race is retried by the harness.
+  config.vm.network :forwarded_port, guest: 22, host: Integer(ssh_port), id: "ssh", disabled: true
+
   config.vm.provider "qemu" do |qe|
     qe.memory = memory
     qe.smp = "cpus=#{cpus},sockets=1,cores=#{cpus},threads=1"
@@ -312,7 +328,8 @@ Vagrant.configure("2") do |config|
     end
 
     if host != :macos_arm64
-      qe.extra_qemu_args = console_args + cache_args + display_args + hotplug_args
+      qe.extra_qemu_args = console_args + cache_args + display_args + hotplug_args +
+                           (boot_cmdline.empty? ? [] : kernel_args)
     end
   end
 

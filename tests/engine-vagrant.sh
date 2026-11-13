@@ -24,6 +24,7 @@ printf '#!/bin/sh\nexit 0\n' > "$BIN/sleep"
 cat > "$BIN/vagrant" <<'STUB'
 #!/usr/bin/env bash
 echo "vagrant $* cwd=$PWD dot=$VAGRANT_DOTFILE_PATH disposable=${FLTH_VM_DISPOSABLE:-unset} port=${FLTH_VM_SSH_PORT:-unset} tmpdir=${TMPDIR:-}" >> "$STUBDIR/log"
+[ "$1" != up ] || echo "boot kernel=${FLTH_VM_BOOT_KERNEL:-} initrd=${FLTH_VM_BOOT_INITRD:-} cmdline=${FLTH_VM_BOOT_CMDLINE:-}" >> "$STUBDIR/log"
 n="$(cat "$STUBDIR/locked" 2>/dev/null || echo 0)"
 if [ "$n" -gt 0 ]; then
     echo $((n - 1)) > "$STUBDIR/locked"
@@ -237,6 +238,15 @@ check_eq "$([ -f "$key" ] && echo kept)" "" "a boot forgets Vagrant's key"
 check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=0" "up --persist boots a machine whose writes reach its disk"
 check_eq "${FLTH_VM_DISPOSABLE:-unset}" 1 "and only that boot: the next Vagrant call is back to disposable"
 
+mkdir -p "$(dirname "$key")"
+printf profile-private-key > "$key"
+FLTH_PROFILE_ID=profile-fingerprint engine_up --persist 2>/dev/null
+check_eq "$(cat "$key" 2>/dev/null)" profile-private-key "a profile preparation retry keeps the key its persistent disk authorized"
+FLTH_PROFILE_ID=profile-fingerprint engine_up 2>/dev/null
+check_eq "$(cat "$key" 2>/dev/null)" profile-private-key "a disposable profile boot keeps that same matching SSH key"
+engine_destroy 2>/dev/null
+check_eq "$([ -f "$key" ] && echo stale)" '' "destroy forgets the key when its prepared disk goes"
+
 # --- the serial console (#61) -----------------------------------------------
 
 # The Vagrantfile logs the guest's console here; a failed boot prints it.
@@ -321,5 +331,18 @@ got="$(grep '^vagrant up' "$STUBDIR/log" | sed -n 's/.* port=\([0-9a-z]*\).*/\1/
 check_eq "$(case "$got" in ('' | *[!0-9]*) echo "no port: '$got'" ;; ("$held") echo same ;; (*) echo moved ;; esac)" moved "a configured port another socket holds is not handed to the boot ($held)"
 check_eq "$( [ -n "$got" ] && [ "$got" != unset ] && bindable "$got" && echo free || echo "not free: $got")" free "the boot gets a port nothing holds"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+
+# Profiles export exact boot assets on every host, including the captured root.
+mkdir -p "$FLTH_MACHINE_DIR/boot"
+printf '6.12-profile\n' > "$FLTH_MACHINE_DIR/boot/release"
+printf kernel > "$FLTH_MACHINE_DIR/boot/vmlinuz"
+printf initrd > "$FLTH_MACHINE_DIR/boot/initrd.img"
+printf 'root=UUID=profile-root ro console=ttyS0\n' > "$FLTH_MACHINE_DIR/boot/cmdline"
+: > "$STUBDIR/log"
+engine_up 2>/dev/null
+check_contains "$(cat "$STUBDIR/log")" "kernel=$FLTH_MACHINE_DIR/boot/vmlinuz initrd=$FLTH_MACHINE_DIR/boot/initrd.img cmdline=root=UUID=profile-root ro console=ttyS0" \
+    "the engine passes exact profile boot assets and command line to Vagrant"
+engine_forget_kernel
+check_eq "$([ -e "$FLTH_MACHINE_DIR/boot/cmdline" ] && echo stale)" '' "forgetting a prepared kernel also forgets its root command line"
 
 finish engine-vagrant

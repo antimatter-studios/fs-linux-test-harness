@@ -220,6 +220,10 @@ for h in "linux-gnu x86_64 1 vagrant-qemu" "linux-gnu aarch64 1 vagrant-qemu" \
     check_contains "$args" '"-set","chardev.ser0.logfile='"$FLTH_VM_CONSOLE_LOG"'"' \
         "$1 $2: the console is logged to FLTH_VM_CONSOLE_LOG"
     check_contains "$args" '"-set","chardev.ser0.logappend=off"' "  afresh on every boot"
+    check_contains "$(field config/vm.network)" '"id":"ssh","disabled":true' \
+        "$1 $2: the duplicate high-level SSH forward bypasses connection-based collision probing"
+    check_contains "$(field config/vm.network)" '"host":50122' \
+        "  the provider retains the port selected by the harness's bind probe"
 done
 
 # --- the declared cache (#39) -----------------------------------------------
@@ -270,7 +274,20 @@ for flth_host in "linux-gnu x86_64 1 vagrant-qemu" "linux-gnu aarch64 1 vagrant-
     # shellcheck disable=SC2086  # four words, one for each argument
     FLTH_VM_BOOT_KERNEL="$boot_kernel" FLTH_VM_BOOT_INITRD="$boot_initrd" evaluate $flth_host
     check_lacks "$(field config/$P.extra_qemu_args)" "-kernel" "${flth_host% 1 *}: a Linux guest chooses its own kernel, whatever is exported"
+    # A profile supplies the root command line captured from its preparation boot.
+    # shellcheck disable=SC2086
+    FLTH_VM_BOOT_KERNEL="$boot_kernel" FLTH_VM_BOOT_INITRD="$boot_initrd" \
+        FLTH_VM_BOOT_CMDLINE='root=UUID=profile-root ro console=ttyS0' evaluate $flth_host
+    check_contains "$(field config/$P.extra_qemu_args)" "\"-kernel\",\"$boot_kernel\",\"-initrd\",\"$boot_initrd\"" \
+        "${flth_host% 1 *}: a profile boots its exact exported kernel and initrd"
+    check_contains "$(field config/$P.extra_qemu_args)" '"-append","root=UUID=profile-root ro console=ttyS0"' \
+        "${flth_host% 1 *}: with the prepared disk's root and console"
 done
+FLTH_VM_BOOT_CMDLINE='root=/dev/vda1' evaluate linux-gnu x86_64 1 vagrant-qemu
+check_contains "$(field error)" 'needs a kernel and initrd' "a command line alone cannot redirect a stock boot"
+FLTH_VM_BOOT_KERNEL="$boot_kernel" FLTH_VM_BOOT_INITRD="$boot_initrd" \
+    FLTH_VM_BOOT_CMDLINE=$'root=UUID=x\n-drive bad' evaluate linux-gnu x86_64 1 vagrant-qemu
+check_contains "$(field error)" 'one printable line' "a multiline profile command line is refused"
 refuse_boot_file() {
     # refuse_boot_file <var> <value>
     json=""

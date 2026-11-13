@@ -185,6 +185,7 @@ stub_guest_paths() {
             -e "s|/run/fs-linux-test-harness-runs|$STUB/guest-runs|g" \
             -e "s|/proc/|$STUB/guest-proc/|g" \
             -e "s|/boot/|$STUB/guest-boot/|g" \
+            -e "s|/lib/modules/|$STUB/guest-modules/|g" \
             -e "s|/etc/ssh/|$STUB/guest-etc-ssh/|g" \
             -e "s|/repo|$STUB/guest-repo|g" \
             -e "s|/cache\\([/ ']\\)|$STUB/guest-cache\\1|g" -e "s|/cache\$|$STUB/guest-cache|"
