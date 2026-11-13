@@ -3,10 +3,10 @@
 # missing-chore.sh — a test that needs chore, run where there is none, fails
 # naming what installs it.
 #
-# The reaper tests drive a real `chore`. A guest has none unless a consumer's
-# setup installs it, and they failed there with "chore: command not found" and
-# a check about a status, which names nothing to install (#182). A test that
-# cannot run fails, and says what would let it.
+# Some tests drive a real `chore`. A guest has none unless a consumer's setup
+# installs it, and the reaper tests that did failed there with "chore: command
+# not found" and a check about a status, which names nothing to install (#182).
+# A test that cannot run fails, and says what would let it.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
@@ -39,14 +39,13 @@ check_contains "$(PATH="$bare" command -v bash)" "bash" "and still has everythin
 # word and the run's last line rather than the whole run three times.
 says() { case "$out" in *"$1"*) echo yes ;; *) echo no ;; esac; }
 
-for t in reap-owner reap-lifecycle; do
-    out="$(PATH="$bare" bash "$REPO/tests/$t.sh" 2>&1)"
-    rc=$?
-    last="$(printf '%s' "$out" | tail -n 1)"
-    check_eq "$([ "$rc" -ne 0 ] && echo failed)" failed "tests/$t.sh fails without chore ($last)"
-    check_eq "$(says 'chore is required')" yes "tests/$t.sh says chore is what it lacks"
-    check_eq "$(says '.github/actions/install-chore')" yes "tests/$t.sh names what installs chore"
-    check_eq "$(says 'command not found')" no "tests/$t.sh does not run on into a command it does not have"
-done
+t=shared-worktrees
+out="$(PATH="$bare" bash "$REPO/tests/$t.sh" 2>&1)"
+rc=$?
+last="$(printf '%s' "$out" | tail -n 1)"
+check_eq "$([ "$rc" -ne 0 ] && echo failed)" failed "tests/$t.sh fails without chore ($last)"
+check_eq "$(says 'chore is required')" yes "tests/$t.sh says chore is what it lacks"
+check_eq "$(says '.github/actions/install-chore')" yes "tests/$t.sh names what installs chore"
+check_eq "$(says 'command not found')" no "tests/$t.sh does not run on into a command it does not have"
 
 finish missing-chore

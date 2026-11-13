@@ -136,7 +136,7 @@ rc=0
 err="$(cat "$SANDBOX/err")"
 check_eq "$rc" 255 "guest-test keeps the status"
 check_contains "$err" "what stopped it: QEMU paused the guest" "and reports what stopped the guest"
-check_contains "$(stub_calls)" "down" "and still tears the VM down afterwards"
+check_lacks "$(stub_calls)" "down" "and leaves the shared guest to the suites still using it"
 
 # A setup script is a call into the guest too, and it fails in its own words.
 stub_state absent

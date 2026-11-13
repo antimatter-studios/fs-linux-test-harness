@@ -22,14 +22,23 @@ export PATH="$PROCESS_STUB/bin:$PATH"
 . "$REPO/scripts/lib/common.sh"
 
 identity="$SANDBOX/machine.with[characters]/vagrant"
-printf '101\n202\n' > "$PROCESS_STUB/pids"
+# Candidates that are there: a ps that cannot read processes that exist is an
+# unreadable table, while one whose candidates have all gone is a QEMU that exited
+# (#205, tests/engine-vagrant.sh).
+/bin/sleep 300 >/dev/null 2>&1 &
+first=$!
+/bin/sleep 300 >/dev/null 2>&1 &
+second=$!
+# shellcheck disable=SC2064  # expand now: the pids are fixed
+trap "kill -KILL $first $second 2>/dev/null; rm -rf '$SANDBOX'" EXIT
+printf '%s\n%s\n' "$first" "$second" > "$PROCESS_STUB/pids"
 printf '0\n' > "$PROCESS_STUB/pgrep-status"
 printf '0\n' > "$PROCESS_STUB/ps-status"
 printf '/opt/bin/qemu-system-aarch64 -drive file=%s/disk.img\n' "$identity" > "$PROCESS_STUB/args"
 status=0
 engine_alive "$identity" || status=$?
 check_eq "$status" 0 "a QEMU candidate naming this machine is alive"
-check_eq "$(cat "$PROCESS_STUB/ps-log")" '-p 101,202 -o args=' \
+check_eq "$(cat "$PROCESS_STUB/ps-log")" "-p $first,$second -o args=" \
     "the per-call path reads only QEMU candidates, not every process's arguments"
 check_eq "$(cat "$PROCESS_STUB/pgrep-log" 2>/dev/null)" '-x qemu-system-.*' \
     "candidate discovery matches executable names, including truncated names"

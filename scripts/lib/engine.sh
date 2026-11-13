@@ -3,17 +3,17 @@
 # lib/engine.sh — the seam between the harness and the thing that runs
 # the VM.
 #
-# Everything the harness decides — the slot, the hold, the reaper, the
-# setup stamp, teardown confirmation — is written against the functions
+# Everything the harness decides — the hold, the reaper, the list of
+# suites, the setup stamp, stop confirmation — is written against the functions
 # below and nothing else. Vagrant is the only engine today; replacing it
 # means writing one file that defines these, and changing the line at
 # the bottom.
 #
 #   engine_prepare             export whatever the engine reads; call
 #                              after flth_load, before anything else
-#   engine_identity            print a path unique to this machine. The
-#                              slot records it, and a running VM's
-#                              process names it on its command line.
+#   engine_identity            print a path unique to this machine. A
+#                              running VM's process names it on its
+#                              command line.
 #   engine_boot_identity       print the running VM process's PID and start
 #                              time, stable across callers' locales and
 #                              timezones. Exit 1 when absent, 2 when the
@@ -24,8 +24,8 @@
 #                                absent    it does not exist
 #                                unknown   the state could NOT be read
 #                              `unknown` is never treated as stopped:
-#                              a slot released on an unread state is how
-#                              two VMs end up running at once.
+#                              a guest taken for stopped on an unread
+#                              state is how two VMs end up running at once.
 #   engine_up [--persist]      boot (creating if needed); non-zero on
 #                              failure. Engine chatter goes to stderr.
 #                              The boot is DISPOSABLE: everything it
@@ -62,6 +62,16 @@
 #                              that for this disk, or none needs to
 #   engine_forget_kernel       drop what engine_keep_kernel kept, when
 #                              the disk it came from is gone
+#   engine_attach_tree <run> <dir>
+#                              attach a host directory to the running guest
+#                              as the run's device, tagged with the run id,
+#                              served by a virtiofsd of its own (#222)
+#   engine_tree_attached <run> 0 attached, 1 not, 3 attached with its
+#                              virtiofsd gone
+#   engine_tree_slot <run>     the slot its device is on
+#   engine_detach_tree <run>   remove the device, then stop its daemon; the
+#                              guest has let go of the mount already
+#   engine_attached_runs       the runs with a device, one a line
 #   engine_run <script>        run a bash script as root in the guest;
 #                              exit with the script's status. stdout is
 #                              the script's stdout.

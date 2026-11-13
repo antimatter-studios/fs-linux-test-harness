@@ -124,7 +124,8 @@ group "QEMU"
 # printing nothing (#77). The attempt after a stall uses another Ubuntu
 # mirror, since a stall can outlast every fresh attempt on one (#200).
 flth_apt "the package index" update -qq
-flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
+# virtiofsd serves each run's tree to the guest (#222).
+flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils virtiofsd
 qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
 endgroup
 

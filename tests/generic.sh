@@ -42,10 +42,12 @@ stamp="$(grep -o '/var/lib/fs-linux-test-harness' "$REPO/scripts/vm.sh" | head -
 check_eq "$(grep -c "$stamp" "$REPO/tests/stubs/engine.sh" | tr -d ' ')" 1 "the stub engine redirects the guest setup stamp vm.sh writes"
 
 share_guest="$(sed -n 's/^FLTH_SHARE_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
-check_eq "$(grep -c "share_guest = \"$share_guest\"" "$REPO/vagrant/Vagrantfile" | tr -d ' ')" 1 "the Vagrantfile mounts the share where vm.sh says it is"
+check_eq "$(grep -c "mount --bind \"/repo/\$share\" $share_guest\$" "$REPO/scripts/lib/guest-run.sh" | tr -d ' ')" 1 \
+    "a run mounts its share where vm.sh says it is"
 
 repo_guest="$(sed -n 's/^FLTH_REPO_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
-check_eq "$(grep -c "repo_guest = \"$repo_guest\"" "$REPO/vagrant/Vagrantfile" | tr -d ' ')" 1 "and mounts the consumer repository where guest-test says it is"
+check_eq "$(grep -c "mount -t virtiofs \"\$tag\" $repo_guest 2" "$REPO/scripts/lib/guest-run.sh" | tr -d ' ')" 1 \
+    "and mounts its tree where guest-test says it is"
 check_eq "$(grep -c "s|$repo_guest|" "$REPO/tests/stubs/engine.sh" | tr -d ' ')" 1 "and the stub engine redirects that mount too"
 
 cache_guest="$(sed -n 's/^FLTH_CACHE_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"

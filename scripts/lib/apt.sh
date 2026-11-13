@@ -26,7 +26,13 @@
 #     hours, so after a stall the next attempt points the Ubuntu mirror in
 #     FLTH_APT_SOURCES at the next of FLTH_APT_MIRRORS, fetches the package
 #     index from it, and tries again there. Security updates keep their own
-#     host. A stall on every attempt names each mirror it tried, in order.
+#     host. A stall on every attempt names each mirror it tried, in order;
+#   - takes an index that did not all download for one that is not done (#218).
+#     apt-get update exits 0 having ignored index files it could not fetch, and an
+#     install from those lists finds none of the packages it was asked for, on
+#     every retry, because each reuses them. So an update that says so is treated
+#     as a stall, and an install first asks apt-cache for a candidate for each
+#     package: one with none fetches the next mirror's index before it installs.
 #
 # Environment:
 #   FLTH_APT_SOURCES   the sources files to read and rewrite (default: the
@@ -113,9 +119,33 @@ flth_apt_switch_mirror() {
     rm -f "$tmp"
 }
 
+# The packages an install names that the index has no candidate for, space-separated.
+flth_apt_missing() {
+    local pkg policy missing=""
+    local -a pkgs=()
+    shift
+    # A version or release pinned to a name (`vagrant=2.4.9-*`) is the name's.
+    for pkg in "$@"; do
+        case "$pkg" in -*) ;; *) pkg="${pkg%%=*}"; pkgs+=("${pkg%%/*}") ;; esac
+    done
+    [ "${#pkgs[@]}" -gt 0 ] || return 0
+    policy="$(apt-cache policy "${pkgs[@]}" 2>/dev/null || true)"
+    for pkg in "${pkgs[@]}"; do
+        printf '%s\n' "$policy" | awk -v want="$pkg:" '
+            $0 == want { inside = 1; next }
+            /^[^ ]/ { inside = 0 }
+            inside && $1 == "Candidate:" && $2 != "(none)" { found = 1 }
+            END { exit !found }' || missing="${missing:+$missing }$pkg"
+    done
+    printf '%s\n' "$missing"
+}
+
+# An apt-get run whose index files did not all download, from what it printed.
+flth_apt_index_incomplete() { grep -qE 'Some index files failed to download|^(W|E): Failed to fetch' "$1"; }
+
 flth_apt() {
     local what="$1" limit="${FLTH_APT_TIMEOUT:-240}" attempts="${FLTH_APT_ATTEMPTS:-3}"
-    local attempt=1 start rc log mirror name="" next tried="" named="" refresh=""
+    local attempt=1 start rc log mirror name="" next tried="" named="" refresh="" missing="" incomplete="" refresh_done=""
     shift
     log="$(mktemp)" || return 1
     mirror="$(flth_apt_mirror)"
@@ -126,41 +156,72 @@ flth_apt() {
         [ -z "$mirror" ] || named="${named:+$named, then }$name"
         start=$SECONDS
         rc=0
+        incomplete=""
+        refresh_done=""
+        missing=""
+        # What this attempt printed, and nothing of the last one's.
+        : > "$log"
         if [ -n "$refresh" ]; then
             # A new mirror's package index, before an install can use it.
             timeout --kill-after=30 "$limit" \
                 sudo DEBIAN_FRONTEND=noninteractive apt-get "${FLTH_APT_OPTIONS[@]}" update -qq > "$log" 2>&1 ||
                 rc=$?
             refresh=""
+            refresh_done=1
+        fi
+        if [ "$rc" -eq 0 ] && [ -n "$refresh_done" ] && flth_apt_index_incomplete "$log"; then
+            rc=100
+            incomplete=1
+        fi
+        if [ "$rc" -eq 0 ] && [ "$1" = install ]; then
+            missing="$(flth_apt_missing "$@")"
+            if [ -n "$missing" ]; then
+                echo "apt: $what: the package index has no candidate for $missing"
+                rc=100
+                incomplete=1
+            fi
         fi
         [ "$rc" -ne 0 ] ||
             timeout --kill-after=30 "$limit" \
                 sudo DEBIAN_FRONTEND=noninteractive apt-get "${FLTH_APT_OPTIONS[@]}" "$@" >> "$log" 2>&1 ||
             rc=$?
+        if [ "$rc" -eq 0 ] && [ "$1" = update ] && flth_apt_index_incomplete "$log"; then
+            rc=100
+            incomplete=1
+        fi
         if [ "$rc" -eq 0 ]; then
             echo "apt: $what: done in $((SECONDS - start)) s"
             rm -f "$log"
             return 0
         fi
-        case "$rc" in
-            124 | 137) echo "apt: $what: apt-get $1 did not finish within $limit s" ;;
-            *) echo "apt: $what: apt-get $1 failed (exit $rc)" ;;
-        esac
+        if [ -n "$incomplete" ]; then
+            [ -n "$missing" ] || echo "apt: $what: apt-get update did not download every index"
+        else
+            case "$rc" in
+                124 | 137) echo "apt: $what: apt-get $1 did not finish within $limit s" ;;
+                *) echo "apt: $what: apt-get $1 failed (exit $rc)" ;;
+            esac
+        fi
         [ "$attempt" -lt "$attempts" ] || break
         attempt=$((attempt + 1))
         timeout --kill-after=30 "$limit" \
             sudo DEBIAN_FRONTEND=noninteractive dpkg --configure -a >> "$log" 2>&1 || true
-        case "$rc" in
-            124 | 137)
-                next="$(flth_apt_next_mirror "$mirror" "$tried")"
-                if [ -n "$mirror" ] && [ -n "$next" ]; then
+        if [ -n "$incomplete" ] || [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+            next="$(flth_apt_next_mirror "$mirror" "$tried")"
+            if [ -n "$mirror" ] && [ -n "$next" ]; then
+                if [ -n "$incomplete" ]; then
+                    echo "apt: $what: the index from $name is incomplete; the next attempt uses $next"
+                else
                     echo "apt: $what: the mirror $name stalled; the next attempt uses $next"
-                    flth_apt_switch_mirror "$mirror" "$next"
-                    mirror="$next"
-                    [ "$1" = update ] || refresh=1
                 fi
-                ;;
-        esac
+                flth_apt_switch_mirror "$mirror" "$next"
+                mirror="$next"
+                [ "$1" = update ] || refresh=1
+            elif [ -n "$incomplete" ] && [ "$1" != update ]; then
+                # No other mirror: the same one's index, fetched again.
+                refresh=1
+            fi
+        fi
     done
     echo "ci-setup-linux: the last lines apt-get printed for $what:" >&2
     tail -n 20 "$log" >&2

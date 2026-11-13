@@ -55,7 +55,7 @@ say() {
 suite_of() {
     local run="$1" marker
     if [ "$run" = - ]; then
-        if flth_shared; then echo "no suite: it is outside every run"; else echo "$CFG_project_name"; fi
+        echo "no suite: it is outside every run"
         return 0
     fi
     for marker in "$FLTH_MACHINE_DIR"/sessions/*; do
@@ -151,6 +151,22 @@ look_at_taint() {
     [ -z "$letters" ] || say "warning: the kernel is tainted, $value: ${letters#, }"
 }
 
+# EVERY RUN'S virtiofsd, each look (#222). One that has gone leaves a mount the guest
+# must not touch: a request to it never completes, and removing the device after one
+# wedges hot-plug for the whole guest. So its device is removed at once, before
+# anything else runs in that run, and the suites on it are told and stopped.
+look_at_trees() {
+    local run attached
+    while IFS= read -r run; do
+        [ -n "$run" ] || continue
+        attached=0
+        engine_tree_attached "$run" || attached=$?
+        [ "$attached" = 3 ] || continue
+        say "warning: the virtiofsd serving run $run, held by $(suite_of "$run"), has gone: removing its device"
+        "$SELF_DIR/vm.sh" tree-lost "$run" >> "$LOG" 2>&1 || true
+    done < <(engine_attached_runs)
+}
+
 low() {
     # low <what> <available> <total>
     [ "${3:-0}" -gt 0 ] || return 0
@@ -186,6 +202,7 @@ while :; do
     last_answer="$now"
     missed=0
     look_at_stuck "$report" "$now"
+    look_at_trees
     while read -r kind available total _; do
         case "$kind" in
             mem) low memory "$available" "$total" ;;

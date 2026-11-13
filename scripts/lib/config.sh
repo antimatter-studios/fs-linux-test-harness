@@ -210,7 +210,7 @@ flth_config_load() {
 flth_config_validate() {
     local file="$1"
 
-    # A hostname label and a slot holder name, so it is held to the
+    # A hostname label and part of a guest path, so it is held to the
     # stricter of the two.
     [ -n "$CFG_project_name" ] ||
         { flth_config_error "$file: [project] name is required"; return 1; }

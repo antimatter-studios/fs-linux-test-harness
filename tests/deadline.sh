@@ -120,10 +120,4 @@ check_eq "$args" "-h +5" "the deadline is still armed: it is what stops a lost V
 check_contains "$out" "new logins stop five minutes before the poweroff" "and the boot says what that costs"
 check_eq "$pam" "$SSHD_PAM_DEBIAN" "and the file is left as it was"
 
-# mount-share.sh argument checks (the mount itself needs a guest).
-out="$(bash "$REPO/vagrant/guest/mount-share.sh" 'bad tag' /share 2>&1)"
-check_eq "$?" 1 "mount-share refuses a malformed tag"
-out="$(bash "$REPO/vagrant/guest/mount-share.sh" flth_share relative 2>&1)"
-check_eq "$?" 1 "mount-share refuses a relative mountpoint"
-
 finish deadline

@@ -91,3 +91,165 @@ jobs:
           run cache-disk -drive if=none,id=c,file=/tmp/cache.img,format=raw -device virtio-blk-pci,drive=c,serial=flth-cache,addr=0x10
           run vga-none-then-std -vga none -vga std
           run vga-none-plus-device -vga none -device VGA
+
+  # Runtime virtiofs attach on a real KVM host (#222): the gate for building on it.
+  # The distribution's virtiofsd, run unprivileged, serves a tree to a q35 guest with
+  # free pcie-root-ports, a memfd memory backend and QMP. Every step the harness would
+  # take is asserted, and any one that fails fails the job:
+  #   virtiofsd starts as the runner's own user; chardev-add and device_add
+  #   vhost-user-fs-pci on a root port; mount -t virtiofs in the guest; a host write
+  #   read in the guest and a guest write read on the host; then the detach in order
+  #   (umount, device_del, the DEVICE_DELETED event, chardev-remove, stop virtiofsd);
+  #   and a second tree attached into the freed slot, read and detached the same way.
+  # What the guest makes of ownership, xattrs, loop devices, O_DIRECT and mmap is
+  # printed for the README, and does not decide the job.
+  virtiofs-hotplug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Tools
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils virtiofsd cloud-image-utils >/dev/null
+          sudo chmod 666 /dev/kvm
+          vfs="$(command -v virtiofsd || ls /usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd 2>/dev/null | head -1)"
+          echo "VFS=$vfs" >> "$GITHUB_ENV"
+          echo "virtiofsd: $vfs"; "$vfs" --version
+          "$vfs" --help 2>&1 | grep -E -- '--(sandbox|translate|inode-file|cache|xattr)' || true
+          qemu-system-x86_64 --version | sed -n 1p
+          dpkg -l virtiofsd | tail -1
+          echo "runner user: $(id)"
+      - name: Guest image
+        run: |
+          set -eu
+          cd /tmp
+          curl -fsSL -o base.qcow2 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2
+          qemu-img create -q -f qcow2 -F qcow2 -b base.qcow2 disk.qcow2 8G
+          ssh-keygen -q -t ed25519 -N '' -f key
+          printf '#cloud-config\nusers:\n  - name: probe\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    ssh_authorized_keys: [%s]\n' "$(cat key.pub)" > user-data
+          echo 'instance-id: probe' > meta-data
+          cloud-localds seed.iso user-data meta-data
+      - name: Attach, use, detach, attach again
+        run: |
+          set -u
+          cd /tmp
+          fail() { echo "::error::FAILED STEP: $*"; exit 1; }
+          pass() { echo "PASS  $*"; }
+          info() { echo "INFO  $*"; }
+          cat > qmp.py <<'PY'
+          import json, socket, sys, time
+          def connect(path):
+              s = socket.socket(socket.AF_UNIX); s.connect(path); f = s.makefile("rw")
+              def read():
+                  return json.loads(f.readline())
+              def cmd(c):
+                  f.write(json.dumps(c) + "\n"); f.flush()
+                  while True:
+                      m = read()
+                      if "event" in m: events.append(m); continue
+                      return m
+              events = []
+              read(); cmd({"execute": "qmp_capabilities"})
+              return cmd, read, events
+          path, op = sys.argv[1], sys.argv[2]
+          cmd, read, events = connect(path)
+          if op == "send":
+              for c in sys.argv[3:]:
+                  r = cmd(json.loads(c)); print(json.dumps(r))
+                  if "error" in r: sys.exit(1)
+          elif op == "del-wait":
+              dev = sys.argv[3]; t0 = time.time()
+              r = cmd({"execute": "device_del", "arguments": {"id": dev}}); print(json.dumps(r))
+              if "error" in r: sys.exit(1)
+              deadline = t0 + 30
+              while time.time() < deadline:
+                  for e in events:
+                      if e.get("event") == "DEVICE_DELETED" and e.get("data", {}).get("device") == dev:
+                          print("DEVICE_DELETED after %d ms" % ((time.time() - t0) * 1000)); sys.exit(0)
+                  events.append(read())
+              sys.exit(2)
+          PY
+          ports=""
+          for i in 1 2 3 4; do
+            mf=""; [ "$i" = 1 ] && mf=",multifunction=on"
+            ports="$ports -device pcie-root-port,id=rp$i,bus=pcie.0,chassis=$i,slot=$i,io-reserve=0,addr=0x11.$((i-1))$mf"
+          done
+          # shellcheck disable=SC2086
+          qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 2G -smp 2 \
+            -object memory-backend-memfd,id=mem,size=2G,share=on -numa node,memdev=mem $ports \
+            -drive file=disk.qcow2,if=virtio -drive file=seed.iso,if=virtio,format=raw \
+            -netdev user,id=n,hostfwd=tcp:127.0.0.1:2222-:22 -device virtio-net-pci,netdev=n \
+            -qmp unix:/tmp/qmp.sock,server=on,wait=off -display none -serial file:/tmp/serial.log -daemonize \
+            || fail "QEMU did not start with root ports, a memfd backend and QMP"
+          g() { ssh -i key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -p 2222 probe@127.0.0.1 "$@"; }
+          for i in $(seq 1 90); do g true 2>/dev/null && break; sleep 2; done
+          g true || fail "the guest never answered ssh"
+          info "guest kernel $(g uname -r)"
+          g 'sudo modprobe virtiofs' || fail "the guest has no virtiofs module"
+
+          vfs_pid=""
+          attach() { # attach <tree> <id> <port>
+            rm -f "/tmp/$2.sock"
+            setsid "$VFS" --socket-path="/tmp/$2.sock" --shared-dir="$1" --sandbox=none --inode-file-handles=never --xattr > "/tmp/$2.log" 2>&1 &
+            vfs_pid=$!
+            for i in $(seq 1 100); do [ -S "/tmp/$2.sock" ] && break; sleep 0.05; done
+            [ -S "/tmp/$2.sock" ] || { cat "/tmp/$2.log"; fail "virtiofsd did not start as $(id -un), without root"; }
+            [ "$(ps -o user= -p "$vfs_pid" | tr -d ' ')" = "$(id -un)" ] || fail "virtiofsd is not running as the runner's own user"
+            pass "virtiofsd $vfs_pid runs as $(id -un), without root"
+            t0=$(date +%s%N)
+            python3 qmp.py /tmp/qmp.sock send \
+              "{\"execute\":\"chardev-add\",\"arguments\":{\"id\":\"c-$2\",\"backend\":{\"type\":\"socket\",\"data\":{\"addr\":{\"type\":\"unix\",\"data\":{\"path\":\"/tmp/$2.sock\"}},\"server\":false}}}}" \
+              "{\"execute\":\"device_add\",\"arguments\":{\"driver\":\"vhost-user-fs-pci\",\"id\":\"fs-$2\",\"chardev\":\"c-$2\",\"tag\":\"$2\",\"bus\":\"$3\"}}" \
+              || fail "chardev-add + device_add vhost-user-fs-pci on $3"
+            pass "chardev-add + device_add vhost-user-fs-pci fs-$2 on $3"
+            g "sudo mkdir -p /mnt/t; for i in \$(seq 1 1000); do sudo mount -t virtiofs $2 /mnt/t 2>/dev/null && break; sleep 0.01; done; findmnt -n -o FSTYPE,SOURCE /mnt/t" > /tmp/mnt.out
+            [ "$(cat /tmp/mnt.out)" = "virtiofs $2" ] || fail "mount -t virtiofs $2 in the guest (findmnt said: $(cat /tmp/mnt.out))"
+            pass "mount -t virtiofs $2 in the guest, $(( ($(date +%s%N) - t0) / 1000000 )) ms after the attach began"
+          }
+          detach() { # detach <id>
+            g 'sudo umount /mnt/t' || fail "umount in the guest"
+            g 'findmnt /mnt/t >/dev/null' && fail "umount left /mnt/t mounted"
+            pass "umount"
+            python3 qmp.py /tmp/qmp.sock del-wait "fs-$1" > /tmp/del.out || { cat /tmp/del.out; fail "device_del fs-$1 then the DEVICE_DELETED event within 30 s"; }
+            pass "device_del fs-$1, then $(tail -n 1 /tmp/del.out)"
+            python3 qmp.py /tmp/qmp.sock send "{\"execute\":\"chardev-remove\",\"arguments\":{\"id\":\"c-$1\"}}" >/dev/null || fail "chardev-remove c-$1"
+            pass "chardev-remove c-$1"
+            for i in $(seq 1 50); do kill -0 "$vfs_pid" 2>/dev/null || break; sleep 0.1; done
+            if kill -0 "$vfs_pid" 2>/dev/null; then
+              info "virtiofsd $vfs_pid had not exited by itself 5 s after its device went: stopping it"
+              kill -TERM "$vfs_pid"
+              for i in $(seq 1 50); do kill -0 "$vfs_pid" 2>/dev/null || break; sleep 0.1; done
+            else
+              info "virtiofsd exited by itself once its device went: $(tail -n 2 "/tmp/$1.log" | tr '\n' ' ')"
+            fi
+            kill -0 "$vfs_pid" 2>/dev/null && fail "stop virtiofsd $vfs_pid"
+            pass "virtiofsd $vfs_pid stopped, after its device and chardev"
+          }
+
+          mkdir -p /tmp/tree-a /tmp/tree-b
+          attach /tmp/tree-a run-a rp2
+          token="host-$RANDOM-$RANDOM"
+          echo "$token" > /tmp/tree-a/from-host
+          [ "$(g 'cat /mnt/t/from-host')" = "$token" ] || fail "a file the host wrote is read in the guest"
+          pass "a file the host wrote is read in the guest"
+          token="guest-$RANDOM-$RANDOM"
+          g "echo $token | sudo tee /mnt/t/from-guest >/dev/null" || fail "the guest writes into the tree as root"
+          [ "$(cat /tmp/tree-a/from-guest 2>/dev/null)" = "$token" ] || fail "a file the guest wrote is read on the host"
+          pass "a file the guest wrote, as root, is read on the host (owner $(stat -c '%U:%G' /tmp/tree-a/from-guest))"
+
+          info "ownership: $(g 'sudo chown 1000:1000 /mnt/t/from-guest 2>&1 && echo chown-ok')"
+          info "xattr: $(g 'sudo setfattr -n user.x -v 1 /mnt/t/from-guest 2>&1 && sudo getfattr --only-values -n user.x /mnt/t/from-guest 2>&1')"
+          truncate -s 64M /tmp/tree-a/img
+          info "loop: $(g 'sudo mkfs.ext4 -q -F /mnt/t/img && d=$(sudo losetup -f --show /mnt/t/img) && sudo mount $d /mnt/l 2>/dev/null || { sudo mkdir -p /mnt/l; sudo mount $d /mnt/l; } ; sudo umount /mnt/l && sudo losetup -d $d && echo loop-ok' 2>&1 | tail -n 1)"
+          info "O_DIRECT: $(g 'sudo dd if=/dev/zero of=/mnt/t/dio bs=4096 count=4 oflag=direct status=none && sudo dd if=/mnt/t/dio of=/dev/null bs=4096 iflag=direct status=none && echo dio-ok' 2>&1 | tail -n 1)"
+          info "mmap: $(g 'python3 -c "import mmap; f = open(\"/mnt/t/from-host\", \"r+b\"); m = mmap.mmap(f.fileno(), 0); print(\"mmap-ok\", m[:4])"' 2>&1 | tail -n 1)"
+          detach run-a
+
+          attach /tmp/tree-b run-b rp2
+          echo second > /tmp/tree-b/second
+          [ "$(g 'cat /mnt/t/second')" = second ] || fail "the tree attached into the freed slot is read in the guest"
+          pass "a second tree attached into the freed slot rp2 is read in the guest"
+          detach run-b
+          g 'sudo dmesg | grep -iE "pcie|hotplug|acpiphp|virtio_fs|virtiofs" | tail -n 20' || true
+          echo "ALL STEPS PASSED"

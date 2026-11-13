@@ -4,9 +4,9 @@
 # sources. A library that names a neighbour by its bare name can therefore read
 # a test of that name, or nothing, from a script outside scripts/lib. So a file
 # that a checked script reaches through another file is named in full from the
-# repository root: tests/slot.sh reaches scripts/lib/common.sh through
-# scripts/vm-slot.sh, and the files common.sh sources must not be read as
-# tests/config.sh or tests/engine-vagrant.sh.
+# repository root: tests/engine-vagrant.sh reaches scripts/lib/config.sh
+# through scripts/lib/common.sh, and the files common.sh sources must not be
+# read as tests/config.sh or tests/engine-vagrant.sh.
 external-sources=true
 source-path=SCRIPTDIR
 

@@ -75,12 +75,6 @@ signal_case TERM 15
 signal_case INT 2
 signal_case HUP 1
 
-stub_down 1; work "exit 0"; : > "$LOG"
-out="$(cd "$SANDBOX/consumer" && FLTH_KEEP_VM=1 ./work.sh 2>&1)"
-check_eq "$?" 0 "FLTH_KEEP_VM=1 leaves the status alone"
-check_eq "$(grep -c down "$LOG" | tr -d ' ')" 0 "and never calls teardown"
-check_contains "$out" "leaving the VM running, as asked" "and says so"
-
 mkdir -p "$SANDBOX/noconsumer"
 printf '#!/usr/bin/env bash\nset -euo pipefail\n. "%s/vm-session.sh"\necho reached\n' "$H" > "$SANDBOX/noconsumer/work.sh"
 out="$(cd "$SANDBOX/noconsumer" && bash work.sh 2>&1)"

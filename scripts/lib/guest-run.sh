@@ -5,12 +5,12 @@
 # this file to the guest when it boots, to /run, so it goes with the boot.
 #
 #   guest-run.sh prepare                            once per boot
-#   guest-run.sh enter <id> <repo> <share> <cache> <consumer> <script>
+#   guest-run.sh enter <id> <tag> <share> <cache> <consumer> <script>
 #                                                   run a script in the run <id>
-#   guest-run.sh tree <id> <repo> <share> <cache> <consumer> <share dir>
+#   guest-run.sh tree <id> <tag> <share> <cache> <consumer> <share dir>
 #                                                   give the run its own copy of its tree
 #   guest-run.sh end <id>                           stop the run and delete its root
-#   guest-run.sh setup <repo> <share> <cache> <consumer> <command...>
+#   guest-run.sh setup <tag> <share> <cache> <consumer> <command...>
 #                                                   run a consumer's setup with its tree
 #
 # A RUN IS A RANDOM ROOT ON THE GUEST'S OWN DISK AND A PRIVATE MOUNT NAMESPACE, in
@@ -23,8 +23,9 @@
 # The namespace also says what belongs to a run, whatever process group or parent a
 # command has since moved to: `end` stops exactly the processes in it.
 #
-# <repo> and <share> are where this run's tree and share are in the guest, <cache> is
-# the directory for /cache, or - for none. <consumer> is whose run this is.
+# <tag> is the virtiofs tag of the run's own tree, a device the host attached to the
+# running guest for this run (#222), and <share> is where the share is in that tree.
+# <cache> is the directory for /cache, or - for none. <consumer> is whose run this is.
 #
 # /VAR/CACHE IS THE CONSUMER'S, NOT THE RUN'S, because that is where a suite keeps its
 # build directory, and a run should not build from nothing on a guest that stays up. It
@@ -47,6 +48,8 @@ STOP_TICKS=50
 # call fails with ssh's own status.
 prepare() {
     mkdir -p "$STATE/ns" "$ROOTS"
+    # Where a run mounts its tree and its share, in its own namespace.
+    mkdir -p /repo /share 2>/dev/null || true
     if ! mountpoint -q "$STATE/ns"; then
         mount --bind "$STATE/ns" "$STATE/ns"
         mount --make-private "$STATE/ns"
@@ -76,11 +79,20 @@ take_var_cache() {
     exec 8>&-
 }
 
-# Inside a new namespace. The share first, because <repo> may be under /repo.
+# Inside a new namespace. The device has just been attached, and the guest's kernel
+# probes it a moment later, so the mount is tried until it takes: 30 s at most.
 bind_tree() {
-    local repo="$1" share="$2" cache="$3"
-    [ "$share" = /share ] || mount --bind "$share" /share
-    [ "$repo" = /repo ] || mount --bind "$repo" /repo
+    local tag="$1" share="$2" cache="$3" tries=0
+    until mount -t virtiofs "$tag" /repo 2>/dev/null; do
+        if [ "$tries" -ge 3000 ]; then
+            echo "guest-run: the run's tree (virtiofs $tag) could not be mounted" >&2
+            return 1
+        fi
+        sleep 0.01
+        tries=$((tries + 1))
+    done
+    mkdir -p "/repo/$share"
+    mount --bind "/repo/$share" /share
     [ "$cache" = - ] || mount --bind "$cache" /cache
 }
 
@@ -151,7 +163,7 @@ tree() {
     mkdir -p "$root/tree"
     # -S keeps holes: a suite's images are mostly holes, and filling them took one
     # consumer's 3.5 GiB of fixtures to 38 GiB of the guest's disk.
-    tar -S -C "$repo" --exclude-caches-all --exclude=./tmp --exclude="./$share_dir" -cf - . |
+    nsenter --mount="$STATE/ns/$id" -- tar -S -C /repo --exclude-caches-all --exclude=./tmp --exclude="./$share_dir" -cf - . |
         tar -C "$root/tree" --no-same-owner -xf -
     mkdir -p "$root/tree/tmp" "$(dirname "$root/tree/$share_dir")"
     ln -s /share "$root/tree/$share_dir"
@@ -168,6 +180,17 @@ members() {
             printf '%s ' "$pid"
         fi
     done
+}
+
+# What a process that would not stop is: its name, its state, and where in the kernel
+# it waits (#187). A process in uninterruptible sleep (D) takes no signal at all,
+# and only a reboot clears it.
+describe() {
+    local pid="$1" comm state wchan
+    comm="$(cat "/proc/$pid/comm" 2>/dev/null || echo '?')"
+    state="$(sed -n 's/^.*) \([A-Za-z]\) .*/\1/p' "/proc/$pid/stat" 2>/dev/null || true)"
+    wchan="$(cat "/proc/$pid/wchan" 2>/dev/null || true)"
+    printf 'process %s (%s), state %s%s' "$pid" "$comm" "${state:-?}" "${wchan:+, waiting in $wchan}"
 }
 
 signal_members() {
@@ -191,30 +214,60 @@ detach_loops() {
     local root="$1" name inode
     while read -r name inode; do
         case "$inode" in '' | *[!0-9]*) continue ;; esac
-        if [ -n "$(find "$root" -xdev -inum "$inode" -print 2>/dev/null | head -n 1)" ]; then
-            losetup -d "$name" 2>/dev/null || true
+        if [ -n "$(timeout 30 find "$root" -xdev -inum "$inode" -print 2>/dev/null | head -n 1)" ]; then
+            timeout 30 losetup -d "$name" 2>/dev/null || true
         fi
     done < <(losetup -l -n -O NAME,BACK-INO 2>/dev/null || true)
 }
 
+# A LOOP DEVICE BACKED BY A FILE OF THE RUN'S TREE holds the tree's mount, and so its
+# device, after the namespace has gone (#222). Which are the run's is told by the
+# device of their backing file: the run's virtiofs mount is a filesystem of its own.
+# Detached before the namespace goes; one still in use is detached when it is let go
+# of, so the caller waits for them all to go.
+tree_loops() {
+    local ns="$1" devs name dev
+    devs=" $(nsenter --mount="$ns" -- findmnt -rn -t virtiofs -o MAJ:MIN 2>/dev/null | tr '\n' ' ') "
+    [ "$devs" != "  " ] || return 0
+    while read -r name dev; do
+        case "$devs" in *" $dev "*) printf '%s\n' "$name" ;; esac
+    done < <(losetup -l -n -O NAME,BACK-MAJ:MIN 2>/dev/null || true)
+}
+
 end() {
-    local id="$1" ns="$STATE/ns/$1" ident=""
+    local id="$1" ns="$STATE/ns/$1" ident="" loops="" loop ticks=0
     exec 9> "$STATE/lock.$id"
     flock 9
     if [ -e "$ns" ]; then
         ident="$(nsenter --mount="$ns" -- readlink /proc/self/ns/mnt 2>/dev/null || true)"
-        if [ -n "$ident" ]; then
-            signal_members "$ident" TERM || signal_members "$ident" KILL ||
-                echo "guest-run: processes of run $id would not stop" >&2
+        if [ -n "$ident" ] && ! signal_members "$ident" TERM && ! signal_members "$ident" KILL; then
+            # Named, and left: the rest of the end does not wait on them (#187).
+            local pid
+            for pid in $(members "$ident"); do
+                echo "guest-run: run $id: $(describe "$pid") would not stop; the run ends without it" >&2
+            done
         fi
-        umount "$ns" 2>/dev/null || true
+        loops="$(tree_loops "$ns")"
+        for loop in $loops; do losetup -d "$loop" 2>/dev/null || true; done
+        # Bounded: a process that will not die can hold a mount (#187).
+        timeout 30 umount "$ns" 2>/dev/null || true
+        while [ -n "$loops" ] && [ "$ticks" -lt 100 ]; do
+            for loop in $loops; do
+                losetup "$loop" >/dev/null 2>&1 && break
+                loops="${loops/$loop/}"
+            done
+            loops="$(printf '%s' "$loops" | tr -s ' \n' ' ' | sed 's/^ *//; s/ *$//')"
+            [ -z "$loops" ] || sleep 0.1
+            ticks=$((ticks + 1))
+        done
+        [ -z "$loops" ] || echo "guest-run: loop devices of run $id are still attached: $loops" >&2
     fi
     detach_loops "$ROOTS/$id"
     # The run is over now, and the consumer's /var/cache is free once it is not ready:
     # take_var_cache reads that. Deleting a root can take minutes, and a suite restarted
     # meanwhile should not get an empty directory for it.
     rm -f "$ns" "$STATE/ready.$id" "$STATE/tree.$id"
-    find "$ROOTS/$id" -xdev -delete 2>/dev/null || true
+    timeout 120 find "$ROOTS/$id" -xdev -delete 2>/dev/null || true
     rm -f "$STATE/lock.$id"
     exec 9>&-
 }

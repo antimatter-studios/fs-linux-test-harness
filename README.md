@@ -1,6 +1,6 @@
 # fs-linux-test-harness
 
-> Reusable Linux-VM test harness for filesystem driver projects. Provides the environment (VM lifecycle, cross-repo slot lock, shared directory, command execution); each driver repo supplies its own tests and installs its own tooling.
+> Reusable Linux-VM test harness for filesystem driver projects. Provides the environment (one shared guest for every consumer, its lifecycle, shared directories, command execution); each driver repo supplies its own tests and installs its own tooling.
 
 [![CI](https://github.com/antimatter-studios/fs-linux-test-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/antimatter-studios/fs-linux-test-harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
@@ -19,7 +19,7 @@ takes care of everything around it:
 - running the repository's own setup script inside it to install its tooling,
 - running commands as root in the guest and handing back their output and exit status,
 - a directory shared between host and guest for images and results,
-- **a machine-wide VM limit, one by default, with memory admission before every boot**,
+- **one guest, shared by every consumer on the host**, with a check of the host's memory before every boot,
 - making sure a VM that nobody is using does not stay up.
 
 It knows nothing about any filesystem. Everything filesystem-specific
@@ -29,7 +29,7 @@ lives in the consumer's config and scripts.
 
 | | The filesystem driver repo (consumer) | The harness |
 | --- | --- | --- |
-| **Owns** | Its tests: fixture recipes, checks, what "correct" means. | The generic environment only: VM lifecycle (up / run / put / share / down / status / reap / hold / destroy), the machine-wide slot lock, the shared directory, running commands and collecting results. |
+| **Owns** | Its tests: fixture recipes, checks, what "correct" means. | The generic environment only: the shared guest and its lifecycle (up / run / put / share / down / status / reap / hold / destroy), the shared directory, running commands and collecting results. |
 | **Tooling** | Declares **and installs** the tools it needs (e.g. `xfsprogs`, `e2fsprogs`, `btrfs-progs`) in its setup script, run inside the VM. | Installs nothing filesystem-specific. `tests/generic.sh` fails the build if a filesystem or its tooling is named in `scripts/`, `vagrant/` or the chore files. |
 | **Interface** | `fs-linux-test-harness.toml` plus its own scripts. | One command shape for every filesystem: `chore vm:<task>` (or `scripts/vm.sh <command>`). |
 
@@ -45,8 +45,7 @@ one, which is how an oracle goes unnoticed running against nothing.
 | `vm.chores.yml` | The consumer-facing chore tasks. Consumers include it; see [Quickstart](#quickstart). |
 | `chores.yml` | The harness's own tasks: `check`, `smoke`, `host:check`. |
 | `scripts/vm.sh` | The single entry point: every lifecycle command. |
-| `scripts/vm-slot.sh` | The machine-wide slot lock (`acquire` / `release` / `status`). |
-| `scripts/vm-session.sh` | A session: `vm.sh session <command...>` runs a command inside one, and a script that sources it becomes one. The VM comes down when it ends, however it ends. |
+| `scripts/vm-session.sh` | A session: `vm.sh session <command...>` runs a command inside one, and a script that sources it becomes one. It is one run on the shared guest, ended when the command ends, however it ends; the guest stays up for the next run. |
 | `scripts/host-tools.sh` | Checks the host and prints exactly what to install. |
 | `scripts/ci-setup-linux.sh` | Sets a hosted x86_64 Linux CI runner up to boot the VM (KVM access, QEMU, Vagrant, vagrant-qemu), for the harness's CI and every consumer's; `--box-cache-key` prints the box cache key. |
 | `scripts/lib/` | `config.sh` (the TOML reader), `engine.sh` (the engine interface), `engine-vagrant.sh` (its Vagrant implementation), `common.sh` (paths). |
@@ -88,10 +87,10 @@ tasks:
       - ../fs-linux-test-harness/scripts/vm.sh session cargo test
 ```
 
-`vm.sh session <command...>` runs the command inside a **session**: the VM
-the tests boot comes down, and the machine-wide slot is released, when the
-command ends — passed, failed or killed — and run any way at all, not only
-through chore. Put it in the script your tiers run (`scripts/test.sh`) rather
+`vm.sh session <command...>` runs the command inside a **session**: one run on
+the shared guest, which is cleaned up and taken off the guest's list of users
+when the command ends — passed, failed or killed — and run any way at all, not
+only through chore. The guest stays up for the next run. Put it in the script your tiers run (`scripts/test.sh`) rather
 than in each task, so a run by hand gets it too. See [rule 2](#talking-to-the-guest-from-a-test-process).
 
 **3. Write `fs-linux-test-harness.toml` and a setup script.**
@@ -136,7 +135,11 @@ A test binary calls the harness directly:
 and the runner that starts it runs it through
 `../fs-linux-test-harness/scripts/vm.sh session <command...>`. A shell
 wrapper that boots the VM sources `../fs-linux-test-harness/scripts/vm-session.sh`
-near its top instead; the VM comes down when it exits.
+near its top instead; its run ends when it exits.
+
+Nothing else is set up: every consumer on the host uses one shared guest, and each
+run attaches its own tree to it while it runs ([One guest for every
+consumer](#one-guest-for-every-consumer)).
 
 Copy-ready versions of all of this are in [`examples/minimal/`](./examples/minimal/);
 a consumer that really runs is in [`tests/smoke-consumer/`](./tests/smoke-consumer/).
@@ -186,26 +189,26 @@ cheap and safe:
    harness keeps ONE multiplexed SSH connection alive, avoiding a fresh
    SSH handshake for every command. The script
    that runs the suite (`scripts/test.sh`, whatever every tier calls) runs
-   it through `vm.sh session <command...>`, so the VM comes down and the
-   slot is released when the run ends, however it ends:
+   it through `vm.sh session <command...>`, so the run is on the guest's
+   list of users while it lasts and is cleaned up when it ends, however it
+   ends:
 
    ```sh
    exec "$repo/../fs-linux-test-harness/scripts/vm.sh" session cargo test "$@"
    ```
 
-   **Do not leave it to the reaper.** The reaper runs only inside a chore
-   invocation of *this* repository, but the slot is one for the whole
-   machine: a run started any other way exits with the VM idle and the slot
-   held, and every other repository's VM work queues behind it until the
-   guest's idle deadline. The reaper is the net for a run that never
-   reached the runner (a bare `cargo test`), not the plan.
+   **Do not leave it to the reaper.** The guest is shared with every other
+   consumer on the host, and `chore vm:down` stops it only when nobody is on
+   that list: a run outside a session is on it only for each single call, so
+   the guest can be stopped between two of them. The reaper is the net for a
+   run that never reached the runner (a bare `cargo test`), not the plan.
 
    The runner decides where a session makes sense, so the consumer does not
    have to: in the guest (`FLTH_GUEST=1`) and on a host that cannot run the
    VM (`host-tools.sh --quiet` fails — a CI runner without KVM) it runs the
-   command as it is, and asks the engine nothing. A VM held with `chore
-   vm:up` is left up when the run ends, so `chore vm:up` before a series of
-   runs keeps it across them; `FLTH_KEEP_VM=1` does the same for one run.
+   command as it is, and asks the engine nothing. The guest stays up when the
+   run ends, for the next run of this consumer or another; `chore vm:up` also
+   holds it, which cancels its idle deadline.
 3. **Nothing is copied.** The consumer repository is mounted in the guest
    (`/repo`), so a file the test wrote under the checkout is already
    there; the shared directory (`/share`) is for what a run hands across.
@@ -344,7 +347,7 @@ Same names in every consumer:
 | --- | --- |
 | `chore siblings` | Check the sibling repositories out at their pinned refs, the harness included (`../fs-linux-test-harness`). Refuses to move a dirty sibling. |
 | `chore tools` | Install and verify what the HOST needs — which is NOT the oracle tools: they live in the guest, installed by the `[setup]` script. Typically the VM's own requirements (`vm:host:check`) plus anything a non-oracle host test needs. `--check` mode for the other tasks to fail early. |
-| `chore fixtures` | Build every fixture image. Kernel work goes through the harness (`vm.sh run`, from a script that sources `vm-session.sh` so the VM comes down however the build ends); plain `mkfs`/debugger work happens on the host. Declares `sources`/`generates` so an unchanged recipe does not reboot a VM. Pins what makes a build vary (UUIDs, hash seeds) and says what still does. |
+| `chore fixtures` | Build every fixture image. Kernel work goes through the harness (`vm.sh run`, from a script that sources `vm-session.sh` so its run ends however the build ends); plain `mkfs`/debugger work happens on the host. Declares `sources`/`generates` so an unchanged recipe does not reboot a VM. Pins what makes a build vary (UUIDs, hash seeds) and says what still does. |
 | `chore test:unit` | The tests that need no tool and no fixture. CI runs it on a runner with no fixtures, which is what proves the split. |
 | `chore test:oracle` | The driver writes, independent tools read back IN THE GUEST: `fsck -n` for consistency **and** the filesystem's debugger for content and metadata (dump and compare, stat, extent maps, block ownership, the journal) — including a negative case that corrupts a data byte and shows the consistency checker passing while the content check fails, because that is the gap the second tool closes. |
 | `chore test:kernel` | The driver writes, THE REAL KERNEL reads back: the image loop-mounted in the guest, and names, sizes, modes, xattrs, ACLs and content hashes compared against what was written — plus one reverse case (the kernel writes, the driver reads) and one deliberate corruption that must fail. |
@@ -397,19 +400,15 @@ chose.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `[project] name` | string | **required** | Lowercase letters, digits and inner hyphens, at most 63. The VM's hostname, the name of its machine directory, and the name the slot shows other repositories. Two checkouts of one project share a machine; keep names unique across projects. |
-| `[setup] script` | string | **required** | Path relative to the repository. Run as root inside the VM, **only when it has changed** since it was last applied (a SHA-256 stamp in the guest), with stdin from `/dev/null` and `FLTH_PROJECT` and `FLTH_SHARE` set. It is the only thing that reaches the machine's disk: it runs on a provisioning boot, which is stopped before anything else boots (see "Every run starts from the same disk"). A failure fails `up` and leaves that boot running for inspection; nothing else runs on it until `chore vm:down`. `chore vm:provision` re-runs it regardless. |
-| `[test] command` | string | none | Run by `chore vm:test` on the **host**, from the repository root, with the VM up; extra arguments are appended. It reaches the guest through `FLTH_VM` (the path of `vm.sh`) and finds the share at `FLTH_SHARE_HOST`. The VM is torn down afterwards. |
+| `[project] name` | string | **required** | Lowercase letters, digits and inner hyphens, at most 63. The name the shared guest lists this consumer's suites under, and the name of its setup stamp and its directories in the guest; keep names unique across projects. |
+| `[setup] script` | string | **required** | Path relative to the repository. Run as root inside the shared guest when this consumer joins a boot, **only when it has changed** since it was last applied on that boot (a SHA-256 stamp in the guest), with stdin from `/dev/null` and `FLTH_PROJECT` and `FLTH_SHARE` set. It goes with the boot: the next boot runs it again. A failure fails `up` and leaves the guest running for inspection. `chore vm:provision` re-runs it regardless. |
+| `[test] command` | string | none | Run by `chore vm:test` on the **host**, from the repository root, with the guest up, as a run of its own; extra arguments are appended. It reaches the guest through `FLTH_VM` (the path of `vm.sh`) and finds the share at `FLTH_SHARE_HOST`. The guest stays up afterwards. |
 | `[test] guest_command` | string | none | Run by `chore vm:guest-test` **inside the guest**, from `/repo` (this repository, mounted there read-write), with arguments appended and `FLTH_GUEST=1` set. Output streams as it happens and its exit status is the task's. The harness knows nothing about what it is: the `[setup]` script installs whatever the guest needs to run it — a compiler, an interpreter, a package manager's worth of tools — and anything the run should leave behind goes in the share. |
-| `[cache] size` | string | none | **Declares a cache that outlives every boot**, e.g. `16G`. A disk of its own, mounted at `/cache` in the guest on every boot and kept when the boot stops, unlike everything else a run writes (see "Every run starts from the same disk"). For in-guest build state a run can rebuild but should not have to: point a toolchain's home or build directory under `/cache`. Its first boot gives it the filesystem the guest's root uses. Sparse, so it takes host space only as it fills. Changing the size replaces it with an empty one; `chore vm:destroy` deletes it with the machine. No `[cache]` section, no `/cache`. |
+| `[cache] size` | string | none | **Declares a cache that outlives a run**, e.g. `16G`. A directory of the shared guest's, mounted at `/cache` in every run of this consumer and kept across its runs for as long as the guest is up. It goes with the boot (#186), and the size is not enforced. For in-guest build state a run can rebuild but should not have to: point a toolchain's home or build directory under `/cache`. No `[cache]` section, no `/cache`. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
 | *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
-| `[vm] memory` | string | `2G` | Guest memory, e.g. `3G`, `2048M`. Selected from real `guest-test` measurements at 2, 3 and 4 GiB; see [the measurement](docs/guest-memory-2026-11-03.md). |
-| `[vm] cpus` | integer | `4` | Guest CPUs, 1–64. |
-| `[vm] disk` | string | `32G` | Guest disk size, e.g. `16G`. |
-| `[vm] ssh_port` | integer | `50122` | Host port forwarded to the guest's SSH when it is free at boot; when another socket holds it, the boot forwards a free port the kernel hands out instead, and says so. |
-| `[vm] deadline_minutes` | integer | `480` | The guest powers itself off after this long **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
-| `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. A consumer needing both runs a second config with its own `[project] name` and `[vm] ssh_port` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
+| `[vm] memory`, `[vm] cpus`, `[vm] disk`, `[vm] ssh_port`, `[vm] deadline_minutes` | | | **Read and validated, and not used.** They described the VM of its own a consumer had before the shared guest was the only one. The shared guest's size and deadline are the host's: `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` and `FLTH_SHARED_DEADLINE` (see [Environment](#environment)). They may be removed from a consumer's config. |
+| `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. Each release is a shared guest of its own (`machines/shared-<guest>/`). A consumer needing both runs a second config with its own `[project] name` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
 
 Paths may contain only letters, digits, `.`, `_`, `-` and `/`, must be
 relative, and must not leave the repository.
@@ -420,24 +419,23 @@ relative, and must not leave the repository.
 
 | Task | What it does |
 | --- | --- |
-| `chore vm:up` | Boot, apply setup, and **hold** it: stays up until `vm:down`, the reaper leaves it, the guest deadline is cancelled. |
+| `chore vm:up` | Boot the shared guest if it is not up, apply this consumer's setup, and **hold** it: the guest deadline is cancelled, and it stays up until `vm:down`. |
 | `chore vm:run -- <command>` | Run a command as root in the guest (booting if needed). Exit status and stdout/stderr are the guest command's. Operators like `&&` and `\|` belong to the guest. |
 | `chore vm:exec -- <command>` | The same, in a VM that is ALREADY up — and it never boots one. The per-call path for a test process: no state probe beyond a process check, and one multiplexed SSH connection shared by every call. Smoke measures the complete call against calls without reuse. Fails naming `chore vm:up` when nothing is running. |
 | `chore vm:put <file>` | Copy a file into the shared directory; print its guest path (`/share/<name>`). |
 | `chore vm:share` | Print the host path of the shared directory. |
-| `chore vm:test [-- args]` | Boot, run the `[test] command` on the HOST, tear down. A failing teardown fails the task; the test's own failure wins if both fail. `FLTH_KEEP_VM=1` keeps the VM. |
-| `chore vm:guest-test [-- args]` | Boot, run the `[test] guest_command` INSIDE the guest from `/repo`, tear down — the same session rules. For a suite whose host cannot run it. |
-| `chore vm:session -- <command>` | Run a command on the HOST inside a session: the VM it boots comes down, and the slot is released, when it ends — passed, failed or killed. A held VM is left up. What a consumer's test runner calls as `vm.sh session <command...>`; see [rule 2](#talking-to-the-guest-from-a-test-process). |
-| `chore vm:provision` | Re-run the setup script, changed or not, on a provisioning boot. Stops a running VM first, and refuses while another invocation is using it. |
-| `chore vm:down` | Halt, **confirm** the VM stopped, release the slot. Fails if the VM is still running or its state cannot be read. Keeps the disk, which holds what setup installed and nothing a run wrote. |
-| `chore vm:status` | Exit 0 when running, 1 otherwise, and say which. |
-| `chore vm:hold` | Mark the VM as deliberately running (reaper and guest deadline stand down). |
-| `chore vm:reap` | Stop this invocation's VM if nothing cleaned it up, unless held or in use. Meant for `lifecycle: after_all`; use `vm:down` to stop an older invocation's VM. |
-| `chore vm:destroy` | Delete the VM and its disk; the next boot provisions from scratch. |
-| `chore vm:config` | Print the resolved config, paths, machine identity and slot location. |
+| `chore vm:test [-- args]` | Boot the shared guest if needed and run the `[test] command` on the HOST, as a run of its own. Its status is the command's; the guest stays up for the next run. |
+| `chore vm:guest-test [-- args]` | The same for the `[test] guest_command`, run INSIDE the guest from `/repo`. For a suite whose host cannot run it. |
+| `chore vm:session -- <command>` | Run a command on the HOST inside a session: one run on the shared guest, ended when the command ends — passed, failed or killed. What a consumer's test runner calls as `vm.sh session <command...>`; see [rule 2](#talking-to-the-guest-from-a-test-process). |
+| `chore vm:provision` | Re-run this consumer's setup script, changed or not, in the running guest. The guest is not stopped for it. |
+| `chore vm:reload` | Restart the shared guest in place, unless another suite is using it. |
+| `chore vm:down` | Stop the shared guest and **confirm** it stopped, unless a suite is using it: then it says who and succeeds, leaving the guest up. Fails if the guest is still running or its state cannot be read. |
+| `chore vm:status` | Exit 0 when the shared guest is running, 1 otherwise, and say which, and who is using it. |
+| `chore vm:hold` | Mark the guest as deliberately running (its deadline stands down). |
+| `chore vm:reap` | Stop a guest whose boot did not finish, and drop suites that have gone from the list. Meant for `lifecycle: after_all`. An idle shared guest is not a leak, and stays up. |
+| `chore vm:destroy` | Delete the shared guest and its disk, unless a suite is using it. The box stays in Vagrant's store, so the next boot does not download it again. |
+| `chore vm:config` | Print the resolved config, the shared guest's machine, its QMP socket (`qmp=`), the run a call outside any session uses (`run.standing=`) and how many trees can be attached at once (`slots=`). |
 | `chore vm:host:check` | Check the host; print the exact install command for anything missing. |
-| `chore vm:slot:status` | Who holds the machine-wide slot, for how long, and whether their VM is alive. |
-| `chore vm:slot:release-force` | Free the slot whoever holds it. A person's decision, for a holder that will not let go. |
 
 ### For the harness itself (`chores.yml`)
 
@@ -445,7 +443,7 @@ relative, and must not leave the repository.
 | --- | --- |
 | `chore check` | The VM-free self-test: `bash -n`, shellcheck, every unit test. CI job `unit`. |
 | `chore smoke` | Boot a real VM and drive every command through it (`tests/smoke.sh`). CI job `smoke-x86_64`. Needs KVM or HVF. |
-| `chore smoke:destroy` | Delete the smoke consumer's VM. |
+| `chore smoke:destroy` | Delete the smoke run's shared guest, which lives in a cache directory of its own. |
 | `chore host:check` | Check this host. |
 
 ### Environment
@@ -453,16 +451,13 @@ relative, and must not leave the repository.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FLTH_CONFIG` | search upward | Path of the consumer's config. |
-| `FLTH_KEEP_VM` | unset | `1`: `vm:test`, `vm:guest-test`, `vm.sh session` and every script that sources `vm-session.sh` leave the VM running, if its boot finished. |
-| `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/<project>/`) and firmware links. |
-| `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | The slot lock. Must be the same for every repository on the machine. |
-| `FLTH_SLOT_WAIT` | `3600` | Seconds `up` waits for the slot before giving up. |
-| `FLTH_SLOT_COUNT` | `1` | Machine-wide concurrent VM limit, 1–64. Set it consistently for every consumer and shell on this host; `2` admits two consumers when host memory permits. |
-| `FLTH_SLOT_BOOT_GRACE` | `180` | Seconds a new slot holder is trusted before a VM must be running. |
-| `FLTH_SLOT_ABSENT_GRACE` | the boot grace | Seconds a holder past its boot grace must be seen with no VM running before a waiter takes its slot. |
-| `FLTH_SLOT_RENEW_SECS` | a third of the boot grace | Seconds between renewals of a holder's lease while a boot attempt runs. |
-| `FLTH_SHARED_ROOT` | unset | A host directory holding every tree that shares the guest: suites use one guest shared with other consumers instead of a VM of their own. See [One guest for several consumers](#one-guest-for-several-consumers). |
-| `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | `8G`, `8`, `64G` | The size of that one guest. |
+| `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/shared-<guest>/`) and firmware links. Must be the same for every consumer on the host, or each gets a guest of its own. |
+| `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | Sockets and Vagrant's temporary directory, on a path short enough for a socket. |
+| `FLTH_SHARED_SLOTS` | `32` | How many runs' trees can be attached to the shared guest at once: the free PCIe root ports it boots with, 1–64. A run past it is refused, naming the setting. |
+| `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd` | The virtiofsd that serves a run's tree. |
+| `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | `8G`, `8`, `64G` | The size of the shared guest. |
+| `FLTH_SHARED_DEADLINE` | `480` | Minutes the shared guest stays up **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
+| `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. |
 | `FLTH_WATCHDOG` | on | `off` starts no [watchdog](#what-stops-a-vm) with a guest. |
 | `FLTH_WATCHDOG_INTERVAL` | `60` | Seconds between the watchdog's looks at a guest. |
 | `FLTH_WATCHDOG_WARN_SECS` | `300` | Seconds a process goes in uninterruptible sleep with no progress before it is warned of. |
@@ -482,9 +477,9 @@ falling back.
 
 | Host | Accelerator | Box | Vagrant provider plugin | Firmware | Shared directory |
 | --- | --- | --- | --- | --- | --- |
-| macOS, Apple Silicon | HVF | `christhomas/vagrant-rpi-bookworm-arm64` | `vagrant-qemu-christhomas` + `vagrant-notify-forwarder-christhomas` (forks that fix Mac-specific problems) | Homebrew QEMU's | virtiofs |
-| Linux aarch64 | KVM | `cloud-image/debian-12` (arm64), pinned | stock `vagrant-qemu` | `FLTH_FIRMWARE_*` (Debian: AAVMF) | 9p |
-| Linux x86_64 | KVM | `cloud-image/debian-12` (amd64), pinned | stock `vagrant-qemu` | none (SeaBIOS) | 9p |
+| macOS, Apple Silicon | HVF | `christhomas/vagrant-rpi-bookworm-arm64` | `vagrant-qemu-christhomas` + `vagrant-notify-forwarder-christhomas` (forks that fix Mac-specific problems) | Homebrew QEMU's | virtiofs, attached per run |
+| Linux aarch64 | KVM | `cloud-image/debian-12` (arm64), pinned | stock `vagrant-qemu` | `FLTH_FIRMWARE_*` (Debian: AAVMF) | virtiofs, attached per run |
+| Linux x86_64 | KVM | `cloud-image/debian-12` (amd64), pinned, q35 | stock `vagrant-qemu` | none (SeaBIOS) | virtiofs, attached per run |
 
 **Apple Silicon smoke runs have been recorded.** On 2026-11-03,
 `tests/smoke.sh` ran six times during the work on #84, using
@@ -531,34 +526,30 @@ and its GitHub release is in a private repository, whose download URL
 answers 404 to Vagrant. `chore vm:host:check` says so and prints the
 command that adds a copy of the `.box` file by hand.
 
-**Why 9p on Linux:** the stock provider has no virtiofs support; 9p
-needs no daemon and no root. The **share** uses
-`security_model=mapped-xattr`, so root in the guest can create files the
-host user owns. The **repository** mount uses `security_model=none`, so
-the guest sees the host's real ownership, modes and extended attributes:
-mapped-xattr synthesises the xattr namespace, and a tool that walks the
-tree reading attributes is told one exists and then that there is no data
-for it. Nothing writes ownership into the repository from the guest, so
-there is nothing to map.
+**Why virtiofs on Linux too:** a run's tree is attached while the guest runs, and
+QEMU has no way to add a 9p device's backend at runtime, only from its command line.
+The stock provider has no virtiofs support of its own, so the harness starts the
+distribution's virtiofsd itself, unprivileged and with no sandbox, and attaches the
+device through QMP (see [One guest for every consumer](#one-guest-for-every-consumer)).
+The Linux aarch64 path is untested: its guest boots UEFI with ACPI, so it takes the
+same `device_del` as x86_64.
 
-**Where state lives:** each consumer has its own machine (its own disk
-and its own installed tooling) under `FLTH_CACHE_DIR/machines/<project>/`,
-outside every repository; the harness checkout is never written to. The
-trade-off: each consumer pays its own first boot and its own disk,
-in exchange for setups that cannot interfere, a `destroy` that affects
-only its owner, and a harness checkout that stays clean for the
-`siblings` task. Boxes are shared in Vagrant's own box store.
+**Where state lives:** there is one machine for each guest release,
+`FLTH_CACHE_DIR/machines/shared-<guest>/`, outside every repository; the
+harness checkout is never written to. Every consumer on the host uses it
+(see [One guest for every consumer](#one-guest-for-every-consumer)). Boxes
+are shared in Vagrant's own box store.
 
-**Every run starts from the same disk.** The machine's disk carries what
-the consumer's setup script installed and nothing else. Every boot that
-runs anything is **disposable**: QEMU opens the disk read-only
-(`snapshot=on`) and sends every write to a temporary overlay under
-`FLTH_STATE_DIR/tmp`, unlinked as soon as it is open, so it is gone when
-the VM stops however it stops. A mount, a loop device, a half-finished
-install or a full `/var/tmp` that one run leaves behind cannot be seen
-by the next. Teardown inside a suite is a courtesy, not the guarantee:
-it does not run when a test crashes halfway, which is when the state it
-would have cleaned up is worst.
+**Every run starts from the same disk.** The machine's disk is the box's
+and carries nobody's setup. Every boot is **disposable**: QEMU opens the
+disk read-only (`snapshot=on`) and sends every write to a temporary overlay
+under `FLTH_STATE_DIR/tmp`, unlinked as soon as it is open, so it is gone
+when the VM stops however it stops. A mount, a loop device, a half-finished
+install or a full `/var/tmp` that one boot leaves behind cannot be seen by
+the next. Within a boot, each run has its own `/tmp`, `/var/tmp` and `/mnt`
+(below). Teardown inside a suite is a courtesy, not the guarantee: it does
+not run when a test crashes halfway, which is when the state it would have
+cleaned up is worst.
 
 **What the guest deletes goes back to the host.** The overlay is on the
 host's disk and grows with each block the guest touches. The drive takes
@@ -571,43 +562,16 @@ after a `sync` and 11 MiB three seconds later, having written and deleted 14336
 MiB by then. What a suite keeps is still on the host's disk, and a host with too little for it
 pauses the guest; `vm.sh` then says so (below).
 
-Only a **provisioning boot** writes the disk. When the setup script has
-changed since the disk last took it (the record is
-`machines/<project>/base.sha256`, `disk.setup=` in `chore vm:config`),
-`up` applies it on a boot whose writes are kept, stops that boot,
-**confirms** it stopped, and only then boots the disposable machine that
-runs things. That costs one extra boot each time the setup script
-changes. Nothing is run on a provisioning boot: one left up by a failed
-setup refuses `run` and `exec` until `chore vm:down`.
+Each consumer's setup script runs when it joins a boot, on that boot, and
+goes with it: after the guest stops, each consumer's setup runs again when
+it next joins. Install what every run needs in the setup script; put what
+should outlive the guest on the share or in the repository mount, both of
+which live on the host. A declared cache (`[cache] size`) is a directory of
+the guest's and lasts as long as the guest does.
 
-So **anything a suite keeps in the guest between runs is gone**: a build
-directory or package cache on the guest's own disk is rebuilt on every
-boot. Install what every run needs in the setup script; put what should
-outlive a run on the share or in the repository mount, both of which
-live on the host — or, for build state that is slow over a share,
-**declare a cache** (`[cache] size`).
-
-**A declared cache is the one exception, and only by name.** It is a
-second disk, `machines/<project>/cache.img`, attached outside the
-overlay and mounted at `/cache` on every boot, so what a run writes
-there is there for the next one, across `vm:down` and every disposable
-boot. It is attached through QEMU's own arguments, not as a provider
-disk, because the provider applies `snapshot=on` to every disk it
-attaches. The guest finds it by its serial and, on its first boot, gives
-it the filesystem its own root uses; the harness names no filesystem and
-knows nothing about what is kept there. A consumer that declares none
-gets no `/cache`, and nothing a run writes outlives it.
-
-**A kernel the setup script installs is the one the next boot runs.** A
-Linux guest boots through its own GRUB, which picks the newest. The macOS
-box has no bootloader in its boot path: QEMU loads a kernel from beside the
-box (6.1, `cloud-arm64`). So when a provisioning boot ends, the harness copies
-the disk's newest kernel and initrd to `machines/<project>/boot/`, and every
-later boot runs those instead. The box's Raspberry Pi kernels in `/boot`
-do not count, so a setup that installs no kernel stays on the box's. A kernel
-with no initrd fails the provisioning, naming the file. A machine provisioned
-by an earlier harness takes one extra boot, once, to find its kernel; `vm:destroy`
-deletes the copies with the disk.
+**A kernel the setup script installs is never run.** The shared guest does not
+restart for one consumer's setup, so a setup that installs a kernel the guest
+is not running fails that consumer's join, naming both kernels (#157, #207).
 
 **A boot that fails shows the guest's console.** The provider sends the
 guest's serial console, where its kernel and init write, to a socket
@@ -633,7 +597,7 @@ The file stays after a boot, failed or not, until the next one starts.
 there is no console to read and the three attempts above do not apply.
 When Vagrant reports that the box catalog or the box's download failed with
 a 5xx, a 408, 425 or 429, or no answer at all, `up` waits 30, 60 and then 120
-seconds between tries, for 15 minutes at most, keeping the slot. It then fails
+seconds between tries, for 15 minutes at most. It then fails
 naming the catalog and what it answered:
 
 ```text
@@ -710,8 +674,8 @@ files owned by the current user are eligible. A process naming an artifact,
 an open file, or an unsuccessful process/open-file inspection keeps it.
 Inspection uses `ps` and `lsof`; missing `lsof` retains files with a diagnostic,
 never guesses that they are unused. A directory-wide advisory lock serializes
-cleanup and startup until QEMU appears in the process table; guest boot and
-provisioning then proceed concurrently within the configured slot limit.
+cleanup and startup until QEMU appears in the process table; the guest's boot
+then proceeds without it.
 This mitigates the provider leak tracked in
 [vagrant-qemu#9](https://github.com/antimatter-studios/vagrant-qemu/issues/9);
 it does not change the separate notify-forwarder lifecycle.
@@ -732,8 +696,8 @@ session end, `reap`, `up`, or `run` deal with the guest it left.
 **A boot that did not finish is not a VM to keep.** QEMU starts early in a boot
 and the shares are mounted late, so a boot stopped between the two leaves a guest
 with no `/share` and no `/repo`. A session's end stops that guest whatever would
-have kept a VM: `FLTH_KEEP_VM=1`, a hold, another live session or another worktree.
-So does `vm.sh reap`. If it is still there, `vm.sh up` and `vm.sh run` replace it,
+have kept it: a hold, another live session or another worktree. So does `vm.sh
+reap`. If it is still there, `vm.sh up` and `vm.sh run` replace it,
 `vm.sh exec` refuses it and `vm.sh status` says so. A boot that another process is
 still running is left alone.
 
@@ -750,8 +714,8 @@ so does a daemon that has already left the command's process tree and group.
 connection alive (`ServerAliveInterval=15`, `ServerAliveCountMax=8`), so
 a VM halted underneath a running command — by its own deadline, by a
 `destroy`, by a host out of memory — ends that command in about two
-minutes instead of leaving it waiting for ever. `[vm] deadline_minutes`
-is an idle timeout, re-armed by every call, so it has to outlast your
+minutes instead of leaving it waiting for ever. The guest's deadline
+(`FLTH_SHARED_DEADLINE`) is an idle timeout, re-armed by every call, so it has to outlast your
 longest single call — a whole `vm:guest-test` run is one call — not your
 whole suite.
 
@@ -774,99 +738,86 @@ The other answers are a guest that powered itself off, a QEMU that ended with
 no power-off on the console, a guest that does not answer, and one that does,
 where ssh cannot tell a lost connection from a command that exited 255 itself.
 
-## The slot lock
+## One guest for every consumer
 
-The limit applies **across every repository on the machine**: one VM by
-default. Set `export FLTH_SLOT_COUNT=2` consistently in the host's shells
-to allow two consumers at once; a third waits and names both holders.
-Reducing the setting drains occupied slots above the new limit before
-admitting another VM. Status and release still find those slots.
-
-VMs ask for gigabytes; several beside a compiler once filled a laptop,
-and a full machine killed background work without saying why. Raising
-the count does not remove that protection. Admission, and every actual
-boot including provisioning and retries, checks available host memory:
-Linux's `MemAvailable`, or macOS's free, inactive and speculative pages
-at the page size reported by `vm_stat`. It requires the guest allocation
-plus **2048 MiB left for the host** and the allocations reserved by other
-booting guests. Settled running guests are already reflected in available
-memory. A reboot renews its reservation's boot grace. An unreadable memory
-probe or reservation refuses safely rather than assuming capacity. A
-holder with no reservation at all, from a harness before v0.5.5, is waited
-for instead, until its VM has settled past the boot grace or it has gone.
-The refusal names the consumer and the memory requirement; contention
-names the holders and waits. Neither failure is silent.
-
-- Each slot is a directory under `FLTH_STATE_DIR` (`mkdir` is atomic)
-  holding one record: machine identity, project name, time taken, and a
-  generation token, with its memory reservation beside it. Slot one keeps
-  the existing `slot.lock` path; additional slots use `slot-2.lock`, etc.
-- `up` takes the slot **before booting, and only when booting**. `down`
-  and `destroy` release it **only once the VM is confirmed stopped** — a
-  halt that left it running, or a state that could not be read, keeps
-  the slot.
-- A waiter breaks a lock only when the holder is older than the boot grace
-  (a slot is necessarily taken before its VM exists) **and** its VM has been
-  seen not running, with no gap, for `FLTH_SLOT_ABSENT_GRACE`. An unreadable
-  process table is not a dead holder. Until that absence has settled, the
-  holder's memory is waited for rather than refused or ignored.
-- **A boot keeps its own lease.** While a boot attempt runs, which can be minutes
-  before its VM process exists, its lease is renewed; it is renewed again when an
-  attempt fails, before the machine is stopped for the next one.
-- **A VM restarted in place has no process for a moment**, which is what an
-  abandoned one looks like. `vm.sh reload` (`chore vm:reload`) renews the lease
-  before the stop, renews it again before the boot, and keeps the slot throughout.
-  A consumer running the engine itself, which the harness does not wrap, says
-  so first: `vm-slot.sh renew && vagrant reload`.
-- **A restart nobody announced is protected by time alone.** The harness never
-  sees a bare `vagrant reload`, only the missing process, so it has the absence
-  window and nothing more. A VM that stays down longer than the window loses
-  its slot, a rival can take it, and the VM then returns beside that rival, past
-  the limit. Nothing here can stop it: renew first.
-- **There is no age-alone break.** A live holder is never robbed, however
-  long it has held the slot; a waiter gives up after `FLTH_SLOT_WAIT` and
-  names the remedy (`chore vm:down` there, or `chore vm:slot:release-force`).
-- Breaks and releases delete only the generation they inspected (checked
-  before and after an atomic move), a lock displaced by a race is kept as
-  an orphan rather than deleted, and a half-written record is never
-  mistaken for a holder.
-
-## One guest for several consumers
-
-A consumer normally has a VM of its own, and with one slot on the host two consumers
-wait for each other. To run them at once in one guest, set one thing, in the shell
-or the job that runs them:
+Every consumer on a host uses **one guest**, and nobody has a VM of their own.
+Nothing has to be set for it:
 
 ```sh
-export FLTH_SHARED_ROOT="$HOME/projects"   # a directory holding every tree that shares the guest
-chore test:vm                              # in one consumer
-chore test:vm                              # in another, at the same time
-chore vm:down                              # when you are done: stops it if nobody is using it
+chore test:vm      # in one consumer
+chore test:vm      # in another, or another worktree of the same one, at the same time
+chore vm:down      # when you are done: stops it if nobody is using it
 ```
 
-No consumer's tests or config change, and a consumer without the setting keeps its
-private VM. Every `vm.sh` call for the shared guest needs the setting, `chore vm:down`
-included: without it, that call means the consumer's private VM.
+**Each run attaches its own tree** to the running guest (#222): a `vhost-user-fs`
+device served by a virtiofsd of its own, hot-plugged into one of the free PCIe root
+ports the guest boots with (`FLTH_SHARED_SLOTS`, 32), tagged with the run's id, and
+mounted at `/repo` in the run's namespace. `/share` is the consumer's `[share] dir`
+in that tree. So a tree anywhere on the host can be tested: a worktree on another
+volume or under `/tmp` included, and there is no host directory to set. Attaching
+takes about a fifth of a second. A session's run is attached at its first call and
+detached when it ends; a call outside any session uses its worktree's standing run,
+which stays attached as long as the guest runs. `vm.sh reap` detaches the device of
+a run whose session died without ending it.
 
-Every consumer joining one boot needs the same directory and the same harness version.
-A join that differs is refused, saying which, because the guest was given both when it
-booted. Ask `chore vm:config` what this call has.
+**A run's virtiofsd never goes while the guest can use its mount.** A request the
+guest sends after the daemon has gone never completes, and removing that device then
+wedges PCI hot-plug and every new virtiofs mount in the guest until it reboots. So:
 
-The guest can read and write everything under that directory, so choose the narrowest
-one that holds your trees. A run only has its own tree mounted, at `/repo`, and its own
-share, at `/share`. A tree outside the directory is refused.
+- the daemon runs in a session of its own, where no signal to a suite reaches it;
+- a run ends in the guest first: its processes are stopped, the loop devices backed
+  by its tree detached, and its namespace dropped. Only then is the device removed,
+  then its chardev, and only then is the daemon stopped, if it has not stopped by
+  itself;
+- a daemon that has gone anyway is found by the watchdog each minute and by the next
+  call of its run. Its device is removed at once, before anything else runs in that
+  run; then the run is ended, and its suites end with **status 75**, saying why.
+
+On a Linux host the device is removed with `device_del`, which q35's ACPI hot-plug
+takes in tens of milliseconds. The macOS guest has no ACPI, and its kernel waits five
+seconds after `device_del`, so the guest is asked to power the slot off itself, about
+a second.
+
+Every consumer joining one boot needs the same harness version: a join from another
+is refused, because the guest was given the version's `guest-run.sh` when it booted.
 
 **One boot, each consumer's own setup.** The first suite boots the guest. The machine
-is `machines/shared-<guest>/`, so a consumer naming another `[vm] guest` gets another
-machine and waits for the slot. Its size comes from `FLTH_SHARED_MEMORY`,
-`FLTH_SHARED_CPUS` and `FLTH_SHARED_DISK`, not from a consumer's `[vm]` section. Each
-consumer's `[setup]` script runs when that consumer first joins a boot, one at a time,
-and tools install alongside each other. Nothing merges the scripts, and two versions
-of one tool are not provided for. A setup that installs a kernel the guest is not running fails that consumer's join, naming both kernels, because a shared guest does not restart for one consumer; such a consumer runs on a guest of its own. Setup stays with the boot: the disk is never
-provisioned, so after the guest stops each consumer's setup runs again when it joins.
+is `machines/shared-<guest>/`, so a consumer naming another `[vm] guest` gets a guest
+of that release. Its size comes from `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS` and
+`FLTH_SHARED_DISK`, and its idle deadline from `FLTH_SHARED_DEADLINE`, not from a
+consumer's `[vm]` section. Each consumer's `[setup]` script runs when that consumer
+first joins a boot, one at a time, and tools install alongside each other. Nothing
+merges the scripts, and two versions of one tool are not provided for. A setup that
+installs a kernel the guest is not running fails that consumer's join, naming both
+kernels, because the shared guest does not restart for one consumer (#157, #207).
+Setup stays with the boot: the disk is never provisioned, so after the guest stops
+each consumer's setup runs again when it joins.
 
-**The guest stays up between runs**, so a run does not pay for a boot or wait for the
-slot. A suite registers when its session begins and deregisters when it ends.
+**The host's memory is checked before every boot attempt.** A guest asks for
+gigabytes, and a full machine does not fail cleanly: it kills background work
+with no message connecting the two. So a boot needs the guest's memory plus
+**2048 MiB left for the host** in what the host has available: Linux's
+`MemAvailable`, or macOS's free, inactive and speculative pages at the page size
+`vm_stat` reports. A boot the host has no room for is refused, naming the numbers;
+a measurement that could not be made refuses too.
+
+**A suite joining a guest with little memory left is told** (#185): the guest's own
+`MemAvailable`, its total, and the suites using it, when what is available is under
+`FLTH_SHARED_MIN_AVAILABLE` (2048 MiB). It still joins. Size the guest from what its
+suites use at once: measured on an Apple Silicon host, three suites (two compiling
+their whole suites, one running tests) peaked at 6960 MiB used of a guest's memory,
+with 2986 MiB still available; six at once, three of them compiling in release, ran a
+10G guest out of memory, and its kernel killed processes. `FLTH_SHARED_MEMORY` sets
+the size at the next boot.
+
+**A guest whose kernel has oopsed keeps answering** (#196), so a suite on it can go on
+and report what follows as its own result. A suite joining such a guest (`vm.sh up`),
+and a session ending on it, is told so, naming the first oops in the guest's console
+and the process it hit, and where the console is. `chore vm:down` and a new boot give
+a kernel that has not.
+
+**The guest stays up between runs**, so a run does not pay for a boot. A suite
+registers when its session begins and deregisters when it ends.
 
 - `chore vm:status` lists the suites using the guest.
 - A `vm.sh run` or `vm.sh exec` outside any session is on that list for as long as it
@@ -876,10 +827,12 @@ slot. A suite registers when its session begins and deregisters when it ends.
 - A suite that was killed outright never deregisters. Its entry records its
   process, and is dropped before anyone counts.
 - `chore vm:destroy` is refused while the list is not empty.
-- With nothing asking anything of it, the guest powers itself off after 480 minutes.
+- With nothing asking anything of it, the guest powers itself off after
+  `FLTH_SHARED_DEADLINE` minutes, 480 by default.
 
-Registering and the shutdown check take the same lock, so a suite that registers
-during a shutdown waits for it and then boots a new guest.
+Registering, booting and the shutdown check take the same lock, so a suite that
+registers during a shutdown waits for it and then boots a new guest, and two
+suites that both find no guest boot one.
 
 **Each run has its own files.** A session is a run, with a random root on the
 guest's own disk, `/var/lib/fs-linux-test-harness/runs/<id>/`, which `FLTH_RUN_ROOT`
@@ -906,7 +859,11 @@ of its own. The machine has no second disk.
 
 **The end of a run** stops every process in its namespace, TERM and then KILL, detaches
 the loop devices backed by its root, and deletes the root. That is what a signal to
-one suite does to its commands in the guest, and no other run is touched. If the guest
+one suite does to its commands in the guest, and no other run is touched. A process
+that no signal ends, one in uninterruptible sleep (state D), which only a reboot
+clears, is named with its state and where in the kernel it waits, and the end goes on
+without it: the run's `/var/cache` is freed and its root deleted, and each step that
+could wait on it is bounded (#187). If the guest
 is lost, every suite using it is named in the report on stderr.
 
 **What a path does not separate.** All runs share one kernel:
@@ -925,32 +882,17 @@ Issue #157 lists the consumers that do any of these today.
 
 In order of precision:
 
-1. **`down`** — `chore vm:down` or a chore `defer:`; and a **session's
-   end** — `vm.sh session <command...>` finishing, the exit trap of a script
-   that sources it, or `vm:test`'s own teardown — which brings the VM down
-   unless it is held or another live session is using it. Fails loudly when
-   the VM will not stop.
-2. **`reap`** — from `lifecycle: after_all`: stops only a VM booted by
-   that same chore invocation, identified by its process ID and start time.
-   Another invocation's idle VM is left alone, even when a lifecycle sweep
-   names several consumer configs. Fails soft, so an unrelated `chore build`
-   is not turned red. Use `vm:down` for an older run's VM; an explicit
-   `scripts/vm.sh reap` outside chore remains a manual leak-cleanup command.
-   It leaves alone a VM a **live session** is using: `vm-session.sh` (and so
-   `vm:test`, `vm:guest-test`, `vm.sh session` and any script that sources
-   it) records its
-   process in the machine directory, and reap says which pid it left the VM
-   for. A session whose process has died no longer counts. When a session
-   ends while another is still using the same machine, it leaves the VM to
-   that one, and the last out brings it down. A session or reap from another
-   worktree of the project leaves the VM to the worktree its guest has mounted.
-   A worktree record is trusted only for the QEMU process that booted it,
-   identified by its PID and start time. A record from an earlier boot, a
-   legacy record without a boot identity, or an identity that cannot be read
-   is treated as unknown: it cannot refuse a command or name an old worktree
-   in `status`. A boot still in progress is protected by its live `up` lock.
+1. **`down`** — `chore vm:down` or a chore `defer:`, which stops the shared guest
+   only when no suite is using it, and fails loudly when the guest will not stop.
+   A **session's end** — `vm.sh session <command...>` finishing, or the exit trap of
+   a script that sources it — ends its run and stops nothing else, unless the boot it
+   started did not finish: that guest has no shares, and is stopped.
+2. **`reap`** — from `lifecycle: after_all`. It stops a guest whose boot did not
+   finish, and drops suites whose process has gone from the list. An idle shared
+   guest is not a leak: it is there for the next run, and `reap` leaves it. Fails
+   soft, so an unrelated `chore build` is not turned red.
 3. **The guest's own deadline** — scheduled inside the guest at every boot
-   (`[vm] deadline_minutes`), confirmed from logind's record, and re-armed
+   (`FLTH_SHARED_DEADLINE`), confirmed from logind's record, and re-armed
    by the setup call, `run` and `exec` as the call starts and as it ends (at
    most once a minute, or once in a sixth of a shorter deadline), so it measures
    idleness rather than the boot's lifetime. logind's `/run/nologin` for a
@@ -965,16 +907,15 @@ In order of precision:
    its suite and stops nothing. So does what the kernel writes on the console, which
    is read on the host: an oops, a soft lockup, a hung task, an RCU stall or a panic,
    and a taint that says one happened. A guest that has stopped answering, or a process that
-   has made no progress past its limit, which only a reboot can clear, ends the guest
-   and frees the slot, whichever suite it belongs to. Every suite on that guest then
+   has made no progress past its limit, which only a reboot can clear, ends the guest,
+   whichever suite it belongs to. Every suite on that guest then
    ends with **status 75** and a message naming the reason, so an interrupted run is
    not read as a failure of what it was testing. A process doing heavy I/O is in the
    same sleep for hours, so progress is measured by its time on the CPU and its bytes
    read and written, not by the state alone. The limits are settings.
 
-`hold` (and `chore vm:up`) opts out of a session's end, 2 and 3 for a
-person working in the guest: the VM stays up, and keeps the slot, until
-`down` or `destroy` clears the hold. A reboot re-arms the deadline.
+`hold` (and `chore vm:up`) cancels 3 for a person working in the guest: the guest
+stays up until `down` or `destroy` clears the hold. A reboot re-arms the deadline.
 
 ## Host setup
 
@@ -994,13 +935,13 @@ vagrant plugin install vagrant-notify-forwarder-christhomas --plugin-version 0.7
 **Linux x86_64** (a CI runner does all of this with `scripts/ci-setup-linux.sh`)
 
 ```sh
-sudo apt-get install qemu-system-x86 qemu-utils
+sudo apt-get install qemu-system-x86 qemu-utils virtiofsd
 # Vagrant 2.4.9 from HashiCorp's apt repository, then:
 vagrant plugin install vagrant-qemu --plugin-version 0.6.3
 # and read-write /dev/kvm (the kvm group)
 ```
 
-**Linux aarch64.** `apt-get install qemu-system-arm qemu-utils qemu-efi-aarch64`
+**Linux aarch64.** `apt-get install qemu-system-arm qemu-utils qemu-efi-aarch64 virtiofsd`
 and read-write `/dev/kvm`. HashiCorp ships no linux-arm64 Vagrant, so a
 current one runs from source under bundler, with its plugins in the
 Gemfile's `:plugins` group (Vagrant's bundler mode does not use
@@ -1045,8 +986,8 @@ Every pull request and every push to `main` runs
 
 | Job | Runs on | What a green run proves |
 | --- | --- | --- |
-| `unit (VM-free, OS)` | `ubuntu-latest` and `macos-15` arm64 | `chore check` with each host's system Bash: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the slot lock's guarantees (no age-alone break, generation-bound deletes, half-written records, unreadable process tables, contention between two consumers); the orchestration against a stub engine (boot retries, never releasing on an unread state, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
-| `smoke (real VM, x86_64 KVM)` | `ubuntu-latest` with KVM | `chore smoke`: a real Debian VM boots through the harness under KVM; the smoke consumer's setup installs `e2fsprogs` inside it; a run that leaves a file, a loop device and a mount behind changes no byte of the machine's disk, and the next boot sees none of it; a second consumer is refused the slot; exit status, output and files cross host↔guest; hold survives the reaper and a leaked VM does not; a realistic suite (build an ext4 image from host files, read back with `debugfs`, compare, `e2fsck -fn`, collect results on the host) **passes**; the same suite with one byte of file data corrupted **fails with a non-zero exit**; `FLTH_KEEP_VM=1`, `down` and `destroy` behave. |
+| `unit (VM-free, OS)` | `ubuntu-latest` and `macos-15` arm64 | `chore check` with each host's system Bash: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the orchestration against a stub engine (the shared guest's default root, worktrees, the list of suites, the host memory check, boot retries, never taking an unread state for a stop, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
+| `smoke (real VM, x86_64 KVM)` | `ubuntu-latest` with KVM | `chore smoke`: a real Debian VM boots through the harness under KVM; the smoke consumer's setup installs `e2fsprogs` inside it; the machine is the shared guest's and sees the directory holding the checkout, with nothing set; a run that leaves a file, a loop device and a mount behind changes no byte of the machine's disk, and the next boot sees none of it; exit status, output and files cross host↔guest; the reaper leaves the shared guest up; a consumer whose setup installs a kernel is refused; two consumers join one guest at once; a realistic suite (build an ext4 image from host files, read back with `debugfs`, compare, `e2fsck -fn`, collect results on the host) **passes**; the same suite with one byte of file data corrupted **fails with a non-zero exit**; `down` and `destroy` behave. |
 | `ci-ok` | `ubuntu-latest` | Green only if every job above ran and succeeded (a failed, cancelled **or skipped** job fails it). |
 
 **The required status check is `ci-ok`.** Branch protection and
@@ -1102,8 +1043,8 @@ Explicitly **not** in this version:
 ## Provenance
 
 Extracted from three diverged copies of the same oracle-VM tooling in
-`rust-fs-ext4`, `rust-fs-xfs` and `rust-fs-btrfs` (`scripts/vm.sh`,
-`vm-slot.sh`, `vm-session.sh`, `tests/vagrant/debian/Vagrantfile`). Each
+`rust-fs-ext4`, `rust-fs-xfs` and `rust-fs-btrfs` (`scripts/vm.sh`, a
+`vm-slot.sh` since removed, `vm-session.sh`, `tests/vagrant/debian/Vagrantfile`). Each
 copy had fixes the others lacked; this repository takes the most correct
 version of each behaviour and removes everything filesystem-specific.
 The consumers move onto it together, each in its own pull request.

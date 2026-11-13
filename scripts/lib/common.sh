@@ -3,8 +3,8 @@
 # lib/common.sh — where things live, for every script in the harness.
 #
 # Sourced, never executed. Loading a consumer is separate from sourcing
-# this file so that a command which needs no consumer (`vm-slot.sh
-# status`, the usage text) never fails for want of one.
+# this file so that a command which needs no consumer (the usage text)
+# never fails for want of one.
 
 FLTH_HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
@@ -14,9 +14,9 @@ FLTH_HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 . "$FLTH_HARNESS/scripts/lib/engine.sh"
 
 # Machines, their disks and the firmware links are CACHE: regenerable,
-# large, and nothing a repository should carry. The slot lock is STATE:
-# small, and its whole meaning is that it is shared by every repository
-# on the machine, so it lives outside all of them.
+# large, and nothing a repository should carry. Sockets and Vagrant's
+# temporary directory are STATE: small, and on a path short enough for a
+# socket, outside every repository.
 FLTH_CACHE_DIR="${FLTH_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fs-linux-test-harness}"
 FLTH_STATE_DIR="${FLTH_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fs-linux-test-harness}"
 
@@ -30,64 +30,41 @@ flth_die() {
 #   FLTH_CONFIG       absolute path of the consumer's config
 #   FLTH_ROOT         the consumer repository
 #   FLTH_SHARE_HOST   the shared directory, host side
-#   FLTH_MACHINE_DIR  this consumer's machine: engine state, hold marker,
-#                     setup stamp
+#   FLTH_MACHINE_DIR  the shared guest's machine: engine state, hold
+#                     marker, setup stamps
 #   FLTH_HOLD         the hold marker
 #
-# The machine directory is keyed by [project] name, so two checkouts of
-# one project share a machine and two projects never do.
+# The machine directory is keyed by the guest release, so every consumer
+# and every checkout of one shares a machine (flth_shared_load).
 # shellcheck disable=SC2034  # read by the scripts that source this
 flth_load() {
     FLTH_CONFIG="$(flth_find_config)" || return 1
     export FLTH_CONFIG
     flth_config_load "$FLTH_CONFIG" || return 1
     FLTH_SHARE_HOST="$FLTH_ROOT/$CFG_share_dir"
-    FLTH_MACHINE_NAME="$CFG_project_name"
     flth_shared_load || return 1
     FLTH_MACHINE_DIR="$FLTH_CACHE_DIR/machines/$FLTH_MACHINE_NAME"
     FLTH_HOLD="$FLTH_MACHINE_DIR/keep-running"
 }
 
-# THE SHARED GUEST (#153). One setting, FLTH_SHARED_ROOT, and a consumer's suites
-# use the one guest every consumer that set it uses, instead of a VM of its own.
-# The machine is therefore nobody's: it is named for its guest release, and what a
-# consumer's [vm] section says about memory, CPUs, disk and the deadline describes
-# the private VM it would otherwise have. A host with other needs says so here.
+# THE SHARED GUEST (#153, #220, #222). Every consumer's suites use one guest, the
+# one every other consumer on the host uses, and nobody has a VM of their own. The
+# machine is therefore nobody's: it is named for its guest release, and what a
+# consumer's [vm] section says about memory, CPUs, disk, the SSH port and the
+# deadline is not read. A host with other needs says so here.
 FLTH_SHARED_MEMORY_DEFAULT=8G
 FLTH_SHARED_CPUS_DEFAULT=8
 FLTH_SHARED_DISK_DEFAULT=64G
 FLTH_SHARED_SSH_PORT=50200
 FLTH_SHARED_DEADLINE_MINUTES=480
 
-flth_shared() { [ -n "${FLTH_SHARED_ROOT:-}" ]; }
-
+# THE GUEST SEES NO HOST DIRECTORY OF ITS OWN (#222). Each run attaches its own
+# tree to the running guest (lib/engine.sh, engine_attach_tree), so a tree anywhere
+# on the host can be tested, and there is no root to set or derive.
 # shellcheck disable=SC2034  # read by the scripts that source this
 flth_shared_load() {
-    flth_shared || return 0
-    case "$FLTH_SHARED_ROOT" in
-        /*) ;;
-        *) flth_config_error "FLTH_SHARED_ROOT must be an absolute path, got $FLTH_SHARED_ROOT"; return 1 ;;
-    esac
-    case "$FLTH_SHARED_ROOT" in
-        *[!A-Za-z0-9._/\ -]*)
-            flth_config_error "FLTH_SHARED_ROOT may use only letters, digits, spaces, '.', '_', '-' and '/', got $FLTH_SHARED_ROOT"
-            return 1 ;;
-    esac
-    if ! FLTH_SHARED_ROOT="$(cd "$FLTH_SHARED_ROOT" 2>/dev/null && pwd -P)"; then
-        flth_config_error "FLTH_SHARED_ROOT is not a directory"
-        return 1
-    fi
-    export FLTH_SHARED_ROOT
-    case "$FLTH_ROOT/" in
-        "${FLTH_SHARED_ROOT%/}"/*) ;;
-        *)
-            flth_config_error "$FLTH_ROOT is not under FLTH_SHARED_ROOT ($FLTH_SHARED_ROOT), the host directory" \
-                "the shared guest can see. Set it to a directory holding every consumer that shares the guest."
-            return 1 ;;
-    esac
-    # Where this tree is in what the guest sees, and the /cache it asks for: that
-    # is a directory of the guest's in a run, not a disk of the machine's.
-    FLTH_SHARED_RELATIVE="${FLTH_ROOT#"${FLTH_SHARED_ROOT%/}"/}"
+    # Where the /cache a consumer asks for is: a directory of the guest's in a run,
+    # not a disk of the machine's.
     FLTH_SHARED_CACHE="$CFG_cache_size"
     CFG_cache_size=""
     FLTH_MACHINE_NAME="shared-$CFG_vm_guest"
@@ -95,7 +72,18 @@ flth_shared_load() {
     CFG_vm_cpus="${FLTH_SHARED_CPUS:-$FLTH_SHARED_CPUS_DEFAULT}"
     CFG_vm_disk="${FLTH_SHARED_DISK:-$FLTH_SHARED_DISK_DEFAULT}"
     CFG_vm_ssh_port="$FLTH_SHARED_SSH_PORT"
-    CFG_vm_deadline_minutes="$FLTH_SHARED_DEADLINE_MINUTES"
+    CFG_vm_deadline_minutes="${FLTH_SHARED_DEADLINE:-$FLTH_SHARED_DEADLINE_MINUTES}"
+    case "$CFG_vm_deadline_minutes" in
+        '' | *[!0-9]*)
+            flth_config_error "FLTH_SHARED_DEADLINE must be a whole number of minutes, got $CFG_vm_deadline_minutes"
+            return 1 ;;
+    esac
+    case "${FLTH_SHARED_SLOTS:-32}" in
+        [1-9] | [1-5][0-9] | 6[0-4]) ;;
+        *)
+            flth_config_error "FLTH_SHARED_SLOTS must be a whole number from 1 to 64, got $FLTH_SHARED_SLOTS"
+            return 1 ;;
+    esac
     flth_config_validate "$FLTH_CONFIG"
 }
 

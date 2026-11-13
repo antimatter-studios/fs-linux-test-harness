@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 # shared-guest-boot.sh — joining a shared guest that another boot set up differently
-# (#153). A guest sees one host directory and carries one version of lib/guest-run.sh,
-# both fixed when it boots. A join that disagrees with either would mount the wrong
-# path or call the tool with the wrong words, so it is refused, naming the difference.
+# (#153). A guest carries one version of lib/guest-run.sh, fixed when it boots. A join
+# from a harness with another would call the tool with the wrong words, so it is
+# refused, naming the difference. Which host directory a run uses is the run's own
+# (#222), so nothing about it is fixed at boot.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 make_stub_harness
-export FLTH_SLOT_WAIT=0
 VM="$STUB_HARNESS/scripts/vm.sh"
 TOOL="$STUB_HARNESS/scripts/lib/guest-run.sh"
 export SETUP_LOG="$SANDBOX/setup.log"
@@ -17,22 +17,13 @@ SRC="$BASE/src"
 make_consumer "$SRC/one" boot-one
 make_consumer "$SRC/two" boot-two
 mkdir -p "$FLTH_TEST_STUB/guest-repo/one" "$FLTH_TEST_STUB/guest-repo/two" "$FLTH_TEST_STUB/guest-proc"
-in_tree() { (cd "$SRC/$1" && shift && FLTH_SHARED_ROOT="$ROOT" "$VM" "$@"); }
+in_tree() { (cd "$SRC/$1" && shift && "$VM" "$@"); }
 
-ROOT="$SRC"
 in_tree one up >/dev/null 2>&1
 check_eq "$?" 0 "the first consumer boots the guest"
 in_tree two up >/dev/null 2>&1
-check_eq "$?" 0 "another with the same directory and the same harness joins"
+check_eq "$?" 0 "another with the same harness joins"
 
-ROOT="$BASE"
-out="$(in_tree two up 2>&1)"
-check_eq "$?" 1 "a join naming another FLTH_SHARED_ROOT is refused"
-check_contains "$out" "booted with FLTH_SHARED_ROOT=$SRC" "naming what the guest sees"
-check_contains "$out" "this call has $BASE" "and what this call has"
-check_eq "$(cat "$FLTH_TEST_STUB/state")" running "and the guest stays up"
-
-ROOT="$SRC"
 printf '# another version\n' >> "$TOOL"
 out="$(in_tree two up 2>&1)"
 check_eq "$?" 1 "a join from a harness with another guest tool is refused"

@@ -24,10 +24,12 @@ ENGINE_VAGRANT_LOCK_WAIT=2
 
 engine_prepare() {
     export VAGRANT_CWD="$ENGINE_VAGRANT_DIR"
-    # A shared guest sees the host directory that holds every tree using it, in
-    # both mounts, each with its own security model. A run then mounts its own
-    # tree and share over them (lib/guest-run.sh), so that is all it can see.
-    export FLTH_REPO_DIR="${FLTH_SHARED_ROOT:-$FLTH_ROOT}"
+    # Nothing is shared at boot (#222): each run's tree is attached while the guest
+    # runs, through QMP, to one of FLTH_VM_SLOTS free root ports (engine_attach_tree).
+    export FLTH_VM_QMP
+    FLTH_VM_QMP="$(engine_vagrant_qmp_socket)"
+    export FLTH_VM_SLOTS="${FLTH_SHARED_SLOTS:-32}"
+    export FLTH_VM_MEM_DIR="$FLTH_STATE_DIR/tmp"
     export VAGRANT_DOTFILE_PATH="$FLTH_MACHINE_DIR/vagrant"
     export FLTH_VM_NAME="$FLTH_MACHINE_NAME"
     export FLTH_VM_MEMORY="$CFG_vm_memory"
@@ -36,7 +38,6 @@ engine_prepare() {
     export FLTH_VM_SSH_PORT="$CFG_vm_ssh_port"
     export FLTH_VM_DEADLINE_MINUTES="$CFG_vm_deadline_minutes"
     export FLTH_VM_GUEST="$CFG_vm_guest"
-    export FLTH_SHARE_DIR="${FLTH_SHARED_ROOT:-$FLTH_SHARE_HOST}"
     # Every Vagrant command evaluates the Vagrantfile, which requires it;
     # only `up` acts on it, and engine_up --persist overrides it there.
     export FLTH_VM_DISPOSABLE=1
@@ -46,7 +47,8 @@ engine_prepare() {
     [ -n "$CFG_cache_size" ] && FLTH_VM_CACHE_DISK="$(engine_vagrant_cache_path)"
     export FLTH_VM_CONSOLE_LOG
     FLTH_VM_CONSOLE_LOG="$(engine_console_log)"
-    mkdir -p "$FLTH_MACHINE_DIR" "$FLTH_SHARE_HOST" "$(dirname "$(engine_ssh_control)")"
+    mkdir -p "$FLTH_MACHINE_DIR" "$FLTH_SHARE_HOST" "$(dirname "$(engine_ssh_control)")" \
+        "$(dirname "$FLTH_VM_QMP")" "$FLTH_VM_MEM_DIR" "$(engine_vagrant_attached_dir)"
 
     # UEFI firmware for an arm64 guest on a Linux host. The QEMU provider
     # copies `edk2-aarch64-code.fd` and `edk2-arm-vars.fd` out of its
@@ -156,7 +158,7 @@ engine_state() {
         # and not_created, the stock provider's states. `poweroff` was
         # carried over from older copies of this code and never observed;
         # it stays mapped because the cost of dropping it, if some build
-        # does say it, is a halted VM read as `unknown` holding the slot.
+        # does say it, is a halted VM read as `unknown`, which nothing stops.
         stopped | poweroff | shutoff) echo stopped ;;
         *) echo unknown ;;
     esac
@@ -168,7 +170,7 @@ engine_state() {
 # limited to 104 bytes with its terminator. Inherited, TMPDIR is whatever
 # the caller had — a consumer's scratch directory inside its checkout —
 # and a path over the limit stops the VM booting with nothing naming the
-# cause. So `vagrant up` gets a directory beside the slot, like the ssh
+# cause. So `vagrant up` gets a directory under FLTH_STATE_DIR, like the ssh
 # control socket, and a boot is refused, naming the path and its length,
 # if even that is too long.
 #
@@ -187,7 +189,7 @@ engine_vagrant_tmpdir() {
     if [ "$(uname -s)" = Darwin ] && [ "$longest" -gt "$ENGINE_VAGRANT_SOCKET_MAX" ]; then
         echo "vm: the virtiofs sockets would be created under $dir, a path of" >&2
         echo "    $longest bytes; a Unix socket path must be at most $ENGINE_VAGRANT_SOCKET_MAX. Put FLTH_STATE_DIR" >&2
-        echo "    (or XDG_STATE_HOME) on a shorter path, for every repository alike: the slot lives there too." >&2
+        echo "    (or XDG_STATE_HOME) on a shorter path, for every repository alike." >&2
         return 1
     fi
     mkdir -p "$dir" && chmod u=rwx,go= "$dir" || return 1
@@ -235,7 +237,7 @@ engine_vagrant_cache_disk() {
 }
 
 # The disposable overlay is created under the TMPDIR QEMU inherits, which
-# is this directory too: on disk beside the slot, never a RAM-backed /tmp
+# is this directory too: on disk under FLTH_STATE_DIR, never a RAM-backed /tmp
 # that a long run's writes could fill.
 # THE SSH FORWARD PORT IS CHOSEN AT EVERY BOOT (#49). QEMU cannot forward
 # a port another socket holds, and the configured one ([vm] ssh_port,
@@ -419,15 +421,15 @@ engine_up() {
     export FLTH_VM_SSH_PORT="$port"
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
-    # A SHARED GUEST'S DISK NEVER KEEPS VAGRANT'S KEY. Vagrant replaces the box's key
-    # with one of its own on a machine's first boot and connects with it from then on.
-    # A private machine keeps that on its provisioning boot. A shared machine has none,
-    # so the key went with the overlay and every later boot failed with `Authentication
-    # failure` until its timeout (measured on an Apple Silicon host, #153). Forgetting
-    # the machine's copy makes each boot a first boot to Vagrant.
-    if [ -n "${FLTH_SHARED_ROOT:-}" ]; then
-        rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
-    fi
+    # THE SHARED GUEST'S DISK NEVER KEEPS VAGRANT'S KEY. Vagrant replaces the box's
+    # key with one of its own on a machine's first boot and connects with it from then
+    # on. The shared machine has no boot whose writes are kept, so the key went with
+    # the overlay and every later boot failed with `Authentication failure` until its
+    # timeout (measured on an Apple Silicon host, #153). Forgetting the machine's copy
+    # makes each boot a first boot to Vagrant.
+    rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
+    # A new guest has no device attached, whatever an earlier one left on record.
+    engine_vagrant_forget_attached
     # QEMU starts the log afresh, but a boot that fails before QEMU starts
     # must not leave the last boot's console to be shown as its own.
     rm -f "$(engine_console_log)"
@@ -465,7 +467,10 @@ engine_vagrant_stop_forwarders() {
     done
 }
 
-engine_stop_host_daemons() { engine_vagrant_stop_forwarders; }
+engine_stop_host_daemons() {
+    engine_vagrant_stop_forwarders
+    engine_alive "$(engine_identity)" || engine_vagrant_forget_attached
+}
 
 engine_down() {
     if [ "${1:-}" = "--force" ]; then
@@ -475,6 +480,8 @@ engine_down() {
     fi
     engine_vagrant_stop_forwarders
     engine_ssh_close
+    # Only once QEMU has gone: a virtiofsd must outlive every guest that can use it.
+    engine_alive "$(engine_identity)" || engine_vagrant_forget_attached
 }
 
 # The cache goes with the machine: destroy is the reset, and a cache is
@@ -484,6 +491,7 @@ engine_destroy() {
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     engine_vagrant destroy -f >&2 || return
+    engine_vagrant_forget_attached
     rm -f "$(engine_vagrant_cache_path)"
     engine_forget_kernel
 }
@@ -507,7 +515,7 @@ engine_ssh_config() {
 # seconds of them. So the first call opens a master that persists, and
 # every later call rides it.
 #
-# The socket lives beside the slot rather than in the machine directory:
+# The socket lives under FLTH_STATE_DIR rather than in the machine directory:
 # a Unix socket path is limited to about 104 bytes, and a machine
 # directory under a deep checkout can exceed that on its own. Hashed, so
 # the length is fixed whatever the project is called.
@@ -651,7 +659,18 @@ engine_vagrant_qemu_args() {
         candidates="$(pgrep -x 'qemu-system-.*' 2>/dev/null)" || candidates=""
     fi
     if [ -n "$candidates" ]; then
-        procs="$(ps -p "${candidates//$'\n'/,}" -o args= 2>/dev/null)" || return 2
+        # A QEMU that exits between pgrep finding it and ps reading it (#205): ps
+        # finds none of the pids and fails, which is a VM that has stopped, not a
+        # table that could not be read. One that is still there reads again whole.
+        if ! procs="$(ps -p "${candidates//$'\n'/,}" -o args= 2>/dev/null)" || [ -z "$procs" ]; then
+            local pid gone=1
+            # Another user's process answers EPERM, and is there all the same.
+            for pid in $candidates; do
+                if perl -e 'exit((kill(0, $ARGV[0]) || $!{EPERM}) ? 0 : 1)' "$pid"; then gone=0; fi
+            done
+            [ "$gone" = 0 ] || return 1
+            procs="$(ps -eo args= 2>/dev/null)" || return 2
+        fi
     else
         procs="$(ps -eo args= 2>/dev/null)" || return 2
     fi
@@ -740,4 +759,228 @@ engine_guest_report() {
 engine_overlay_dir() {
     # shellcheck disable=SC2153  # FLTH_STATE_DIR, set in lib/common.sh
     printf '%s/tmp\n' "$FLTH_STATE_DIR"
+}
+
+# A RUN'S TREE, ATTACHED WHILE THE GUEST RUNS (#222). Each run has a virtiofsd of
+# its own serving its tree, a vhost-user-fs device fs-<run> on a free root port
+# flth_rp<N>, its chardev c-<run>, and the run id as the tag the guest mounts. The
+# record of each attachment is a file in the machine directory, holding the slot,
+# the daemon's pid and its start, the socket and the tree.
+#
+# THE ONE RULE (measured on two guests, see the pull request): a virtiofsd must
+# never end while the guest can still use its mount. A request the guest sends after
+# the daemon has gone never completes, and removing that device then wedges PCI
+# hot-plug and every new virtiofs mount in the whole guest until it reboots. So the
+# daemon is started in a session of its own, where no signal to a suite reaches it,
+# and it is only ever stopped after its device has gone: it ends by itself when QEMU
+# lets go of its socket, and is signalled only if it has not.
+engine_vagrant_qmp_socket() { printf '%s/qmp/%s.sock\n' "$FLTH_STATE_DIR" "$(flth_hash8 "$FLTH_MACHINE_DIR")"; }
+engine_vagrant_attached_dir() { printf '%s/attached\n' "$FLTH_MACHINE_DIR"; }
+engine_vagrant_vfs_socket() { printf '%s/vfs/%s.sock\n' "$FLTH_STATE_DIR" "$(flth_hash8 "$FLTH_MACHINE_DIR/$1")"; }
+
+engine_vagrant_qmp() { perl "$FLTH_HARNESS/scripts/lib/qmp.pl" "$FLTH_VM_QMP" "$@"; }
+
+# The distribution's virtiofsd on Linux, the tap's on macOS (scripts/host-tools.sh).
+engine_vagrant_virtiofsd() {
+    local candidate
+    for candidate in "${FLTH_VIRTIOFSD:-}" "$(command -v virtiofsd 2>/dev/null || true)" \
+        /usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd; do
+        [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+    done
+    return 1
+}
+
+# The flags the macOS provider gave its own folders' virtiofsd, which this replaces:
+# no sandbox (it runs as the host user), no file handles, extended attributes, and on
+# macOS one thread, because the port switches credentials process-wide, and the box's
+# vagrant user (1001) seen as the host user, where the build can translate ids.
+engine_vagrant_virtiofsd_args() {
+    local bin="$1"
+    printf '%s\n' --sandbox=none --inode-file-handles=never --xattr
+    if [ "$(uname -s)" = Darwin ]; then
+        printf '%s\n' --thread-pool-size=1
+        if "$bin" --help 2>&1 | grep -q -- --translate-uid; then
+            printf '%s\n' --translate-uid "map:1001:$(id -u):1" --translate-gid "map:1001:$(id -g):1"
+        fi
+    fi
+}
+
+# Process start time, to tell a daemon from a pid reused since.
+engine_vagrant_started() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'; }
+
+# The devices QEMU has, one id a line.
+engine_vagrant_devices() {
+    engine_vagrant_qmp '{"execute":"qom-list","arguments":{"path":"/machine/peripheral"}}' |
+        perl -MJSON::PP -ne 'print "$_->{name}\n" for @{decode_json($_)}'
+}
+
+# The root port a device sits on, from QOM, so a device with no record is still found.
+engine_vagrant_device_slot() {
+    engine_vagrant_qmp "{\"execute\":\"qom-get\",\"arguments\":{\"path\":\"/machine/peripheral/$1\",\"property\":\"parent_bus\"}}" |
+        sed -n 's/.*flth_rp\([0-9][0-9]*\).*/\1/p'
+}
+
+# engine_attach_tree <run> <tree>: attach a tree as the run's device. Exit 1, saying
+# why, when it could not; nothing is left behind then.
+engine_attach_tree() {
+    local run="$1" tree="$2" bin sock record log devices taken dev slot="" n pid start tries=0 err arg
+    local -a args=()
+    record="$(engine_vagrant_attached_dir)/$run"
+    bin="$(engine_vagrant_virtiofsd)" || {
+        echo "vm: no virtiofsd on this host, so $tree cannot be attached to the guest. 'chore vm:host:check' says what to install." >&2
+        return 1
+    }
+    devices="$(engine_vagrant_devices)" || return 1
+    # Taken: what the records say and what QEMU says, so a device nobody recorded is
+    # not attached over.
+    taken=" $(cat "$(engine_vagrant_attached_dir)"/* 2>/dev/null | sed -n 's/^slot //p' | tr '\n' ' ')"
+    for dev in $(printf '%s\n' "$devices" | grep '^fs-' || true); do
+        taken="$taken$(engine_vagrant_device_slot "$dev") "
+    done
+    for n in $(seq 1 "$FLTH_VM_SLOTS"); do
+        printf '%s\n' "$devices" | grep -qx "flth_rp$n" || continue
+        case "$taken" in *" $n "*) continue ;; esac
+        slot="$n"
+        break
+    done
+    if [ -z "$slot" ]; then
+        echo "vm: all $FLTH_VM_SLOTS slots for a run's tree are in use; $tree is not attached. FLTH_SHARED_SLOTS reserves more at the next boot." >&2
+        return 1
+    fi
+    sock="$(engine_vagrant_vfs_socket "$run")"
+    if [ "${#sock}" -gt "$ENGINE_VAGRANT_SOCKET_MAX" ]; then
+        echo "vm: virtiofsd's socket would be $sock, a path of ${#sock} bytes; a Unix socket path must be at" >&2
+        echo "    most $ENGINE_VAGRANT_SOCKET_MAX. Put FLTH_STATE_DIR (or XDG_STATE_HOME) on a shorter path." >&2
+        return 1
+    fi
+    mkdir -p "$(dirname "$sock")"
+    rm -f "$sock"
+    log="$record.log"
+    while IFS= read -r arg; do args+=("$arg"); done < <(engine_vagrant_virtiofsd_args "$bin")
+    # A session of its own, like the watchdog's: no signal to the run reaches it.
+    perl -MPOSIX -e '
+        my ($pidfile, $log) = splice(@ARGV, 0, 2);
+        my $child = fork;
+        exit 1 unless defined $child;
+        if ($child) { open my $f, ">", $pidfile or exit 1; print {$f} "$child\n"; close $f; exit 0; }
+        POSIX::setsid();
+        open STDIN, "<", "/dev/null"; open STDOUT, ">", $log; open STDERR, ">&", \*STDOUT;
+        exec @ARGV or exit 127;
+    ' "$record.pid" "$log" "$bin" "--socket-path=$sock" "--shared-dir=$tree" "${args[@]}" </dev/null >/dev/null 2>&1 5<&- 6>&- 7<&- 8>&- 9>&- || {
+        echo "vm: virtiofsd for $tree could not be started" >&2
+        return 1
+    }
+    pid="$(cat "$record.pid" 2>/dev/null)"
+    rm -f "$record.pid"
+    until [ -S "$sock" ]; do
+        if [ "$tries" -ge 100 ] || ! kill -0 "$pid" 2>/dev/null; then
+            echo "vm: virtiofsd for $tree did not start: $(tail -n 3 "$log" 2>/dev/null | tr '\n' ' ')" >&2
+            kill -TERM "$pid" 2>/dev/null || true
+            return 1
+        fi
+        command -p sleep 0.05
+        tries=$((tries + 1))
+    done
+    start="$(engine_vagrant_started "$pid")"
+    printf 'slot %s\npid %s\nstart %s\nsocket %s\ntree %s\n' "$slot" "$pid" "$start" "$sock" "$tree" > "$record"
+    if ! err="$(engine_vagrant_qmp \
+        "{\"execute\":\"chardev-add\",\"arguments\":{\"id\":\"c-$run\",\"backend\":{\"type\":\"socket\",\"data\":{\"addr\":{\"type\":\"unix\",\"data\":{\"path\":\"$sock\"}},\"server\":false}}}}" \
+        "{\"execute\":\"device_add\",\"arguments\":{\"driver\":\"vhost-user-fs-pci\",\"id\":\"fs-$run\",\"chardev\":\"c-$run\",\"tag\":\"$run\",\"bus\":\"flth_rp$slot\"}}" 2>&1 >/dev/null)"; then
+        echo "vm: $tree could not be attached to the guest: $err" >&2
+        # No device reached the guest, so nothing can be using the daemon.
+        engine_vagrant_qmp "{\"execute\":\"chardev-remove\",\"arguments\":{\"id\":\"c-$run\"}}" >/dev/null 2>&1 || true
+        kill -TERM "$pid" 2>/dev/null || true
+        rm -f "$record"
+        return 1
+    fi
+}
+
+# engine_tree_attached <run>: 0 when its device is on record and its virtiofsd is
+# alive, 1 when it is not attached, 3 when it is attached and its virtiofsd has gone.
+engine_tree_attached() {
+    local record pid start
+    record="$(engine_vagrant_attached_dir)/$1"
+    [ -f "$record" ] || return 1
+    pid="$(sed -n 's/^pid //p' "$record")"
+    start="$(sed -n 's/^start //p' "$record")"
+    [ -n "$pid" ] && [ "$(engine_vagrant_started "$pid")" = "$start" ] || return 3
+    return 0
+}
+
+# The runs with a device on record, one a line.
+engine_attached_runs() {
+    local record
+    for record in "$(engine_vagrant_attached_dir)"/*; do
+        [ -f "$record" ] || continue
+        case "$record" in *.log | *.pid) continue ;; esac
+        printf '%s\n' "${record##*/}"
+    done
+}
+
+# The slot of a run's device, for the guest's side of a detach.
+engine_tree_slot() { sed -n 's/^slot //p' "$(engine_vagrant_attached_dir)/$1" 2>/dev/null; }
+
+# engine_detach_tree <run>: remove a run's device and then stop its virtiofsd. The
+# guest must have let go of the mount already (lib/guest-run.sh, end), unless the
+# daemon has died, when nothing may touch the mount and the device goes first.
+#
+# On macOS the guest's kernel has no ACPI, and a device_del waits five seconds after
+# the attention button before the guest powers the slot off: the guest is asked to
+# power it off itself, which QEMU takes as the unplug, about a second. On a Linux
+# host the slot is ACPI hot-plug and device_del takes tens of milliseconds.
+engine_detach_tree() {
+    local run="$1" record slot pid start tries=0
+    record="$(engine_vagrant_attached_dir)/$run"
+    slot="$(engine_tree_slot "$run")"
+    pid="$(sed -n 's/^pid //p' "$record" 2>/dev/null)"
+    start="$(sed -n 's/^start //p' "$record" 2>/dev/null)"
+    if engine_alive "$(engine_identity)" && engine_vagrant_devices 2>/dev/null | grep -qx "fs-$run"; then
+        if [ "$(uname -s)" = Darwin ] && [ -n "$slot" ]; then
+            engine_run "echo 0 > /sys/bus/pci/slots/$slot/power" >/dev/null 2>&1 || true
+            # A second at most, measured; a guest that did not power it off by three
+            # is asked the slower way.
+            while engine_vagrant_devices 2>/dev/null | grep -qx "fs-$run" && [ "$tries" -lt 30 ]; do
+                command -p sleep 0.1
+                tries=$((tries + 1))
+            done
+            if engine_vagrant_devices 2>/dev/null | grep -qx "fs-$run"; then
+                engine_vagrant_qmp "{\"execute\":\"device_del\",\"arguments\":{\"id\":\"fs-$run\"}}" >/dev/null 2>&1 || true
+            fi
+        else
+            engine_vagrant_qmp "{\"execute\":\"device_del\",\"arguments\":{\"id\":\"fs-$run\"}}" >/dev/null 2>&1 || true
+        fi
+        while engine_vagrant_devices 2>/dev/null | grep -qx "fs-$run"; do
+            if [ "$tries" -ge 300 ]; then
+                echo "vm: the guest did not let go of run $run's device in 30s; its virtiofsd is left running, since stopping it now could wedge the guest." >&2
+                return 1
+            fi
+            command -p sleep 0.1
+            tries=$((tries + 1))
+        done
+        engine_vagrant_qmp "{\"execute\":\"chardev-remove\",\"arguments\":{\"id\":\"c-$run\"}}" >/dev/null 2>&1 || true
+    fi
+    # The device has gone, or the guest has: the daemon ends by itself, and is told to
+    # if it has not.
+    if [ -n "$pid" ] && [ "$(engine_vagrant_started "$pid")" = "$start" ]; then
+        tries=0
+        while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 50 ]; do command -p sleep 0.1; tries=$((tries + 1)); done
+        kill -TERM "$pid" 2>/dev/null || true
+    fi
+    rm -f "$record" "$record.log" "$(engine_vagrant_vfs_socket "$run")"
+}
+
+# Every record and daemon, for a guest that has gone: nothing can use them now.
+engine_vagrant_forget_attached() {
+    local run pid start record
+    for record in "$(engine_vagrant_attached_dir)"/*; do
+        [ -f "$record" ] || continue
+        case "$record" in *.log | *.pid) rm -f "$record"; continue ;; esac
+        run="${record##*/}"
+        pid="$(sed -n 's/^pid //p' "$record")"
+        start="$(sed -n 's/^start //p' "$record")"
+        if [ -n "$pid" ] && [ "$(engine_vagrant_started "$pid")" = "$start" ]; then
+            kill -TERM "$pid" 2>/dev/null || true
+        fi
+        rm -f "$record" "$(engine_vagrant_vfs_socket "$run")"
+    done
 }

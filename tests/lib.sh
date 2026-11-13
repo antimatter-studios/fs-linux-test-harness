@@ -3,7 +3,7 @@
 # tests/lib.sh — shared by the VM-free tests. Sourced.
 #
 # Every test works in a sandbox under mktemp and points the harness's
-# cache and state there, so nothing touches the real slot or machines.
+# cache and state there, so nothing touches the real machines.
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 fails=0
@@ -64,14 +64,16 @@ new_sandbox() {
     export FLTH_TEST_PID=$$
     export FLTH_CACHE_DIR="$SANDBOX/cache"
     export FLTH_STATE_DIR="$SANDBOX/state"
-    unset FLTH_CONFIG FLTH_KEEP_VM FLTH_SLOT_WAIT FLTH_SLOT_BOOT_GRACE FLTH_SLOT_COUNT
+    unset FLTH_CONFIG
     # What a guest or a person's shell leaves set, which sends a test somewhere else.
-    unset FLTH_GUEST FLTH_SHARED_ROOT FLTH_SHARED_MEMORY FLTH_SHARED_CPUS FLTH_SHARED_DISK
-    # A dead holder is reclaimed on sight unless a test asks for the window it
-    # is held to on a real machine: tests/slot-reload.sh does.
-    export FLTH_SLOT_ABSENT_GRACE=0
+    unset FLTH_GUEST FLTH_SHARED_ROOT FLTH_SHARED_MEMORY FLTH_SHARED_CPUS FLTH_SHARED_DISK FLTH_SHARED_DEADLINE
     # A test that means to have a watchdog asks for one (tests/guest-watchdog.sh).
     export FLTH_WATCHDOG=off
+    # A test that drives the real engine attaches a run's tree through these: a
+    # virtiofsd that only holds its socket, and a QMP that tracks devices (#222). A
+    # stand-in QEMU starts the server: `"$FLTH_TEST_QMP_START" <its pid>`.
+    export FLTH_VIRTIOFSD="$REPO/tests/stubs/virtiofsd"
+    export FLTH_TEST_QMP_START="$REPO/tests/stubs/start-qmp"
     export FLTH_TEST_MEMINFO="$SANDBOX/meminfo"
     printf 'MemAvailable:   67108864 kB\n' > "$FLTH_TEST_MEMINFO"
     mkdir -p "$SANDBOX/memory-bin"
@@ -204,4 +206,43 @@ finish() {
     fi
     echo "FAIL  $name: $fails of $((passes + fails)) checks failed" >&2
     exit 1
+}
+
+# run_suites <jobs> <file...> — run each file with bash, <jobs> at a time, and print
+# each one's output whole, under `== <file>`, in the order given, as soon as it and
+# every file before it have finished. Status 1 when any failed (#215). Bash 3.2: no
+# `wait -n`, so finished files are found with kill -0, five times a second.
+run_suites() {
+    local jobs="$1" dir n next=0 shown=0 running=0 failed=0 i
+    shift
+    local -a files=("$@") pids=() done_=()
+    n=${#files[@]}
+    [ "$n" -gt 0 ] || return 0
+    case "$jobs" in '' | *[!0-9]* | 0) jobs=1 ;; esac
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/flth-suites.XXXXXX")" || return 1
+    while [ "$shown" -lt "$n" ]; do
+        while [ "$next" -lt "$n" ] && [ "$running" -lt "$jobs" ]; do
+            ( bash "${files[$next]}" > "$dir/$next.log" 2>&1; echo "$?" > "$dir/$next.rc" ) &
+            pids[next]=$!
+            done_[next]=0
+            next=$((next + 1))
+            running=$((running + 1))
+        done
+        for ((i = shown; i < next; i++)); do
+            if [ "${done_[i]}" = 0 ] && ! kill -0 "${pids[i]}" 2>/dev/null; then
+                wait "${pids[i]}" 2>/dev/null
+                done_[i]=1
+                running=$((running - 1))
+            fi
+        done
+        while [ "$shown" -lt "$next" ] && [ "${done_[shown]}" = 1 ]; do
+            printf '\n== %s\n' "${files[shown]}"
+            cat "$dir/$shown.log"
+            [ "$(cat "$dir/$shown.rc" 2>/dev/null)" = 0 ] || failed=1
+            shown=$((shown + 1))
+        done
+        [ "$shown" -ge "$n" ] || command -p sleep 0.2
+    done
+    rm -rf "$dir"
+    return "$failed"
 }

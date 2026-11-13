@@ -9,8 +9,9 @@
 # ends with the client, as the channel does. tests/smoke.sh holds this on a real VM.
 #
 # What is pinned:
-#   - on each path that keeps the VM up, the guest command ends within a bound,
-#     and another session's command in that guest keeps running;
+#   - the shared guest stays up after a session (#220), and the guest command
+#     ends within a bound, and another session's command in that guest keeps
+#     running;
 #   - a command that ignores TERM ends too, and so does what it moved to another
 #     process group, as `timeout` does;
 #   - KILL to the host side stops it, since nothing on the host can act after that;
@@ -33,7 +34,20 @@ export GUEST="$SANDBOX/guest"
 mkdir -p "$GUEST"
 sed -e "s|^FLTH_GUEST_HOLD_MARKER=.*|FLTH_GUEST_HOLD_MARKER=\"$GUEST/held\"|" \
     -e "s|^FLTH_GUEST_REARM_STAMP=.*|FLTH_GUEST_REARM_STAMP=\"$GUEST/rearmed\"|" \
+    -e "s|^FLTH_GUEST_RUNS=.*|FLTH_GUEST_RUNS=\"$GUEST/runs\"|" \
     "$REPO/scripts/lib/common.sh" > "$SANDBOX/harness/scripts/lib/common.sh"
+# Every call goes in its run on the shared guest (lib/guest-run.sh), whose mounts and
+# namespaces are no part of this. A stand-in runs the call's script as it is, in the
+# process `enter` would have been, and has nothing to clean up at a run's end.
+sed -i.orig "s|/var/lib/fs-linux-test-harness|$GUEST/lib|g" "$SANDBOX/harness/scripts/vm.sh"
+rm -f "$SANDBOX/harness/scripts/vm.sh.orig"
+mkdir -p "$GUEST/runs" "$GUEST/lib"
+cat > "$GUEST/runs/run.sh" <<'RUN'
+case "$1" in
+    enter) exec "$BASH" -c "$7" ;;
+    *) exit 0 ;;
+esac
+RUN
 
 BIN="$SANDBOX/bin"
 mkdir -p "$BIN"
@@ -65,9 +79,13 @@ cd "$CONSUMER" || exit 1
 identity="$("$VM" config | sed -n 's/^identity=//p')"
 machine="$("$VM" config | sed -n 's/^machine=//p')"
 mkdir -p "$identity"
-# The VM is up and already carries this setup script, so nothing boots.
+# The VM is up, booted by this harness, so nothing boots and the join is not refused.
+run_tool="$(printf '%s' "$(cat "$SANDBOX/harness/scripts/lib/guest-run.sh")" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
+printf '%s\n' "$run_tool" > "$machine/shared-boot"
+qmp="$("$VM" config | sed -n 's/^qmp=//p')"
+# And the guest already carries this consumer's setup, so none runs.
 sha="$(shasum -a 256 setup.sh 2>/dev/null || sha256sum setup.sh)"
-printf '%s\n' "${sha%% *}" > "$machine/setup.sha256"
+printf '%s\n' "${sha%% *}" > "$GUEST/lib/setup-guest-command-signal.sha256"
 QEMU_PID="$SANDBOX/qemu.pid"
 perl -MPOSIX -e '
     exit 0 if fork;
@@ -81,6 +99,9 @@ perl -MPOSIX -e '
     exec { "/bin/sh" } "qemu-system-stub", "-c", q{n=0; while kill -0 "$FLTH_TEST_PID" 2>/dev/null && [ "$n" -lt 3600 ]; do /bin/sleep 1; n=$((n + 1)); done}, "$ARGV[0]/disk";
 ' "$identity" "$QEMU_PID"
 until [ -s "$QEMU_PID" ]; do /bin/sleep 0.05; done
+# Each run's tree is attached through QMP (#222), which the stand-in QEMU answers.
+mkdir -p "$(dirname "$qmp")"
+FLTH_VM_QMP="$qmp" FLTH_VM_SLOTS=32 "$FLTH_TEST_QMP_START" "$(cat "$QEMU_PID")"
 
 # Whatever a case leaves behind, so a failing run holds no process.
 LEFT="$SANDBOX/left"
@@ -184,8 +205,7 @@ check_running() {
     done
 }
 
-# TERM to the session's process, with FLTH_KEEP_VM=1, beside another session.
-export FLTH_KEEP_VM=1
+# TERM to the session's process, beside another session.
 kept="$SANDBOX/kept"
 other="$SANDBOX/other"
 start_session "$kept" plain
@@ -194,10 +214,10 @@ start_session "$other" plain
 other_session=$SESSION
 kill -TERM "$kept_session"
 wait "$kept_session"
-check_eq "$?" 143 "FLTH_KEEP_VM=1: the session exits 143"
+check_eq "$?" 143 "beside another session: the session exits 143"
 check_stopped "$kept"
 check_running "$other" "the other session's command"
-if alive "$(cat "$QEMU_PID")"; then ok "FLTH_KEEP_VM=1: the VM stays up"; else bad "FLTH_KEEP_VM=1: the VM stopped"; fi
+if alive "$(cat "$QEMU_PID")"; then ok "beside another session: the VM stays up"; else bad "beside another session: the VM stopped"; fi
 
 # TERM to the other session's group, through `exec`, which guest-test uses.
 kill -TERM -- "-$other_session"
@@ -227,8 +247,7 @@ kill -TERM "$SESSION"
 wait "$SESSION"
 check_stopped "$moved"
 
-# A held VM, with no FLTH_KEEP_VM: the session's end leaves it up.
-unset FLTH_KEEP_VM
+# A held VM: the session's end leaves it up.
 "$VM" hold > /dev/null 2>&1
 held="$SANDBOX/held"
 start_session "$held" plain
@@ -238,7 +257,6 @@ check_eq "$?" 143 "held: the session exits 143"
 check_stopped "$held"
 if alive "$(cat "$QEMU_PID")"; then ok "held: the VM stays up"; else bad "held: the VM stopped"; fi
 rm -f "$machine/keep-running" "$GUEST/held"
-export FLTH_KEEP_VM=1
 
 # KILL to the host side, which no trap on the host can answer: what a session
 # sends to its command's group when TERM did not end it. A group of its own, so

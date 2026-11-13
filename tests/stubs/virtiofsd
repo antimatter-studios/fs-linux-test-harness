@@ -1,0 +1,18 @@
+#!/usr/bin/env perl
+#
+# A stand-in for virtiofsd, for the tests that drive the real engine (#222). It
+# listens on --socket-path, as the daemon does before QEMU connects, logs its
+# arguments to <socket>.args, and runs until it is signalled, or the test that started
+# it (FLTH_TEST_PID) has gone.
+use strict;
+use warnings;
+use IO::Socket::UNIX;
+my ($sock) = map { /^--socket-path=(.*)/ ? $1 : () } @ARGV;
+exit 2 unless defined $sock;
+open my $args, ">", "$sock.args" or exit 1; print {$args} join("\n", @ARGV), "\n"; close $args;
+my $server = IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $sock, Listen => 1) or exit 1;
+$SIG{TERM} = sub { unlink $sock; exit 0 };
+while (1) {
+    sleep 1;
+    if ($ENV{FLTH_TEST_PID} && !kill(0, $ENV{FLTH_TEST_PID})) { unlink $sock; exit 0; }
+}

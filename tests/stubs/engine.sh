@@ -94,7 +94,7 @@ engine_up() {
     fi
     [ "$(cat "$STUB/state")" = absent ] && rm -rf "$STUB/disk"
     mkdir -p "$STUB/disk"
-    rm -rf "$STUB/guest-lib"
+    rm -rf "$STUB/guest-lib" "$STUB/attached"
     cp -R "$STUB/disk" "$STUB/guest-lib"
     echo "$persist" > "$STUB/boot-persist"
     rm -f "$STUB/guest-cache"
@@ -115,7 +115,7 @@ stub_boot_ended() {
         rm -rf "$STUB/disk"
         cp -R "$STUB/guest-lib" "$STUB/disk"
     fi
-    rm -rf "$STUB/boot-persist" "$STUB/guest-lib" "$STUB/guest-cache"
+    rm -rf "$STUB/boot-persist" "$STUB/guest-lib" "$STUB/guest-cache" "$STUB/attached"
 }
 
 engine_down() {
@@ -133,7 +133,39 @@ engine_down() {
 engine_destroy() {
     stub_log destroy
     stub_read after_destroy absent > "$STUB/state"
-    rm -rf "$STUB/disk" "$STUB/guest-lib" "$STUB/boot-persist" "$STUB/cache" "$STUB/guest-cache"
+    rm -rf "$STUB/disk" "$STUB/guest-lib" "$STUB/boot-persist" "$STUB/cache" "$STUB/guest-cache" "$STUB/attached"
+}
+
+# A RUN'S TREE, ATTACHED WHILE THE GUEST RUNS (#222). Recorded here as a file naming
+# the tree, and logged as `attach <run> <tree>` and `detach <run>`. The guest's side
+# mounts it with the logging `mount`. A test makes a daemon die by creating
+# daemon-dead.<run>, and an attach fail by creating attach_fails.
+engine_attach_tree() {
+    stub_log "attach $1 $2"
+    [ ! -f "$STUB/attach_fails" ] || { echo "vm: stub: attach refused" >&2; return 1; }
+    mkdir -p "$STUB/attached"
+    printf '%s\n' "$2" > "$STUB/attached/$1"
+}
+
+engine_tree_attached() {
+    [ -f "$STUB/attached/$1" ] || return 1
+    [ ! -f "$STUB/daemon-dead.$1" ] || return 3
+    return 0
+}
+
+engine_tree_slot() { printf '1\n'; }
+
+engine_detach_tree() {
+    stub_log "detach $1"
+    rm -f "$STUB/attached/$1"
+}
+
+engine_attached_runs() {
+    local record
+    for record in "$STUB/attached"/*; do
+        [ -f "$record" ] && printf '%s\n' "${record##*/}"
+    done
+    return 0
 }
 
 # Which kernel a boot runs is the real engine's business, and tests/boot-kernel.sh
@@ -158,15 +190,33 @@ stub_guest_paths() {
             -e "s|/cache\\([/ ']\\)|$STUB/guest-cache\\1|g" -e "s|/cache\$|$STUB/guest-cache|"
 }
 
-# A GUEST SCRIPT RUN HERE GETS A SYNC THAT ONLY LOGS (#202). A provisioning boot's
-# script is `sync`, and on the host that flushes every disk on the machine. A test
-# that copies this engine sets up its own PATH, so the stand-in comes from the
-# engine, first on the PATH of every script it runs, children included.
+# A GUEST SCRIPT RUN HERE GETS A SYNC THAT ONLY LOGS (#202). A `sync` sent to the
+# guest, on the host, flushes every disk on the machine. A test that copies this
+# engine sets up its own PATH, so the stand-in comes from the engine, first on the
+# PATH of every script it runs, children included.
+#
+# AND MOUNT TOOLS THAT ONLY LOG (#220). Every boot prepares the shared guest
+# (lib/guest-run.sh), which binds directories over /tmp, /repo and the rest and
+# enters namespaces. On the host those would be this machine's mounts, or fail. So
+# each tool gets a stand-in that logs to guest-tools, unless the test put one of its
+# own in the stub's bin (tests/lib.sh, make_stub_guest_tools), which then stands.
 stub_host_bin() {
+    local tool
     mkdir -p "$STUB/host-bin"
     [ -x "$STUB/host-bin/sync" ] ||
         printf '#!/bin/sh\necho sync >> "%s/calls"\n' "$STUB" > "$STUB/host-bin/sync"
     chmod +x "$STUB/host-bin/sync"
+    for tool in mount umount mountpoint systemctl flock losetup tar unshare nsenter; do
+        [ ! -e "$STUB/bin/$tool" ] || continue
+        [ ! -x "$STUB/host-bin/$tool" ] || continue
+        case "$tool" in
+            mountpoint) printf '#!/bin/sh\necho "mountpoint $*" >> "%s/guest-tools"\nexit 1\n' "$STUB" ;;
+            unshare) printf '#!/bin/sh\necho "unshare $*" >> "%s/guest-tools"\ncase "$1" in --mount=*) : > "${1#--mount=}" ;; esac\nshift 3\nexec "$@"\n' "$STUB" ;;
+            nsenter) printf '#!/bin/sh\necho "nsenter $*" >> "%s/guest-tools"\nwhile [ "$1" != -- ]; do shift; done\nshift\n[ "$1" != readlink ] || { echo "mnt:[stub]"; exit 0; }\nexec "$@"\n' "$STUB" ;;
+            *) printf '#!/bin/sh\necho "%s $*" >> "%s/guest-tools"\n' "$tool" "$STUB" ;;
+        esac > "$STUB/host-bin/$tool"
+        chmod +x "$STUB/host-bin/$tool"
+    done
 }
 
 stub_guest_script() {

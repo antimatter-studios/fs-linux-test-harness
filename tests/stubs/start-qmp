@@ -1,0 +1,10 @@
+#!/bin/sh
+# start-qmp <owner pid> — what a stand-in QEMU runs once it is up: the stand-in QMP
+# (qmp-server.pl) on FLTH_VM_QMP, in a session of its own, ended with <owner pid>.
+# Returns once the socket is there.
+here="$(cd "$(dirname "$0")" && pwd -P)"
+rm -f "$FLTH_VM_QMP"
+perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' perl "$here/qmp-server.pl" "$FLTH_VM_QMP" "$FLTH_VM_SLOTS" "$1" \
+    </dev/null >/dev/null 2>&1 &
+n=0
+until [ -S "$FLTH_VM_QMP" ] || [ "$n" -ge 100 ]; do /bin/sleep 0.05; n=$((n + 1)); done

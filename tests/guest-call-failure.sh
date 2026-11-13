@@ -18,5 +18,8 @@ STUB
 output="$(cd "$CONSUMER" && bash "$VM" 2>&1)"
 check_eq "$?" 17 "a conditional guest call keeps command-construction failure"
 check_contains "$output" 'guest command construction refused' "the construction failure remains visible"
-check_lacks "$(stub_calls)" run "no empty or partial command reaches the guest"
+# By the call's name, not a substring: an attach names the tree's path, and on a
+# CI runner that path holds "runner".
+check_eq "$(stub_calls | awk '$1 == "run" || $1 == "exec"' | wc -l | tr -d ' ')" 0 \
+    "no empty or partial command reaches the guest"
 finish guest-call-failure

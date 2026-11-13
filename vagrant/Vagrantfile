@@ -12,16 +12,18 @@
 #   macOS arm64    HVF   box christhomas/vagrant-rpi-bookworm-arm64
 #                        plugins vagrant-qemu-christhomas and
 #                        vagrant-notify-forwarder-christhomas (forks that
-#                        fix problems specific to the Mac); share: virtiofs
+#                        fix problems specific to the Mac)
 #   Linux aarch64  KVM   box cloud-image/debian-12 (arm64); stock
-#                        vagrant-qemu; UEFI firmware from FLTH_QEMU_DIR;
-#                        share: 9p
+#                        vagrant-qemu; UEFI firmware from FLTH_QEMU_DIR
 #   Linux x86_64   KVM   box cloud-image/debian-12 (amd64); stock
-#                        vagrant-qemu; SeaBIOS; share: 9p
+#                        vagrant-qemu; SeaBIOS; q35
 #
-# WHY 9P ON LINUX. The stock plugin has no virtiofs support; 9p needs no
-# daemon, no root and nothing beyond QEMU itself, and it was proven on an
-# arm64 KVM host (see the PR that introduced this file).
+# NOTHING IS SHARED AT BOOT (#222). The guest is shared by every consumer on
+# the host, and each run attaches its own tree while the guest runs: a
+# vhost-user-fs device served by a virtiofsd of its own, hot-plugged into one
+# of the free pcie-root-ports reserved below (scripts/lib/engine-vagrant.sh,
+# engine_attach_tree). The same on every host; 9p cannot do it, because QEMU
+# has no way to add a 9p device's backend at runtime.
 #
 # NOTHING FILESYSTEM-SPECIFIC BELONGS HERE. The consumer's setup script,
 # run inside the guest by scripts/vm.sh, installs its own tooling.
@@ -78,22 +80,40 @@ cpus      = flth_env("FLTH_VM_CPUS", /\A[1-9][0-9]?\z/, "an integer from 1 to 99
 disk      = flth_env("FLTH_VM_DISK", /\A[1-9][0-9]{0,4}G\z/, "a size like 32G")
 ssh_port  = flth_env("FLTH_VM_SSH_PORT", /\A[1-9][0-9]{3,4}\z/, "a port number")
 deadline  = flth_env("FLTH_VM_DEADLINE_MINUTES", /\A[1-9][0-9]{0,5}\z/, "a positive integer of at most six digits")
-share_dir = flth_env("FLTH_SHARE_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
-repo_dir  = flth_env("FLTH_REPO_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
+qmp       = flth_env("FLTH_VM_QMP", %r{\A/[A-Za-z0-9._/-]*\z}, "an absolute path")
+slots     = Integer(flth_env("FLTH_VM_SLOTS", /\A[1-9][0-9]?\z/, "an integer from 1 to 64"), 10)
+raise "FLTH_VM_SLOTS must be an integer from 1 to 64, got #{slots}" if slots > 64
 disposable = flth_env("FLTH_VM_DISPOSABLE", /\A[01]\z/, "1 (a disposable boot) or 0 (a provisioning boot)") == "1"
 console_log = flth_env("FLTH_VM_CONSOLE_LOG", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
 
-share_guest = "/share"
-share_tag   = "flth_share"
-
-# THE CONSUMER REPOSITORY ITSELF, read-write. The share carries what a
-# run hands across; this carries the tree under test, so a suite can be
-# BUILT AND RUN IN THE GUEST (`vm.sh guest-test`) on a host that cannot
-# run it natively. Nothing here knows what "building" means: the
-# consumer's setup script installs its toolchain and its guest_command
-# says what to run.
-repo_guest = "/repo"
-repo_tag   = "flth_repo"
+# WHERE A RUN'S TREE IS ATTACHED (#222). QEMU refuses to hot-plug a device into
+# pcie.0, so free pcie-root-ports are reserved at boot, one per tree that can be
+# attached at once. io-reserve=0, or the 64 KiB of IO space runs out at about ten
+# ports. Packed eight to a device number, multifunction, from 0x11, clear of the
+# cache disk at 0x10 and of the q35 chipset at 0x1f. Each port has a chassis and
+# slot of its own, which is the name the guest gives its slot.
+#
+# virtiofsd reaches the guest's memory only through a memory backend with
+# share=on: a memfd on Linux, and on macOS a file in FLTH_VM_MEM_DIR, which QEMU
+# creates and unlinks at once when mem-path is a directory. The macOS provider used
+# to add one only for its own boot-time folders.
+#
+# QMP is how a device is added and removed, and how the harness asks which are
+# there.
+slot_addr = ->(i) { format("0x%x.%d", 0x11 + (i - 1) / 8, (i - 1) % 8) }
+port_args = (1..slots).flat_map do |i|
+  multifunction = ((i - 1) % 8).zero? ? ",multifunction=on" : ""
+  ["-device", "pcie-root-port,id=flth_rp#{i},bus=pcie.0,chassis=#{i},slot=#{i},io-reserve=0,addr=#{slot_addr.call(i)}#{multifunction}"]
+end
+memory_backend =
+  if host == :macos_arm64
+    mem_dir = flth_env("FLTH_VM_MEM_DIR", %r{\A/[A-Za-z0-9._/-]*\z}, "an absolute path")
+    "memory-backend-file,id=flth_mem,size=#{memory},mem-path=#{mem_dir},share=on"
+  else
+    "memory-backend-memfd,id=flth_mem,size=#{memory},share=on"
+  end
+hotplug_args = ["-object", memory_backend, "-numa", "node,memdev=flth_mem"] + port_args +
+               ["-qmp", "unix:#{qmp},server=on,wait=off"]
 
 # THE GUEST'S SERIAL CONSOLE, KEPT IN A FILE (#61). The provider sends
 # it to a Unix socket nobody reads (`-chardev socket,id=ser0` and
@@ -274,32 +294,10 @@ Vagrant.configure("2") do |config|
       qe.machine = "virt,accel=hvf,highmem=on"
       qe.cpu = "host"
       qe.net_device = "virtio-net-device"
-      # virtiofsd is the provider's default: `virtiofsd` on PATH, which is
-      # the build `brew install antimatter-studios/tap/virtiofsd` installs
-      # (the macOS port, christhomas/virtiofsd). It must be v1.14.0 or
-      # newer, which scripts/host-tools.sh checks: older builds read this
-      # arm64 guest's O_DIRECT as x86_64's O_DIRECTORY, and a direct-I/O
-      # open of a shared file failed with ENOTDIR (#26). A preferred
-      # `virtiofsd-1.13.8-rc1` was carried here with no reason recorded;
-      # that port published no rc1, so it named a binary that existed on
-      # one Mac and was ignored everywhere else.
-      #
-      # virtiofsd presents host files under this uid/gid; it must match
-      # the box's vagrant user (1001 on this box) or the share is
-      # read-only to it.
-      qe.virtiofs_guest_uid = 1001
-      qe.virtiofs_guest_gid = 1001
-      # --xattr: extended attributes must survive the share.
-      #
-      # --thread-pool-size=1: ONE REQUEST AT A TIME, because the macOS
-      # port switches to the guest's credentials with seteuid/setegid,
-      # which are process-wide on macOS (src/oslib.rs says so; on Linux it
-      # uses setresuid/setresgid, which act on one thread). With two
-      # threads, one request can run under the credentials another request
-      # has just set. Drop it only once the port switches credentials per
-      # thread.
-      qe.extra_virtiofsd_args = ["--thread-pool-size=1", "--xattr"]
-      qe.extra_qemu_args = console_args + cache_args + kernel_args
+      # The virtiofsd a run's tree is served by is the harness's own, started
+      # with the flags this provider used for its folders
+      # (scripts/lib/engine-vagrant.sh, engine_vagrant_virtiofsd_args).
+      qe.extra_qemu_args = console_args + cache_args + kernel_args + hotplug_args
     when :linux_arm64
       qe.arch = "aarch64"
       qe.machine = "virt,accel=kvm,highmem=on"
@@ -314,25 +312,7 @@ Vagrant.configure("2") do |config|
     end
 
     if host != :macos_arm64
-      # TWO SHARES, TWO SECURITY MODELS, and the difference matters.
-      #
-      # mapped-xattr on the SHARE: guest ownership and modes are stored in
-      # host xattrs, so root in the guest can create files without root on
-      # the host. That is what a run handing files across needs.
-      #
-      # none on the REPOSITORY: the guest sees the host's real ownership,
-      # modes and extended attributes. mapped-xattr synthesises the xattr
-      # namespace, and a tool that walks the tree reading attributes — a
-      # filesystem builder copying a source directory into an image, say —
-      # is told an attribute exists and then that there is no data for it,
-      # and stops. Nothing writes ownership into the repository from the
-      # guest, so there is nothing to map.
-      #
-      # A comma is QEMU's option separator and is escaped by doubling.
-      qe.extra_qemu_args = %W(
-        -virtfs local,path=#{share_dir.gsub(",", ",,")},mount_tag=#{share_tag},security_model=mapped-xattr,id=#{share_tag}
-        -virtfs local,path=#{repo_dir.gsub(",", ",,")},mount_tag=#{repo_tag},security_model=none,id=#{repo_tag}
-      ) + console_args + cache_args + display_args
+      qe.extra_qemu_args = console_args + cache_args + display_args + hotplug_args
     end
   end
 
@@ -382,13 +362,6 @@ Vagrant.configure("2") do |config|
     config.notify_forwarder.binaries = {
       [:linux, :arm64] => ["file://#{URI::DEFAULT_PARSER.escape(receiver_off)}", Digest::SHA256.file(receiver_off).hexdigest],
     }
-    config.vm.synced_folder share_dir, share_guest, type: "virtiofs", create: true
-    config.vm.synced_folder repo_dir, repo_guest, type: "virtiofs", create: true
-  else
-    config.vm.provision "share", type: "shell", run: "always",
-                        path: "guest/mount-share.sh", args: [share_tag, share_guest]
-    config.vm.provision "repo", type: "shell", run: "always",
-                        path: "guest/mount-share.sh", args: [repo_tag, repo_guest]
   end
 
   # The declared cache, at the same place on every boot. The guest gives
@@ -400,8 +373,8 @@ Vagrant.configure("2") do |config|
 
   # A DEADLINE THE HOST CANNOT FAIL TO ENFORCE. Every other teardown is
   # passive: `down` needs the caller's control flow to reach it, `reap`
-  # needs a later chore invocation, and the slot reclaims only a DEAD
-  # holder. A host process that hangs holds a live VM and the global slot
+  # needs a later chore invocation, and the watchdog needs a host process
+  # that is still running. A host process that hangs holds a live VM
   # forever with every net behaving as written — it happened, for
   # thirteen hours. So the guest schedules its own poweroff at every boot.
   # `vm.sh hold` cancels it for a person working in the guest.

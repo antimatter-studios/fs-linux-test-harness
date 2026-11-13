@@ -14,13 +14,14 @@
 # path that keeps its VM; tests/smoke.sh holds that on a real guest.
 #
 # What is pinned:
-#   - a session signalled during a boot leaves no guest behind, through
-#     FLTH_KEEP_VM=1, a hold, another live session and another worktree, and the
-#     next call boots one that has its shares;
+#   - a session signalled during a boot leaves no guest behind, through a hold,
+#     another live session and another worktree, and the next call boots one
+#     that has its shares;
 #   - a guest left by a boot with no session to clean up is not taken as booted:
 #     `up` and `run` replace it, `exec` refuses it, `reap` stops it;
 #   - an `up` waiting for the signalled boot gets a guest with its shares;
-#   - a boot still under way is left alone, and one that finished is kept.
+#   - a boot still under way is left alone, and one that finished is kept: it is
+#     the shared guest, there for the next run (#220).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMPDIR="${FLTH_TEST_SOCKET_ROOT:-/tmp}" new_sandbox
@@ -54,13 +55,21 @@ case "$script" in
     *share-probe*)
         if [ -e "$STUB/shares" ]; then echo shares-mounted; else echo shares-missing; fi
         ;;
+    *"run.sh prepare"*)
+        # $STUB/boot of `prepare` holds the boot here: Vagrant has finished, and the
+        # guest is being prepared for runs (vm.sh, shared_prepare_guest).
+        if [ "$(cat "$STUB/boot" 2>/dev/null)" = prepare ]; then
+            : > "$STUB/preparing"
+            while [ "$(cat "$STUB/boot" 2>/dev/null)" = prepare ]; do sleep 0.1; done
+        fi
+        ;;
 esac
 exit 0
 STUB
 # $STUB/boot says where a boot stops until the file changes or a signal comes:
 #   before-qemu         a disposable boot, before QEMU starts
 #   after-qemu          a disposable boot, with QEMU up and the shares not mounted
-#   persist-after-qemu  a provisioning boot, at the same point
+#   prepare             Vagrant done, the guest being prepared for runs (ssh holds it)
 cat > "$BIN/vagrant" <<'STUB'
 #!/usr/bin/env bash
 hold_boot() {
@@ -90,8 +99,9 @@ case "$1" in
             exec { "/bin/sh" } "qemu-system-stub", "-c", q{n=0; while kill -0 "$FLTH_TEST_PID" 2>/dev/null && [ "$n" -lt 3600 ]; do sleep 1; n=$((n + 1)); done}, "$ARGV[0]/disk";
         ' "$VAGRANT_DOTFILE_PATH"
         until [ -s "$STUB/qemu.pid" ]; do sleep 0.05; done
+        "$FLTH_TEST_QMP_START" "$(cat "$STUB/qemu.pid")"
         case "$boot:${FLTH_VM_DISPOSABLE:-}" in
-            after-qemu:1 | persist-after-qemu:0) hold_boot "$boot" ;;
+            after-qemu:1) hold_boot "$boot" ;;
         esac
         : > "$STUB/shares"
         ;;
@@ -115,7 +125,6 @@ make_consumer "$ONE" "$NAME"
 make_consumer "$TWO" "$NAME"
 ONE="$(cd "$ONE" && pwd -P)"
 TWO="$(cd "$TWO" && pwd -P)"
-MACHINE="$FLTH_CACHE_DIR/machines/$NAME"
 export UP_FROM=""
 
 # The session's command: boots the VM, and then keeps working.
@@ -154,7 +163,6 @@ wait_until() {
 file_exists() { [ -e "$1" ]; }
 # shellcheck disable=SC2329
 dead() { ! alive "$1"; }
-slot_holder() { awk -F'\t' '{print $2}' "$FLTH_STATE_DIR/slot.lock/holder" 2>/dev/null; }
 vm_in() { (cd "$1" && shift && FLTH_CONFIG="$PWD/fs-linux-test-harness.toml" "$VM" "$@"); }
 
 SESSION=""
@@ -196,7 +204,15 @@ check_no_guest() {
     fi
     vm_in "$ONE" status > /dev/null 2>&1
     check_eq "$?" 1 "$1: the VM reads as down"
-    check_eq "$(slot_holder)" "" "$1: the slot is given back"
+}
+
+check_guest_kept() {
+    # check_guest_kept <label> <QEMU pid>
+    if alive "$2"; then
+        ok "$1: the guest whose boot finished stays up for the next run"
+    else
+        bad "$1: the guest whose boot finished was stopped (pid $2)"
+    fi
 }
 
 check_probe_finds_shares() {
@@ -243,14 +259,9 @@ signalled_during_boot() {
     clean_up
 }
 
-# The disk is provisioned once, so that the cases below stop on a disposable boot.
 vm_in "$ONE" up > "$SANDBOX/first-up.log" 2>&1
-check_eq "$?" 0 "the first up provisions the disk ($(tail -n 1 "$SANDBOX/first-up.log"))"
+check_eq "$?" 0 "the first up boots ($(tail -n 1 "$SANDBOX/first-up.log"))"
 clean_up
-
-export FLTH_KEEP_VM=1
-signalled_during_boot keep "$ONE"
-unset FLTH_KEEP_VM
 
 # shellcheck disable=SC2329  # signalled_during_boot calls it through SESSION_SETUP
 hold_it() { vm_in "$ONE" hold > /dev/null 2>&1; }
@@ -272,38 +283,68 @@ UP_FROM=""
 # With nothing to keep it for, as #130 measured.
 signalled_during_boot plain "$ONE"
 
-# --- Before QEMU has started there is no guest, and the slot still comes back.
+# --- During the guest's preparation for runs, with another run's session live (#217).
+# Vagrant has finished and QEMU is up, but the guest is not ready until
+# shared_prepare_guest has run and the boot is recorded: until then it is a boot that
+# did not finish, whoever else is on the guest's list.
+echo prepare > "$STUB/boot"
+rm -f "$STUB/preparing"
+sleep 300 &
+other=$!
+vm_in "$ONE" session-begin "$other"
+start_session preparing "$ONE"
+if wait_until 600 file_exists "$STUB/preparing"; then
+    ok "preparing: the boot is preparing the guest for runs"
+else
+    bad "preparing: the boot never got there ($(cat "$CASE/log" 2>/dev/null))"
+fi
+qemu="$(pid_of qemu)"
+signal_session
+check_eq "$STATUS" 143 "preparing: the session exits 143"
+check_no_guest "preparing: beside another run's live session" "$qemu"
+rm -f "$STUB/boot"
+check_probe_finds_shares "preparing: the next call" "$ONE"
+kill -KILL "$other" 2>/dev/null
+wait "$other" 2>/dev/null
+clean_up
 
-export FLTH_KEEP_VM=1
+# The same, with the `up` itself killed outright, so it cleans up nothing, and the
+# session ending normally after it: only the session's end stops the guest left
+# preparing (vm.sh, shared_session_ended).
+echo prepare > "$STUB/boot"
+rm -f "$STUB/preparing"
+sleep 300 &
+other=$!
+vm_in "$ONE" session-begin "$other"
+start_session preparing-killed "$ONE"
+if wait_until 600 file_exists "$STUB/preparing"; then
+    ok "preparing, up killed: the boot is preparing the guest for runs"
+else
+    bad "preparing, up killed: the boot never got there ($(cat "$CASE/log" 2>/dev/null))"
+fi
+qemu="$(pid_of qemu)"
+up_pid="$(cat "$FLTH_CACHE_DIR/machines/shared-debian-12/up.lock/pid" 2>/dev/null)"
+kill -KILL "$up_pid" 2>/dev/null
+start_watchdog 120 "$CASE/timeout" "$SESSION"
+wait "$SESSION"
+STATUS=$?
+stop_watchdog
+check_eq "$STATUS" 7 "preparing, up killed: the session ends with its command's status"
+check_no_guest "preparing, up killed: beside another run's live session" "$qemu"
+rm -f "$STUB/boot"
+check_probe_finds_shares "preparing, up killed: the next call" "$ONE"
+kill -KILL "$other" 2>/dev/null
+wait "$other" 2>/dev/null
+clean_up
+
+# --- Before QEMU has started there is no guest.
+
 echo before-qemu > "$STUB/boot"
 start_session before-qemu "$ONE"
 wait_for_boot_to_stop_short before-qemu
 signal_session
 check_eq "$STATUS" 143 "before-qemu: the session exits 143"
 check_eq "$(pid_of qemu)" "" "before-qemu: QEMU never started"
-check_eq "$(slot_holder)" "" "before-qemu: the slot is given back"
-unset FLTH_KEEP_VM
-clean_up
-
-# --- A provisioning boot: nothing on its disk is recorded as provisioned.
-
-export FLTH_KEEP_VM=1
-rm -f "$MACHINE/base.sha256"
-echo persist-after-qemu > "$STUB/boot"
-start_session provisioning "$ONE"
-wait_for_boot_to_stop_short provisioning
-qemu="$(pid_of qemu)"
-signal_session
-check_eq "$STATUS" 143 "provisioning: the session exits 143"
-check_no_guest provisioning "$qemu"
-if [ ! -e "$MACHINE/base.sha256" ]; then
-    ok "provisioning: the disk is not recorded as provisioned"
-else
-    bad "provisioning: the disk is recorded as provisioned by a boot that did not finish"
-fi
-unset FLTH_KEEP_VM
-rm -f "$STUB/boot"
-check_probe_finds_shares "provisioning: the next call" "$ONE"
 clean_up
 
 # --- No session to clean up: the guest stays, and nothing takes it as booted.
@@ -373,16 +414,23 @@ qemu="$(pid_of qemu)"
 start_session waiting-second "$ONE"
 second="$SESSION"
 second_case="$CASE"
-if wait_until 300 file_exists "$second_case/started"; then
-    ok "waiting: the second session's command has started"
+# A session registers on the shared guest under the lock a boot holds, so the second
+# one waits for the first one's boot before its command starts.
+if wait_until 30 file_exists "$second_case/started"; then
+    bad "waiting: the second session's command started while the first one's boot held the guest"
 else
-    bad "waiting: the second session's command never started"
+    ok "waiting: the second session waits for the boot under way before its command starts"
 fi
 kill -TERM "$first" 2>/dev/null
 wait_until 300 dead "$first_vagrant" || bad "waiting: the first boot's vagrant did not end"
 rm -f "$STUB/boot"
 wait "$first"
 check_eq "$?" 143 "waiting: the first session exits 143"
+if wait_until 300 file_exists "$second_case/started"; then
+    ok "waiting: then the second session's command starts"
+else
+    bad "waiting: the second session's command never started"
+fi
 if wait_until 600 file_exists "$second_case/ready"; then
     ok "waiting: the second session's up finished"
 else
@@ -398,7 +446,7 @@ export CASE="$second_case"
 SESSION="$second"
 signal_session
 check_eq "$STATUS" 143 "waiting: the second session exits 143"
-check_no_guest "waiting: at the end" "$(pid_of qemu)"
+check_guest_kept "waiting: at the end" "$(pid_of qemu)"
 clean_up
 
 # --- A boot still under way is left alone by whatever else ends beside it.
@@ -415,14 +463,23 @@ if alive "$qemu"; then
 else
     bad "booting: reap stopped a boot that was under way"
 fi
-(cd "$ONE" && FLTH_KEEP_VM=1 "$VM" session true) > /dev/null 2>&1
-check_eq "$?" 0 "booting: another session ends beside it"
+# Another session registers under the lock the boot holds, so it waits for the boot,
+# and ends beside it once the boot has finished.
+(cd "$ONE" && exec "$VM" session true) > /dev/null 2>&1 &
+beside=$!
+if wait_until 30 dead "$beside"; then
+    bad "booting: another session ended while the boot held the guest"
+else
+    ok "booting: another session waits for the boot under way"
+fi
 if alive "$qemu"; then
-    ok "booting: and leaves it"
+    ok "booting: and leaves it alone"
 else
     bad "booting: and stopped a boot that was under way"
 fi
 rm -f "$STUB/boot"
+wait "$beside"
+check_eq "$?" 0 "booting: once the boot finishes, that session runs and ends beside it"
 if wait_until 600 file_exists "$booting_case/ready"; then
     ok "booting: the boot finishes"
 else
@@ -433,12 +490,11 @@ export CASE="$booting_case"
 SESSION="$booting"
 signal_session
 check_eq "$STATUS" 143 "booting: the session exits 143"
-check_no_guest "booting: at the end" "$qemu"
+check_guest_kept "booting: at the end" "$qemu"
 clean_up
 
 # --- A boot that finished is still kept.
 
-export FLTH_KEEP_VM=1
 start_session finished "$ONE"
 if wait_until 600 file_exists "$CASE/ready"; then
     ok "finished: the boot finishes"
@@ -448,12 +504,7 @@ fi
 qemu="$(pid_of qemu)"
 signal_session
 check_eq "$STATUS" 143 "finished: the session exits 143"
-if alive "$qemu"; then
-    ok "finished: FLTH_KEEP_VM=1 keeps the VM"
-else
-    bad "finished: FLTH_KEEP_VM=1 did not keep a VM whose boot finished"
-fi
-unset FLTH_KEEP_VM
+check_guest_kept finished "$qemu"
 check_probe_finds_shares "finished: the kept guest" "$ONE"
 if alive "$qemu"; then
     ok "finished: run uses the guest it was given"
