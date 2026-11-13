@@ -15,6 +15,8 @@ name: CI
 #                   destroy behave on a real machine.
 #   ci-ok           the single required check: green only when every job
 #                   above ran and succeeded.
+#   release         a version tag publishes its CHANGELOG notes as a GitHub
+#                   Release, only after ci-ok succeeds.
 
 on:
   pull_request:
@@ -24,6 +26,7 @@ on:
   merge_group:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 # A pull request titled "red:" holds only its failing test, and its run is the
@@ -31,7 +34,7 @@ on:
 # cancelled, so the push that adds the fix cannot cancel it (agent-core v8).
 # tests/ci-concurrency.sh holds this.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}${{ startsWith(github.event.pull_request.title, 'red:') && format('-red-{0}', github.event.pull_request.head.sha) || '' }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}${{ startsWith(github.event.pull_request.title, 'red:') && format('-red-{0}', github.event.pull_request.head.sha) || '' }}${{ github.ref_type == 'tag' && format('-{0}', github.ref) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'red:') }}
 
 permissions:
@@ -197,3 +200,22 @@ jobs:
             exit 1
           fi
           echo "all required jobs succeeded"
+
+  release:
+    name: release (publish the version tag)
+    needs: ci-ok
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: antimatter-vps-linux-x64
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Publish the tagged CHANGELOG section
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: 1
+        run: scripts/release.sh "$GITHUB_REF_NAME"

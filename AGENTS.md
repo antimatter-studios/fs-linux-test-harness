@@ -431,9 +431,13 @@ Consumers pin a tag, so a fix reaches them only once it is released.
    badge, or any harness version it names, is not the newest `## vX.Y.Z`
    heading in `CHANGELOG.md` — so a release PR that forgets it is red.
 2. Once it is merged and `ci-ok` is green on `main`, tag the merge commit
-   `vX.Y.Z` and push the tag. There is no release workflow and no build
-   artifact: the tag is the release. The pre-push guard refuses a version tag
-   whose CHANGELOG section is missing.
+   `vX.Y.Z` and push the tag. A version-tag push runs the full CI pipeline;
+   after `ci-ok` succeeds, its `release` job publishes a GitHub Release with
+   that tagged commit's matching CHANGELOG section. Verify that job and the
+   published release before reporting success. Retries preserve an existing
+   published release, and an older tag cannot replace a newer latest release.
+   There is no build artifact: consumers still pin the tag. The pre-push guard
+   refuses a version tag whose CHANGELOG section is missing.
 
 Semver, with breaking changes allowed in a minor version until 1.0. A change
 a consumer must act on (a renamed task, a config key, a new host requirement)
