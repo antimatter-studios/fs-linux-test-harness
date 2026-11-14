@@ -114,11 +114,24 @@ apt-get install -y -qq xfsprogs      # whatever this repository's tests need
 Nothing holds the package manager when it runs: every boot first runs
 `vagrant/guest/apt-ready.sh`, which disables the macOS box's first-boot
 dialog (`userconfig.service`, which waits for a keyboard and holds the dpkg
-lock), then waits up to five minutes for anything else holding the lock and
+lock). On every box it also disables, stops and persistently masks
+`unattended-upgrades.service`, `apt-daily.timer`, `apt-daily-upgrade.timer`,
+`apt-daily.service` and `apt-daily-upgrade.service`. Automatic updates cannot
+restart during a test and compete for its memory or package-manager locks;
+absent units are handled quietly. It then waits up to five minutes for
+anything still holding the lock and
 fails the boot, naming the lock and the process, if it is still held. Once
 the locks are free it runs `dpkg --configure -a`, finishing any transaction
 an earlier boot was stopped in the middle of, so a setup script never meets
 "dpkg was interrupted" and needs no recovery of its own.
+
+Every guest command, including consumer setup, profile preparation and
+`vm:guest-test`, exports `CARGO_BUILD_JOBS=1` by default. This prevents a
+Cargo build from starting one compiler per guest CPU in a small guest.
+Set `[vm] build_jobs` to a positive integer to choose another limit, or set
+`CARGO_BUILD_JOBS` on the host for an individual invocation; the environment
+takes precedence over the config. The value is per call, so consumers
+sharing a guest keep their own limits. Commands on the host are unchanged.
 
 **4. Use it.**
 
@@ -406,6 +419,7 @@ chose.
 | `[test] guest_command` | string | none | Run by `chore vm:guest-test` **inside the guest**, from `/repo` (this repository, mounted there read-write), with arguments appended and `FLTH_GUEST=1` set. Output streams as it happens and its exit status is the task's. The harness knows nothing about what it is: the `[setup]` script installs whatever the guest needs to run it — a compiler, an interpreter, a package manager's worth of tools — and anything the run should leave behind goes in the share. |
 | `[cache] size` | string | none | **Declares a cache that outlives a run**, e.g. `16G`. A directory of the shared guest's, mounted at `/cache` in every run of this consumer and kept across its runs for as long as the guest is up. It goes with the boot (#186), and the size is not enforced. For in-guest build state a run can rebuild but should not have to: point a toolchain's home or build directory under `/cache`. No `[cache]` section, no `/cache`. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
+| `[vm] build_jobs` | integer | `1` | Guest build concurrency, exported as `CARGO_BUILD_JOBS` for setup, profile preparation, `run`, `exec` and `guest-test`. Positive, at most six digits. Host `CARGO_BUILD_JOBS` overrides it. |
 | *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
 | `[vm] memory`, `[vm] cpus`, `[vm] disk`, `[vm] ssh_port`, `[vm] deadline_minutes` | | | **Read and validated, and not used.** They described the VM of its own a consumer had before the shared guest was the only one. The shared guest's size and deadline are the host's: `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` and `FLTH_SHARED_DEADLINE` (see [Environment](#environment)). They may be removed from a consumer's config. |
 | `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. Each release is a shared guest of its own (`machines/shared-<guest>/`). A consumer needing both runs a second config with its own `[project] name` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
@@ -452,6 +466,8 @@ relative, and must not leave the repository.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FLTH_CONFIG` | search upward | Path of the consumer's config. |
+| `CARGO_BUILD_JOBS` | `[vm] build_jobs`, otherwise `1` | Positive guest build limit, at most six digits. The host value overrides the config and is explicitly exported into each guest command. |
+| `FLTH_TEST_MEMINFO` | `/proc/meminfo` on Linux | Explicit Linux host-memory fixture for stub-engine tests. It must contain a `MemAvailable:` field in KiB; missing or unreadable input refuses the boot. Leave unset for real host admission. |
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/shared-<guest>/`) and firmware links. Must be the same for every consumer on the host, or each gets a guest of its own. |
 | `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | Sockets and Vagrant's temporary directory, on a path short enough for a socket. |
 | `FLTH_SHARED_SLOTS` | `32` | How many runs' trees can be attached to the shared guest at once: the free PCIe root ports it boots with, 1–64. A run past it is refused, naming the setting. |
@@ -904,6 +920,13 @@ with no message connecting the two. So a boot needs the guest's memory plus
 `MemAvailable`, or macOS's free, inactive and speculative pages at the page size
 `vm_stat` reports. A boot the host has no room for is refused, naming the numbers;
 a measurement that could not be made refuses too.
+
+A consumer's VM-free stub tests can set `FLTH_TEST_MEMINFO` to a Linux
+memory report containing `MemAvailable: 67108864 kB`, for example. The
+explicit fixture replaces `/proc/meminfo` without a PATH wrapper, so a
+test that never starts a VM does not depend on the runner's free RAM.
+Low or unreadable fixture memory still refuses admission. Real runs leave
+the test variable unset and retain the same host reserve and memory check.
 
 **A suite joining a guest with little memory left is told** (#185): the guest's own
 `MemAvailable`, its total, and the suites using it, when what is available is under

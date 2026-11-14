@@ -4,6 +4,7 @@
 # harness bakes none in.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+printf '%s\n' "${CARGO_BUILD_JOBS-unset}" > "$FLTH_SHARE/setup-build-jobs"
 apt-get update -qq
 apt-get install -y -qq e2fsprogs >/dev/null
 # sed, not head: head exits after one line, mke2fs is killed by SIGPIPE

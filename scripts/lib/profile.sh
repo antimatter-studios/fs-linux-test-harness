@@ -73,6 +73,7 @@ profile_prepare() {
 profile_install() {
     local dir="$FLTH_MACHINE_DIR/boot" release="$FLTH_PROFILE_RELEASE" file target expected
     engine_run "set -euo pipefail
+export CARGO_BUILD_JOBS=$CFG_vm_build_jobs
 payload='$FLTH_PROFILE_PAYLOAD'
 if [ -n \"\$payload\" ]; then
     tmp=\"\$(mktemp)\"

@@ -15,7 +15,9 @@ new_sandbox
 # undefined <script> — one line per command word nothing would answer.
 undefined() {
     local script="$1" word kind
-    sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)\([[:space:]].*\)\{0,1\}$/\1/p' "$script" \
+    # A case arm names patterns, not a command. Keep ordinary pipelines.
+    sed -E '/^[[:space:]]*[A-Za-z_][A-Za-z0-9_-]*([[:space:]]*\|[[:space:]]*[A-Za-z_][A-Za-z0-9_-]*)*[[:space:]]*\)/d' "$script" |
+        sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)\([[:space:]].*\)\{0,1\}$/\1/p' \
         | sort -u \
         | while read -r word; do
             grep -Eq "^[[:space:]]*${word}[[:space:]]*\(\)" "$script" && continue
@@ -30,6 +32,9 @@ cat > "$SANDBOX/good.sh" <<'EOF'
 check_eq() { :; }
 check_eq "$x" y "a defined helper"
 if true; then echo fine; fi
+case "$x" in
+    absent | masked-inactive) check_eq "$x" y ;;
+esac
 EOF
 check_eq "$(undefined "$SANDBOX/good.sh")" "" \
     "a script calling only defined helpers, builtins and programs passes, so the refusal below is the call's"
@@ -37,7 +42,7 @@ check_eq "$(undefined "$SANDBOX/good.sh")" "" \
 cat > "$SANDBOX/bad.sh" <<'EOF'
 check_eq() { :; }
 check_eq "$x" y "a defined helper"
-check_missing "$x" y "a helper nobody defined"
+check_missing "$x" y "a helper nobody defined" | cat
 EOF
 check_eq "$(undefined "$SANDBOX/bad.sh")" check_missing "a call to an undefined helper is named"
 

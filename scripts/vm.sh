@@ -801,7 +801,7 @@ guest_memory_mib() {
 host_memory_mib() {
     case "$(uname -s)" in
         Linux)
-            awk '/^MemAvailable:/ {print int($2 / 1024); found=1} END {if (!found) exit 1}' /proc/meminfo ;;
+            awk '/^MemAvailable:/ {print int($2 / 1024); found=1} END {if (!found) exit 1}' "${FLTH_TEST_MEMINFO:-/proc/meminfo}" ;;
         Darwin)
             local stats
             stats="$(vm_stat)" || return 1
@@ -1427,6 +1427,7 @@ guest_call() {
     window="$(rearm_window_secs)"
     cat <<EOF
 {
+export CARGO_BUILD_JOBS=$CFG_vm_build_jobs
 flth_rearm() {
     local now last=0
     [ -f $FLTH_GUEST_HOLD_MARKER ] && return 0
@@ -1560,6 +1561,7 @@ root=$FLTH_ROOT
 project.name=$CFG_project_name
 vm.memory=$CFG_vm_memory
 vm.cpus=$CFG_vm_cpus
+vm.build_jobs=$CFG_vm_build_jobs
 vm.disk=$CFG_vm_disk
 vm.ssh_port=$CFG_vm_ssh_port
 vm.deadline_minutes=$CFG_vm_deadline_minutes

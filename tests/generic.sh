@@ -27,7 +27,10 @@ check_eq "$hits" "" "scripts/, vagrant/ and the chore files name no filesystem o
 # install uses. That is the ENGINE's language, not a consumer's.
 TOOLCHAIN_WORDS='cargo|rustup|rustc|crates\.io|npm|yarn|pnpm|node_modules|pip|pipenv|poetry|virtualenv|gradle|maven|dotnet|golang|go\.mod|composer|meson|cmake'
 # shellcheck disable=SC2086
-hits="$(cd "$REPO" && grep -rniE "(^|[^a-z0-9])($TOOLCHAIN_WORDS)([^a-z0-9]|$)" $PATHS 2>/dev/null)"
+# The owner requires this one exported build-limit setting in guest calls and
+# profile setup. It is a resource policy, without invoking a build tool.
+hits="$(cd "$REPO" && grep -rniE "(^|[^a-z0-9])($TOOLCHAIN_WORDS)([^a-z0-9]|$)" $PATHS 2>/dev/null |
+    grep -vE '^scripts/(vm.sh|lib/profile.sh):[0-9]+:export CARGO_BUILD_JOBS=\$CFG_vm_build_jobs$|^scripts/lib/config.sh:[0-9]+:    CFG_vm_build_jobs="\$\{CARGO_BUILD_JOBS:-\$CFG_vm_build_jobs\}"$')"
 check_eq "$hits" "" "and no language, toolchain or package manager either"
 
 hits="$(cd "$REPO" && grep -rnE 'apt-get|apt |dnf |yum |apk ' vagrant 2>/dev/null)"

@@ -9,8 +9,10 @@
 # (christhomas/vagrant-rpi-bookworm-arm64) ships Raspberry Pi OS's
 # first-boot dialog, userconfig.service, which waits for a keyboard that
 # a headless VM does not have and holds the lock for ever. So it is
-# disabled, stopped and masked here. Anything else holding the lock — a
-# first boot's unattended upgrade, say — is waited out for up to the
+# disabled, stopped and masked here. Automatic update services and their
+# timers are also disabled, stopped and masked on every box, so they cannot
+# compete with a test for memory or take the package manager again later.
+# Anything still holding the lock is waited out for up to the
 # given number of seconds (default 300), and past that the boot FAILS,
 # naming the lock and the process holding it, instead of the setup script
 # failing later on a lock nothing explains.
@@ -47,6 +49,21 @@ case "$state" in
         echo "apt-ready: userconfig.service ($state) disabled, stopped and masked: it waits for a keyboard and holds the dpkg lock"
         ;;
 esac
+
+# --- automatic updates ----------------------------------------------------
+
+# Stop timers before their services, then prevent any later activation.
+# A masked unit may still be active, so it must be stopped as well. Missing
+# units are ordinary across boxes and need no action or diagnostic.
+for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service apt-daily.service apt-daily-upgrade.service; do
+    state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    case "$state" in
+        '' | not-found) continue ;;
+    esac
+    systemctl disable --now "$unit"
+    systemctl mask "$unit"
+    echo "apt-ready: $unit ($state) disabled, stopped and masked"
+done
 
 # --- the package manager's locks ------------------------------------------
 
