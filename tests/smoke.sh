@@ -399,6 +399,19 @@ for dir in /share "$repo_guest"; do
     fi
 done
 
+step "guest resource limits: automatic updates stay off and builds default to one job"
+for unit in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service; do
+    out="$("$VM" run "state=\$(systemctl is-enabled '$unit' 2>/dev/null || true); case \$state in ''|not-found) echo absent ;; masked) systemctl is-active --quiet '$unit' || echo masked-inactive ;; *) echo \$state ;; esac" 2>/dev/null)"
+    case "$out" in
+        absent | masked-inactive) ok "$unit cannot run automatically" ;;
+        *) bad "$unit is not masked and inactive: $out" ;;
+    esac
+done
+check_eq "$("$VM" run 'printf "%s" "${CARGO_BUILD_JOBS-unset}"' 2>/dev/null)" 1 'a real guest run exports one build job'
+check_eq "$("$VM" exec 'printf "%s" "${CARGO_BUILD_JOBS-unset}"' 2>/dev/null)" 1 'a real guest exec exports one build job'
+check_eq "$("$VM" run 'cat /share/setup-build-jobs' 2>/dev/null)" 1 'the real consumer setup receives one build job'
+check_eq "$(CARGO_BUILD_JOBS=2 "$VM" run 'printf "%s" "${CARGO_BUILD_JOBS-unset}"' 2>/dev/null)" 2 'a real guest receives an explicit build override'
+
 step "apt-ready: the package manager's lock, as the guest's own dpkg sees it"
 # The boot ran vagrant/guest/apt-ready.sh; the consumer's setup then
 # installed packages, which is the proof it left the lock free. Here the
@@ -496,6 +509,7 @@ sed 's/^/  guest-test: /' "$CONTENDER/guest-test.log" | tail -5
 check_eq "$rc" 0 "vm.sh guest-test exits 0 for a passing in-guest suite"
 check_contains "$(cat "$CONTENDER/guest-test.log")" "in-guest suite: $repo_guest as root" \
     "the command ran in the guest, from the repository mount"
+check_contains "$(cat "$CONTENDER/guest-test.log")" 'in-guest build jobs: 1' 'the real guest-test inherits one build job'
 check_eq "$(cat "$("$VM" share)/results/verdict" 2>/dev/null)" pass "and its results are on the share"
 check_eq "$(state)" running "the guest stays up for the next run"
 
