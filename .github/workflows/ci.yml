@@ -112,7 +112,7 @@ jobs:
   unit:
     name: unit (VM-free, ${{ matrix.os }})
     needs: changes
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && (needs.changes.outputs.linux_runner || 'ubuntu-latest') || matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (needs.changes.outputs.linux_runner || 'ubuntu-24.04') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:

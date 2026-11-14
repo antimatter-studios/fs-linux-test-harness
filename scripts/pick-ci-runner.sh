@@ -2,7 +2,7 @@
 # Select the Linux unit runner; routing failures must not prevent CI.
 set -euo pipefail
 preferred=antimatter-vps-linux-x64
-hosted=ubuntu-latest
+hosted=ubuntu-24.04
 fallback() {
     printf 'runner gate: %s; using %s\n' "$*" "$hosted" >&2
     printf '%s\n' "$hosted"
