@@ -285,7 +285,8 @@ not depend on another running at the same time or not: its sandbox is its own.
 The host scripts support system Bash 3.2 and Ruby 2.6. VM-free guest scripts
 need a separate Bash 4.2+ interpreter: on macOS use
 `FLTH_TEST_GUEST_BASH="$(brew --prefix bash)/bin/bash" chore check` after
-`brew install bash shellcheck coreutils`. This does not replace host Bash.
+`brew install bash shellcheck coreutils jq`. This does not replace host Bash.
+The CI runner-selection checks also require `jq` to read event payloads.
 The suite fails once up front when the guest interpreter cannot run the
 deadline's time-format `printf`. `timeout` is required for the apt checks.
 Set `FS_CORE_ROOT` to the pinned core checkout when it is not the sibling.
@@ -299,6 +300,13 @@ CI (`.github/workflows/ci.yml`):
 | `unit (VM-free, OS)` | `chore check` on Linux and macOS arm64, using each host's system Bash |
 | `smoke (real VM, x86_64 KVM)` | `chore smoke` on `ubuntu-latest` with KVM |
 | `ci-ok` | the single required check: every job above ran and succeeded |
+
+The hosted `changes` job picks only the Linux unit runner through the gate,
+as its last step, with the run ID, attempt and `unit` job key. The bootstrap,
+aggregate, release, macOS and real KVM smoke jobs stay hosted. If runner setup
+fails with `Runner gate reservation expired`, rerun the **whole** workflow
+(`gh run rerun <run-id> --repo antimatter-studios/fs-linux-test-harness`),
+not `--failed`, so `changes` makes a new pick.
 
 The Linux aarch64 path is proven by `chore smoke` on an arm64 host by hand
 (hosted arm64 runners expose no KVM). Apple Silicon smoke evidence was

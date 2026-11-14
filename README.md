@@ -1071,8 +1071,8 @@ The Vagrantfile recognises a plugin loaded either way.
 ## CI and automated merging
 
 The VM-free checks run with the host's system Bash and Ruby (including
-macOS Bash 3.2 and Ruby 2.6). Install `shellcheck` and `timeout` as well
-(`brew install shellcheck coreutils` on macOS). The stub engine executes
+macOS Bash 3.2 and Ruby 2.6). Install `shellcheck`, `timeout` and `jq` as well
+(`brew install shellcheck coreutils jq` on macOS). The stub engine executes
 Debian guest scripts locally, so it separately needs Bash 4.2 or newer:
 on macOS, install `bash` and run
 `FLTH_TEST_GUEST_BASH="$(brew --prefix bash)/bin/bash" chore check`.
@@ -1085,14 +1085,33 @@ that need Unix sockets use a short directory under `/tmp` by default;
 set `FLTH_TEST_SOCKET_ROOT` to another short scratch root to keep those
 directories elsewhere. The production 103-byte socket limit is unchanged.
 
-Every pull request and every push to `main` runs
+Every pull request, merge-queue group, main push and version-tag push runs
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml):
 
 | Job | Runs on | What a green run proves |
 | --- | --- | --- |
-| `unit (VM-free, OS)` | `ubuntu-latest` and `macos-15` arm64 | `chore check` with each host's system Bash: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the orchestration against a stub engine (the shared guest's default root, worktrees, the list of suites, the host memory check, boot retries, never taking an unread state for a stop, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
+| `unit (VM-free, OS)` | `antimatter-vps-linux-x64` or `ubuntu-latest`, and `macos-15` arm64 | `chore check` with each host's system Bash: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the orchestration against a stub engine (the shared guest's default root, worktrees, the list of suites, the host memory check, boot retries, never taking an unread state for a stop, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
 | `smoke (real VM, x86_64 KVM)` | `ubuntu-latest` with KVM | `chore smoke`: a real Debian VM boots through the harness under KVM; the smoke consumer's setup installs `e2fsprogs` inside it; the machine is the shared guest's and sees the directory holding the checkout, with nothing set; a run that leaves a file, a loop device and a mount behind changes no byte of the machine's disk, and the next boot sees none of it; exit status, output and files cross host↔guest; the reaper leaves the shared guest up; a consumer whose setup installs a kernel is refused; two consumers join one guest at once; a realistic suite (build an ext4 image from host files, read back with `debugfs`, compare, `e2fsck -fn`, collect results on the host) **passes**; the same suite with one byte of file data corrupted **fails with a non-zero exit**; `down` and `destroy` behave. |
 | `ci-ok` | `ubuntu-latest` | Green only if every job above ran and succeeded (a failed, cancelled **or skipped** job fails it). |
+
+The hosted `changes` job asks the [runner gate](https://runner-gate.antimatter-studios.com/status)
+to select the Linux unit runner immediately before that job can start. Only
+the allowed user, across the actor, triggering actor, sender and PR author,
+can use the private pool. Other identities, a full pool, a failed request or
+an unexpected answer select `ubuntu-latest`. Requests have a ten-second
+deadline, and the decision appears in the job summary. The private image
+installs its unit-test prerequisites explicitly. The pick is the last step
+of `changes` and identifies the run, attempt and `unit` job. The gate can
+enforce a 120-second window for the runner to claim that pick. If setup
+reports `Runner gate reservation expired`, rerun the whole workflow with
+`gh run rerun <run-id> --repo antimatter-studios/fs-linux-test-harness`.
+Do not use `--failed`: `changes` must run again to make a fresh pick.
+GitHub cannot change a queued job's selected runner label.
+
+The bootstrap, `ci-ok` and tag-only `release` jobs stay hosted, so they do
+not wait for private capacity selected before a long smoke run. The release
+job publishes the tagged CHANGELOG section after `ci-ok` succeeds. macOS
+tests keep their real host, and both real VM smoke jobs keep hosted KVM.
 
 **The required status check is `ci-ok`.** Branch protection and
 auto-merge should require that one name and nothing else, so adding a

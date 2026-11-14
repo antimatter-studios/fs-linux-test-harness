@@ -53,11 +53,12 @@ jobs:
   # true, and ci-ok accepts their skip when, and only when, it is false.
   changes:
     name: changes (does this need the full pipeline?)
-    # These jobs need only the runner image's shell tools. Keep hosted
-    # capacity for the unit jobs' Ruby and the smoke jobs' privileged KVM setup.
-    runs-on: antimatter-vps-linux-x64
+    # Bootstrap on a hosted runner: no preceding job can pick this runner,
+    # and merge-queue bot senders cannot use the user-only private pool.
+    runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.c.outputs.code }}
+      linux_runner: ${{ steps.runner.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,10 +102,17 @@ jobs:
           fi
           echo "code=$code ($EVENT${range:+ $range})"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Select the Linux unit runner
+        id: runner
+        run: |
+          runner="$(scripts/pick-ci-runner.sh)"
+          printf 'runner=%s\n' "$runner" >> "$GITHUB_OUTPUT"
+          printf 'Linux unit runner: `%s`\n' "$runner" >> "$GITHUB_STEP_SUMMARY"
 
   unit:
     name: unit (VM-free, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    needs: changes
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (needs.changes.outputs.linux_runner || 'ubuntu-latest') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -112,10 +120,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Private Linux runner unit tools
+        if: runner.os == 'Linux' && runner.environment == 'self-hosted'
+        run: |
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y --no-install-recommends ruby shellcheck perl coreutils jq procps lsof
       - name: macOS VM-free tools
         if: runner.os == 'macOS'
         run: |
-          brew install shellcheck coreutils bash
+          brew install shellcheck coreutils bash jq
           echo "FLTH_TEST_GUEST_BASH=$(brew --prefix bash)/bin/bash" >> "$GITHUB_ENV"
           echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: The host uses its system Bash
@@ -182,7 +195,7 @@ jobs:
     name: ci-ok
     if: always()
     needs: [changes, unit, smoke-x86_64]
-    runs-on: antimatter-vps-linux-x64
+    runs-on: ubuntu-latest
     steps:
       - name: Every job ran and succeeded
         env:
@@ -205,7 +218,7 @@ jobs:
     name: release (publish the version tag)
     needs: ci-ok
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: antimatter-vps-linux-x64
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
