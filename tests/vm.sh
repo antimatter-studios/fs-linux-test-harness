@@ -387,10 +387,13 @@ printf 'true\n' > "$C/setup.sh"
 stub_state absent
 stub_reset_calls
 echo 2 > "$FLTH_TEST_STUB/up_delay"
-( vm up >/dev/null 2>&1; echo $? > "$SANDBOX/up-1" ) &
-( vm up >/dev/null 2>&1; echo $? > "$SANDBOX/up-2" ) &
+( vm up > "$SANDBOX/up-1.log" 2>&1; echo $? > "$SANDBOX/up-1" ) &
+( vm up > "$SANDBOX/up-2.log" 2>&1; echo $? > "$SANDBOX/up-2" ) &
 wait
 check_eq "$(cat "$SANDBOX/up-1")|$(cat "$SANDBOX/up-2")" "0|0" "two ups at once both succeed"
+if [ "$(cat "$SANDBOX/up-1")|$(cat "$SANDBOX/up-2")" != '0|0' ]; then
+    tail -n 20 "$SANDBOX/up-1.log" "$SANDBOX/up-2.log"
+fi
 check_eq "$(calls_of up)" 1 "  and boot the machine once"
 rm -f "$FLTH_TEST_STUB/up_delay"
 vm down 2>/dev/null
