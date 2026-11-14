@@ -221,17 +221,27 @@ up_lock_take() {
     done
 }
 
-# Take the lock if no live process holds it.
+# Take the lock if no live process holds it. Serialize the observation and
+# reclamation: a caller that read a dead pid must not remove a live caller's
+# replacement directory. The guard file stays at one inode; descriptor 4 holds
+# its kernel lock only for this short check, never for the boot or setup.
 up_lock_try() {
     local lock="$FLTH_MACHINE_DIR/up.lock" owner
+    exec 4>> "$FLTH_MACHINE_DIR/up.lock.guard" || return 1
+    if ! perl -MFcntl=:flock -e 'flock(STDIN, LOCK_EX | LOCK_NB) or exit 1' <&4; then
+        exec 4>&-
+        return 1
+    fi
     until mkdir "$lock" 2>/dev/null; do
         owner="$(cat "$lock/pid" 2>/dev/null || true)"
         if [ -z "$owner" ] || kill -0 "$owner" 2>/dev/null; then
+            exec 4>&-
             return 1
         fi
         rm -rf "$lock"
     done
     echo "$$" > "$lock/pid"
+    exec 4>&-
     UP_LOCK_HELD=1
     trap 'rm -rf "$FLTH_MACHINE_DIR/up.lock"' EXIT
 }
