@@ -18,6 +18,7 @@ set -euo pipefail
 [ "$FLTH_GUEST" = 1 ]
 [ "$FLTH_KERNEL_RELEASE" = 6.12.1-profile-test ]
 printf prepared > "$FLTH_TEST_STUB/guest-lib/profile-setup"
+printf '%s\n' "${CARGO_BUILD_JOBS-unset}" > "$FLTH_TEST_STUB/guest-lib/profile-build-jobs"
 SETUP
 checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_PROFILE_DIR/prepare.sh")"
 manifest() {
@@ -158,6 +159,7 @@ check_eq "$rc" 0 "the profile prepares and boots before its consumer joins"
 check_eq "$(grep -c '^up --persist$' "$FLTH_TEST_STUB/calls" | tr -d ' ')" 1 "profile preparation has one persistent boot"
 check_eq "$(grep -c '^up$' "$FLTH_TEST_STUB/calls" | tr -d ' ')" 1 "consumer execution has one disposable boot"
 check_eq "$(cat "$FLTH_TEST_STUB/disk/profile-setup" 2>/dev/null)" prepared "the prepared environment is kept on disk"
+check_eq "$(cat "$FLTH_TEST_STUB/disk/profile-build-jobs" 2>/dev/null)" 1 "profile setup receives the single-job build default"
 check_eq "$([ -f "$FLTH_TEST_STUB/disk/consumer-write" ] && echo leaked)" '' "the consumer cannot provision the profile disk"
 check_contains "$(cat "$FLTH_TEST_STUB/module-calls")" "--set-version $RELEASE --show-depends loop" "preparation resolves modules for the selected release"
 check_contains "$(cat "$FLTH_TEST_STUB/module-calls")" $'\nloop' "the running guest loads the required module"

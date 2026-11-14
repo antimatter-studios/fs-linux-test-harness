@@ -43,7 +43,18 @@ new_box() {
 # stat -c %i <file>
 cat "$3.ino"
 STUB
-    printf '#!/bin/sh\necho "systemctl $*" >> "%s/calls"\ncase "$1" in is-enabled) cat "%s/userconfig" 2>/dev/null; exit 0 ;; esac\nexit 0\n' "$box" "$box" > "$box/bin/systemctl"
+    mkdir -p "$box/units"
+    cat > "$box/bin/systemctl" <<STUB
+#!/bin/sh
+echo "systemctl \$*" >> "$box/calls"
+case "\$1" in
+    is-enabled)
+        unit="$box/units/\$2"
+        [ "\$2" != userconfig.service ] || unit="$box/userconfig"
+        if [ -f "\$unit" ]; then cat "\$unit"; else echo not-found; exit 4; fi ;;
+esac
+exit 0
+STUB
     # sleep: count the waits, and run a hook on the Nth (to release a lock).
     printf '#!/bin/sh\necho sleep >> "%s/sleeps"\nn=$(wc -l < "%s/sleeps")\n[ -f "%s/release-at" ] && [ "$n" -ge "$(cat "%s/release-at")" ] && : > "%s/proc/locks"\nexit 0\n' \
         "$box" "$box" "$box" "$box" "$box" > "$box/bin/sleep"
@@ -85,6 +96,34 @@ run_ready 10
 check_lacks "$(calls)" "disable" "a unit systemd reports not-found is not touched"
 
 # --- the package manager's locks ------------------------------------------
+
+# Every box is made quiet before setup, even if an update unit is disabled or
+# masked already: masking an active service does not stop its process.
+UPDATE_UNITS='apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service apt-daily.service apt-daily-upgrade.service'
+for unit in $UPDATE_UNITS; do
+    new_box
+    echo enabled > "$box/units/$unit"
+    run_ready 10
+    check_eq "$rc" 0 "$unit: the box is made ready"
+    check_contains "$(calls)" "systemctl disable --now $unit" "$unit: disabled and stopped"
+    check_contains "$(calls)" "systemctl mask $unit" "$unit: masked against later activation"
+done
+for state in disabled static masked masked-runtime; do
+    new_box
+    echo "$state" > "$box/units/unattended-upgrades.service"
+    run_ready 10
+    check_eq "$rc" 0 "an update service in state $state is handled"
+    check_contains "$(calls)" 'systemctl disable --now unattended-upgrades.service' "$state: an existing service is stopped"
+    check_contains "$(calls)" 'systemctl mask unattended-upgrades.service' "$state: a persistent mask is ensured"
+done
+new_box
+run_ready 10
+check_eq "$rc" 0 'a box without any update units is ready'
+check_lacks "$(calls)" 'disable' 'missing update units are not disabled'
+check_lacks "$out" 'not-found' 'missing update units are quiet'
+
+# Even after update units have been stopped, another package-manager process
+# can still hold a lock. Keep the wait and interrupted-transaction recovery.
 
 new_box
 run_ready 10

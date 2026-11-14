@@ -32,6 +32,12 @@ if [ "$n" -gt 0 ]; then
     exit 1
 fi
 case "$1" in
+    destroy)
+        if [ -f "$STUBDIR/destroy-error" ]; then
+            cat "$STUBDIR/destroy-error" >&2
+            exit 7
+        fi
+        ;;
     status)
         [ -f "$STUBDIR/status" ] || { echo "boom" >&2; exit 1; }
         echo "1700000000,default,metadata,provider,qemu"
@@ -344,5 +350,43 @@ check_contains "$(cat "$STUBDIR/log")" "kernel=$FLTH_MACHINE_DIR/boot/vmlinuz in
     "the engine passes exact profile boot assets and command line to Vagrant"
 engine_forget_kernel
 check_eq "$([ -e "$FLTH_MACHINE_DIR/boot/cmdline" ] && echo stale)" '' "forgetting a prepared kernel also forgets its root command line"
+
+# --- destruction behind another Vagrant action (#240) ----------------------
+
+# The real abrupt-stop smoke hit this after a new boot. A stub holds the
+# exact same machine action lock for a fixed number of attempts.
+: > "$STUBDIR/log"
+echo 2 > "$STUBDIR/locked"
+rc=0
+engine_destroy 2>"$SANDBOX/destroy-retry.err" || rc=$?
+check_eq "$rc" 0 "destroy waits out a transient Vagrant machine lock"
+check_eq "$(grep -c '^vagrant destroy ' "$STUBDIR/log")" 3 "destroy retries until the other Vagrant action releases the lock"
+check_lacks "$(cat "$SANDBOX/destroy-retry.err")" 'Vagrant locks each machine' "successful destruction hides intermediate lock diagnostics"
+
+# Exhaustion must leave the disks' credentials and boot metadata intact.
+key="$VAGRANT_DOTFILE_PATH/machines/default/qemu/private_key"
+disk="$(engine_vagrant_cache_path)"
+mkdir -p "$(dirname "$key")" "$FLTH_MACHINE_DIR/boot"
+printf key > "$key"
+printf cache > "$disk"
+printf kernel > "$FLTH_MACHINE_DIR/boot/vmlinuz"
+: > "$STUBDIR/log"
+echo 4 > "$STUBDIR/locked"
+rc=0
+ENGINE_VAGRANT_LOCK_TRIES=2 engine_destroy 2>"$SANDBOX/destroy-exhausted.err" || rc=$?
+check_eq "$rc" 1 "destroy refuses after its machine-lock retry bound"
+check_eq "$(grep -c '^vagrant destroy ' "$STUBDIR/log")" 3 "persistent contention gets only the bounded number of attempts"
+check_contains "$(cat "$SANDBOX/destroy-exhausted.err")" '[vagrant]' "exhausted destruction reports the final Vagrant diagnostic"
+check_eq "$(cat "$key" "$disk" "$FLTH_MACHINE_DIR/boot/vmlinuz" 2>/dev/null)" keycachekernel "failed destruction preserves the private key, cache and boot assets"
+
+# A failure unrelated to contention is not retryable.
+echo 0 > "$STUBDIR/locked"
+printf 'destroy failed for another reason\n' > "$STUBDIR/destroy-error"
+: > "$STUBDIR/log"
+rc=0
+engine_destroy 2>"$SANDBOX/destroy-failed.err" || rc=$?
+check_eq "$rc" 7 "destroy keeps a non-lock failure status"
+check_eq "$(grep -c '^vagrant destroy ' "$STUBDIR/log")" 1 "a non-lock destruction failure is never retried"
+check_contains "$(cat "$SANDBOX/destroy-failed.err")" 'destroy failed for another reason' "the original non-lock diagnostic is preserved"
 
 finish engine-vagrant

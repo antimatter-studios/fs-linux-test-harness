@@ -14,6 +14,7 @@ mode="${1:-pass}"
 case "$mode" in pass | corrupt) ;; *) echo "usage: in-guest-suite.sh [pass|corrupt]" >&2; exit 2 ;; esac
 
 echo "in-guest suite: $PWD as $(id -un) on $(uname -sm)"
+echo "in-guest build jobs: ${CARGO_BUILD_JOBS-unset}"
 [ -f ./guest-suite.sh ] ||
     { echo "in-guest suite: the consumer repository is not mounted here" >&2; exit 1; }
 

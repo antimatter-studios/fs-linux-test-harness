@@ -495,7 +495,7 @@ engine_destroy() {
     engine_vagrant_stop_forwarders
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
-    engine_vagrant destroy -f >&2 || return
+    engine_vagrant_retrying destroy -f >&2 || return
     # The disk that authorized this key has gone; a fresh box starts with its own.
     rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
     engine_vagrant_forget_attached
