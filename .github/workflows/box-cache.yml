@@ -1,0 +1,60 @@
+name: Box cache
+
+# Saves the Vagrant box cache from main, where every pull request and merge
+# queue run can restore it (#148). GitHub scopes a cache to the ref that saved
+# it and that ref's base branch: an entry saved by a merge queue run sits on its
+# own gh-readonly-queue ref, which no other queue run can read. So the smoke
+# jobs in ci.yml only restore, and this workflow is the one place that saves.
+# It runs on every push to main, so a change of the pinned box is cached as
+# soon as it lands, and weekly, so the entry is read before GitHub evicts an
+# entry nothing has read for seven days. A consumer that boots a VM in its own
+# merge queue needs the same save on its own main (README "CI and automated
+# merging"). tests/box-cache.sh holds this.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  save:
+    name: save the box cache (${{ matrix.guest }})
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        guest: [debian-12, debian-13]
+    env:
+      FLTH_VM_GUEST: ${{ matrix.guest }}
+    steps:
+      - uses: actions/checkout@v4
+      # The same script every consumer's CI runs: Vagrant pinned, and the key
+      # derived from the box and version the Vagrantfile pins for this guest.
+      - name: KVM, QEMU and Vagrant
+        id: vm-host
+        run: scripts/ci-setup-linux.sh
+      - name: Restore the box cache
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: Fetch the pinned box
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: |
+          ver="$(sed -n "s/.*\"$FLTH_VM_GUEST\" => \[\"cloud-image\/$FLTH_VM_GUEST\", \"\([^\"]*\)\"\].*/\1/p" vagrant/Vagrantfile)"
+          [ -n "$ver" ] || { echo "no pinned box for $FLTH_VM_GUEST in vagrant/Vagrantfile" >&2; exit 1; }
+          vagrant box add "cloud-image/$FLTH_VM_GUEST" --box-version "$ver" --provider libvirt
+      - name: Save the box cache
+        if: steps.restore.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}

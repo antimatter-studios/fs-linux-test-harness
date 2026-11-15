@@ -29,14 +29,15 @@ runs:
         dir="$RUNNER_TEMP/chore"
         mkdir -p "$dir"
         release=""
-        # fetch <asset>: GitHub's release download answers an occasional HTTP
-        # 500, and on 2026-11-09 answered 504 to every attempt for minutes, so
-        # every download retries on any error and names the host that answered
-        # last. Once the release download's retries are spent, the same asset
-        # comes through the REST API's asset endpoint, with the job's token,
-        # which curl does not pass on to the storage host it redirects to.
-        # Either way the checksum check below guards what was fetched.
-        fetch() {
+        # try <asset>: one attempt at each path. GitHub's release download
+        # answers an occasional HTTP 500, and on 2026-11-09 answered 504 to
+        # every attempt for minutes, so each download retries on any error and
+        # names the host that answered last. Once the release download's
+        # retries are spent, the same asset comes through the REST API's asset
+        # endpoint, with the job's token, which curl does not pass on to the
+        # storage host it redirects to. Either way the checksum check below
+        # guards what was fetched.
+        try() {
           if curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
               --write-out '%{stderr}%{http_code} from %{urle.host}\n' \
               -o "$dir/$1" "$base/$1"; then
@@ -47,7 +48,7 @@ runs:
             release="$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
               --write-out '%{stderr}%{http_code} from %{urle.host}\n' \
               -H "Authorization: Bearer $CHORE_TOKEN" -H "Accept: application/vnd.github+json" \
-              "$api/tags/v${CHORE_VERSION}")" || { echo "the REST API lookup of release v${CHORE_VERSION} failed" >&2; exit 1; }
+              "$api/tags/v${CHORE_VERSION}")" || { release=""; echo "the REST API lookup of release v${CHORE_VERSION} failed" >&2; return 1; }
           fi
           # The asset's own API url, which comes before its name in each asset.
           # awk reads to the end, so no writer in the pipe dies of SIGPIPE.
@@ -63,6 +64,22 @@ runs:
             --write-out '%{stderr}%{http_code} from %{urle.host}\n' \
             -H "Authorization: Bearer $CHORE_TOKEN" -H "Accept: application/octet-stream" \
             -o "$dir/$1" "$url"
+        }
+        # fetch <asset>: both paths redirect to the same storage host, so an
+        # outage there fails both at once (#212). curl's retries span seconds,
+        # and the 2026-11-09 outage lasted minutes, so when both paths fail the
+        # action waits and tries both again, six minutes in all, before the job
+        # fails. A missing asset still fails at once.
+        fetch() {
+          local wait
+          for wait in 60 120 180 ""; do
+            if try "$1"; then return 0; fi
+            [ -n "$wait" ] || break
+            echo "::warning::both paths to $1 failed; trying both again in ${wait}s" >&2
+            sleep "$wait"
+          done
+          echo "every attempt at $1 failed, by the release download and by the REST API" >&2
+          exit 1
         }
         fetch "$tarball"
         fetch checksums.txt
