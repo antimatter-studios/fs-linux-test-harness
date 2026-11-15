@@ -330,15 +330,22 @@ watchdog_explain() {
 # here on can say why. The guest is forced down, since a graceful stop waits on what
 # is stuck, and the suites are stopped once it has gone, so that none of them boots
 # another guest in its place.
+#
+# A CALL OUTSIDE ANY SESSION IS NOT SIGNALLED. Its entry names no run (shared_call_begin).
+# Its own connection drops with the guest, and it reads the record and says why, with
+# the watchdog's status. A TERM sent as it did so ended it first, with 143 and no
+# reason, whichever of the two came first (#190).
 vm_watchdog_end() {
-    local reason="$1" marker pid start have_lock=0 pids="" told
+    local reason="$1" marker pid start run have_lock=0 pids="" told
     told="$(watchdog_told)"
     printf '%s\n' "$reason" > "$(watchdog_record)"
     mkdir -p "$told"
     for marker in "$(sessions_dir)"/*; do
         [ -f "$marker" ] || continue
-        IFS=$'\t' read -r pid start _ < "$marker" || true
+        run=""
+        IFS=$'\t' read -r pid start _ run < "$marker" || true
         case "$pid" in '' | *[!0-9]*) continue ;; esac
+        [ -n "$run" ] || continue
         [ "$(process_start "$pid" || true)" = "$start" ] || continue
         printf '%s\n' "$reason" > "$told/$pid"
         pids="$pids $pid"
