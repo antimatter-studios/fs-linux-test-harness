@@ -267,6 +267,28 @@ a tmpfs `/tmp` is sized from the guest's RAM. A tool that only reads its
 image with buffered I/O works on the shares, but a suite that copies does
 not have to know which of its tools those are.
 
+**The guest's own disk may stop one file at 2 TiB.** A run's `/var/tmp` is on
+the guest's root disk, and where the box formats that disk as ext4 without
+`huge_file`, a file cannot pass 2 TiB: `truncate -s 2T` there fails with
+`File too large` (`EFBIG`), sparse or not. #219 found this on the macOS
+(arm64) Debian 12 guest. The x86_64 Debian 12 and 13 guests that CI boots
+have `huge_file` and take a 3 TiB sparse file (`chore smoke`, 2026-11-15).
+The disk is the box's and every boot is disposable, so the harness does not
+reformat it. A suite that makes a larger image, such as a sparse format-maximum
+volume, mounts a tmpfs of its own and makes the image there, in the run's
+private mount namespace, where the mount goes when the run ends:
+
+```sh
+mkdir -p /var/tmp/big && mount -t tmpfs -o size=1g big /var/tmp/big
+truncate -s 3T /var/tmp/big/volume.img   # sparse: only written pages count
+```
+
+A sparse file costs a tmpfs only the pages written to it, and those come
+from the guest's RAM, so size the mount for what the suite writes, not for
+the image's length. `chore smoke` checks both halves on every guest it
+boots: that the root's own feature list agrees with what a 3 TiB sparse file
+does there, and that one fits on a tmpfs mounted in a run.
+
 The smoke consumer does exactly this (`tests/smoke-consumer/guest-suite.sh`),
 and `tests/guest-scratch.sh` fails the build if any of its guest-side
 scripts points an image tool at the share or the repository mount.
@@ -591,6 +613,13 @@ the guest's and lasts as long as the guest does.
 **A kernel the setup script installs is never run.** The shared guest does not
 restart for one consumer's setup, so a setup that installs a kernel the guest
 is not running fails that consumer's join, naming both kernels (#157, #207).
+Every boot runs each setup again, so the refusal is kept beside the machine for
+that setup's bytes: on a later boot the same setup is refused before it runs,
+and says so, instead of spending its whole time to be refused after it. A
+changed setup runs and is judged afresh. A consumer that needs another kernel
+names it in a [run profile](#run-profiles), which prepares and boots that
+kernel before any suite joins; that is the supported way to test on a kernel
+the box does not ship.
 
 **A boot that fails shows the guest's console.** The provider sends the
 guest's serial console, where its kernel and init write, to a socket
