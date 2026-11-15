@@ -391,8 +391,9 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   asking for the state bleed this exists to prevent; `tests/disposable.sh` holds
   the orchestration to it, `tests/smoke.sh` proves it on a real disk. A
   consumer's declared cache (`[cache] size`, mounted at `/cache`) is a directory
-  of the guest's and lasts as long as the guest. The engine still carries the
-  provisioning boot, the kept macOS kernel and the cache disk the removed
+  of the guest's and lasts as long as the guest. Only a run profile's preparation
+  boot keeps its writes (`engine_up --persist`), and only a profile's boot files
+  are passed to QEMU. The engine still carries the cache disk the removed
   private VM used, which nothing calls now (#221).
 - **Status 255 from a call into the guest is ssh's or the script's.** `vm.sh`
   keeps it and reports what it found on stderr (`report_lost_guest`, #105). A

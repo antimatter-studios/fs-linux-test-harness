@@ -93,21 +93,6 @@ engine_identity() {
     printf '%s\n' "$FLTH_MACHINE_DIR/vagrant"
 }
 
-engine_boot_identity() {
-    local identity processes
-    identity="$(engine_identity)"
-    [ -n "$identity" ] || return 1
-    processes="$(LC_ALL=C TZ=UTC ps -eo pid=,lstart=,args= 2>/dev/null)" || return 2
-    [ -n "$processes" ] || return 2
-    printf '%s\n' "$processes" | awk -v want="$identity/" '
-        { count = split($7, parts, "/") }
-        !found && parts[count] ~ /^qemu-system-/ && index($0, want) > 0 {
-            print $1, $2, $3, $4, $5, $6
-            found = 1
-        }
-        END { exit !found }'
-}
-
 # Run vagrant, waiting out another process's lock on the machine. Output
 # goes to stdout; Vagrant's own stderr is shown only when the command
 # finally fails.
@@ -258,48 +243,12 @@ engine_vagrant_ssh_port() {
         exit 1;' "$1"
 }
 
-# THE macOS GUEST'S KERNEL IS NOT ON ITS DISK (#80). The box starts QEMU with
-# -kernel and -initrd naming files beside the box, with no firmware and no
-# bootloader, so a kernel a setup script installs in the guest is never run,
-# and neither is anything that needs it. Measured on an Apple Silicon host with
-# a setup that installs a 6.12 kernel: /boot held vmlinuz-6.12.95+deb12-arm64,
-# and `uname -r` said 6.1.0-42-cloud-arm64. So when a provisioning boot ends its
-# newest kernel is copied out beside the machine, and every later boot is told
-# to run it (vagrant/Vagrantfile). A Linux guest boots through its own GRUB,
-# which chooses for itself, and none of this applies there.
-#
-# The release file is written last and is what records the answer, which may
-# be "none": a setup that installs no kernel stays on the box's.
+# A RUN PROFILE'S BOOT FILES (#225). A profile's preparation boot copies the
+# kernel and initrd it chose, and the root command line, beside the machine
+# (lib/profile.sh, profile_install), and every later boot of that machine is
+# told to run them (vagrant/Vagrantfile). A machine with no profile has none,
+# and boots what its box boots.
 engine_vagrant_kernel_dir() { printf '%s/boot\n' "$FLTH_MACHINE_DIR"; }
-engine_vagrant_keeps_kernel() { [ "$(uname -s)" = Darwin ]; }
-
-engine_keep_kernel() {
-    engine_vagrant_keeps_kernel || return 0
-    local dir release
-    dir="$(engine_vagrant_kernel_dir)"
-    release="$(engine_run "$(cat "$ENGINE_VAGRANT_DIR/guest/newest-kernel.sh")")" || return 1
-    mkdir -p "$dir" || return 1
-    rm -f "$dir/release"
-    if [ -n "$release" ]; then
-        if ! engine_run "cat '/boot/vmlinuz-$release'" > "$dir/vmlinuz.new" ||
-            ! engine_run "cat '/boot/initrd.img-$release'" > "$dir/initrd.img.new"; then
-            rm -f "$dir/vmlinuz.new" "$dir/initrd.img.new"
-            return 1
-        fi
-        mv -f "$dir/vmlinuz.new" "$dir/vmlinuz" && mv -f "$dir/initrd.img.new" "$dir/initrd.img" || return 1
-        echo "[vm] the next boot runs $release, the newest kernel on the disk" >&2
-    else
-        rm -f "$dir/vmlinuz" "$dir/initrd.img"
-    fi
-    printf '%s' "$release" > "$dir/release"
-}
-
-# Whether a provisioning boot has answered for this disk. A disk provisioned by
-# a harness that kept no kernel has not, and takes one provisioning boot to.
-engine_kernel_known() {
-    engine_vagrant_keeps_kernel || return 0
-    [ -f "$(engine_vagrant_kernel_dir)/release" ]
-}
 
 # A kept kernel belongs to the disk that holds its modules.
 engine_forget_kernel() {

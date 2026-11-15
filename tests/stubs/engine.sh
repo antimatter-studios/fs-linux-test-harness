@@ -63,11 +63,6 @@ engine_prepare() {
 
 engine_identity() { printf '%s\n' "$FLTH_MACHINE_DIR/stub"; }
 
-engine_boot_identity() {
-    [ ! -f "$STUB/boot_identity_unreadable" ] || return 2
-    stub_read boot_identity 0
-}
-
 engine_console_log() { printf '%s\n' "$STUB/console.log"; }
 
 # The real engine's answers are held by tests/box-catalog.sh, which talks to a
@@ -105,7 +100,6 @@ engine_up() {
     stub_gate gate_up
     # A boot takes time, and until it ends the VM is not running.
     /bin/sleep "$(stub_read up_delay 0)"
-    printf '%s\n' "$(( $(stub_read boot_identity 0) + 1 ))" > "$STUB/boot_identity"
     stub_read after_up running > "$STUB/state"
 }
 
@@ -168,10 +162,8 @@ engine_attached_runs() {
     return 0
 }
 
-# Which kernel a boot runs is the real engine's business, and tests/boot-kernel.sh
-# holds it to it. Here there is nothing to find out and nothing to keep.
-engine_keep_kernel() { stub_log keep-kernel; }
-engine_kernel_known() { return 0; }
+# Which kernel a boot runs is the real engine's business. Here there is
+# nothing kept to forget.
 engine_forget_kernel() { return 0; }
 
 # Runs the script HERE, with the guest's fixed paths — the setup stamp,
