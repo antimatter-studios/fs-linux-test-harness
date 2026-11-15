@@ -4,7 +4,8 @@
 # installs a kernel the guest is not running would leave that consumer's kernel
 # tests on the wrong kernel while its join reported success. So the join fails,
 # naming both kernels, and keeps failing on the next join, while other consumers'
-# joins are not affected.
+# joins are not affected. On a later boot the same setup is refused before it runs
+# (#207).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
@@ -54,6 +55,29 @@ out="$(in_tree plain up 2>&1)"
 check_eq "$?" 0 "another consumer still joins"
 out="$(in_tree same up 2>&1)"
 check_eq "$?" 0 "and so does one whose setup reinstalls the running kernel"
+
+# Every boot runs each consumer's setup again, so on a new boot the same setup would
+# spend its whole time installing the same kernel only to be refused after it (#207).
+# The refusal is remembered for that setup's bytes: the next boot's join fails before
+# the setup runs, naming the kernel and saying the setup was not run.
+in_tree plain down >/dev/null 2>&1
+rm -f "$BOOT/vmlinuz-6.12.57+deb13-arm64"
+: > "$SETUP_LOG"
+out="$(in_tree kernel up 2>&1)"
+check_eq "$?" 1 "on the next boot, the same setup's join fails again"
+check_contains "$out" "6.12.57+deb13-arm64" "naming the kernel that setup installed before"
+check_contains "$out" "not run again" "and saying its setup was not run again"
+check_lacks "$(cat "$SETUP_LOG")" "setup ran for kernel-one" "before that setup spends its time"
+check_lacks "$out" "the setup script (setup.sh) failed" "and not calling it a failed setup"
+
+# A changed setup may no longer install a kernel, so on a new boot it runs and its join
+# is judged afresh.
+in_tree plain down >/dev/null 2>&1
+: > "$SETUP_LOG"
+printf '#!/usr/bin/env bash\necho "setup ran for $FLTH_PROJECT" >> "${SETUP_LOG:-/dev/null}"\n' > "$SRC/kernel/setup.sh"
+out="$(in_tree kernel up 2>&1)"
+check_eq "$?" 0 "a changed setup that installs no kernel joins"
+check_contains "$(cat "$SETUP_LOG")" "setup ran for kernel-one" "after its setup runs"
 
 in_tree plain down >/dev/null 2>&1
 finish shared-guest-kernel

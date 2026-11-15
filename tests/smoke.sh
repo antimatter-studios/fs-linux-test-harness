@@ -23,6 +23,8 @@
 #                 and nothing in the guest writes to what the host staged
 #   direct I/O    a file on either share opens with O_DIRECT, as an image
 #                 tool opens it (#26)
+#   file size     the root disk's 2 TiB file limit is what its features say,
+#                 and a run's own tmpfs takes a larger sparse file (#219)
 #   exec          the per-call path: never boots, and costs milliseconds
 #                 rather than a handshake (a test process makes hundreds)
 #   guest-test    the consumer's suite runs INSIDE the guest, from the
@@ -398,6 +400,29 @@ for dir in /share "$repo_guest"; do
         bad "a file on $dir does not open with O_DIRECT: $(tail -n 3 "$CONTENDER/direct-io.err" | tr '\n' ' ')"
     fi
 done
+
+step "file size: the guest's own disk and the documented way past it (#219)"
+# A root ext4 without huge_file counts i_blocks in 512-byte units, so one file
+# stops at 2 TiB (seen on the macOS arm64 Debian 12 guest; CI's x86_64 guests have
+# huge_file): a sparse format-maximum image fails with
+# EFBIG on /var/tmp, which a run binds from the root disk. The README names the
+# limit ("Where a tool works on an image") and its workaround, a tmpfs mounted
+# in the run's own namespace, which holds a sparse file of any size the kernel
+# allows. The root's own feature list is the oracle: the check holds the guest
+# to whichever answer that list gives, so a box that gains huge_file shows here.
+out="$("$VM" run 'f=/var/tmp/.smoke-big; rm -f $f
+if truncate -s 3T $f 2>/dev/null; then echo root=fits; else echo root=efbig; fi; rm -f $f
+dev="$(df --output=source / | tail -n 1)"
+if ! features="$(tune2fs -l "$dev" 2>/dev/null | sed -n "s/^Filesystem features://p")"; then echo features=unknown
+elif printf "%s\n" "$features" | grep -qw huge_file; then echo features=huge; else echo features=nohuge; fi
+d="$(mktemp -d /var/tmp/.smoke-ram.XXXXXX)"
+mount -t tmpfs -o size=64m flth-smoke "$d" && truncate -s 3T "$d/big" && echo ram=fits; umount "$d" 2>/dev/null; rmdir "$d"' 2>"$CONTENDER/big-file.err")"
+case "$out" in
+    *features=nohuge*) check_contains "$out" root=efbig "without huge_file, a 3 TiB sparse file on /var/tmp is refused, as the README says" ;;
+    *features=huge*) check_contains "$out" root=fits "with huge_file, a 3 TiB sparse file on /var/tmp fits (this guest's root has no 2 TiB limit)" ;;
+    *) bad "the guest root's ext4 features could not be read: $out $(tail -n 3 "$CONTENDER/big-file.err" | tr '\n' ' ')" ;;
+esac
+check_contains "$out" ram=fits "a 3 TiB sparse file fits on a tmpfs mounted in the run's own namespace"
 
 step "guest resource limits: automatic updates stay off and builds default to one job"
 for unit in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service; do

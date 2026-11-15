@@ -124,7 +124,17 @@ apply_setup() {
     # compared before and after it, and a new one that is not the running kernel is
     # recorded for this consumer: this join and every later one on this boot refuse,
     # naming both. Another consumer's join is not affected.
-    local kernel_check kernel_after
+    #
+    # EVERY BOOT RUNS THE SETUP AGAIN (#207), so the refusal is also kept on the host,
+    # beside the machine, for that setup's bytes. On a later boot an unchanged setup
+    # whose kernel the guest is still not running is refused before it runs, instead
+    # of spending its whole time to be refused after. A changed setup runs.
+    local kernel_check kernel_after known="" remembered
+    if [ "$force" = 0 ] && remembered="$(cat "$(shared_kernel_setup_record)" 2>/dev/null)" \
+        && [ "${remembered%% *}" = "$hash" ]; then
+        known="${remembered#* }"
+        case "$known" in *[!A-Za-z0-9._+~-]*) known="" ;; esac
+    fi
     stamp="/var/lib/fs-linux-test-harness/setup-$CFG_project_name.sha256"
     kernel_check="kernel_record=/var/lib/fs-linux-test-harness/setup-$CFG_project_name.kernel
 running=\"\$(uname -r)\"
@@ -148,6 +158,7 @@ fi"
     guest="set -euo pipefail
 stamp=$stamp
 $kernel_check
+if [ -n '$known' ] && [ '$known' != \"\$running\" ]; then echo \"remembered $known \$running\"; exit 0; fi
 if [ $force = 0 ] && [ \"\$(cat \"\$stamp\" 2>/dev/null || true)\" = '$hash' ]; then
     refuse_kernel
     exit 0
@@ -175,19 +186,26 @@ echo applied"
         exit 1
     fi
     case "$out" in
-        'kernel '*)
-            # shellcheck disable=SC2086  # "kernel <installed> <running>"
+        'kernel '*|'remembered '*)
+            # shellcheck disable=SC2086  # "kernel|remembered <installed> <running>"
             set -- $out
             printf '%s\n' "$2" > "$(shared_kernel_record)"
+            printf '%s %s\n' "$hash" "$2" > "$(shared_kernel_setup_record)"
             shared_kernel_explain "$2" "$3"
+            if [ "$1" = remembered ]; then
+                echo "    Its setup was not run again: it installed $2 on an earlier boot, and it has not changed since." >&2
+            fi
             exit 1
             ;;
     esac
+    rm -f "$(shared_kernel_setup_record)"
     return 0
 }
 
 # The consumer's refusal on this boot of a shared guest, for the calls after a join.
 shared_kernel_record() { printf '%s/kernel-refused-%s\n' "$FLTH_MACHINE_DIR" "$CFG_project_name"; }
+# The setup's hash and the kernel it installed, kept across boots (#207).
+shared_kernel_setup_record() { printf '%s/kernel-setup-%s\n' "$FLTH_MACHINE_DIR" "$CFG_project_name"; }
 shared_kernel_explain() {
     echo "vm: $CFG_project_name's setup installed kernel $1, and this shared guest runs $2." >&2
     echo "    The shared guest does not restart for one consumer's setup, so its tests would run on $2." >&2
