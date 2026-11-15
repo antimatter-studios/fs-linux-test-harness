@@ -484,11 +484,24 @@ ENGINE_SSH_PERSIST="${FLTH_SSH_PERSIST:-3600}"
 # ever: a test suite that ran for forty-eight minutes on two calls whose
 # VM had powered off half an hour earlier is how this was found. With
 # them the call fails in about two minutes and says the VM is gone.
-ENGINE_SSH_ALIVE=(-o ServerAliveInterval=15 -o ServerAliveCountMax=8)
+#
+# The two FLTH_TEST_ variables are for the harness's own smoke run, which
+# loses a guest on purpose and need not wait two minutes to see it. They are
+# not part of the contract, and nothing but that one step sets them. They are
+# read at each call, so a caller can set them for one command.
+ENGINE_SSH_ALIVE=()
+engine_ssh_alive() {
+    ENGINE_SSH_ALIVE=(-o "ServerAliveInterval=${FLTH_TEST_SSH_ALIVE_INTERVAL:-15}"
+        -o "ServerAliveCountMax=${FLTH_TEST_SSH_ALIVE_COUNT:-8}")
+}
 
+# The master sends the keepalives, so a keepalive other than the default gets a
+# master of its own: the shared one keeps the keepalive it was opened with.
 engine_ssh_control() {
+    local key="$FLTH_MACHINE_DIR" alive="${FLTH_TEST_SSH_ALIVE_INTERVAL:-15}/${FLTH_TEST_SSH_ALIVE_COUNT:-8}"
+    [ "$alive" = 15/8 ] || key="$key alive=$alive"
     # shellcheck disable=SC2153  # FLTH_STATE_DIR, set in lib/common.sh
-    printf '%s/ssh/%s\n' "$FLTH_STATE_DIR" "$(flth_hash8 "$FLTH_MACHINE_DIR")"
+    printf '%s/ssh/%s\n' "$FLTH_STATE_DIR" "$(flth_hash8 "$key")"
 }
 
 # Open the shared connection, if it is not open already.
@@ -509,6 +522,7 @@ engine_ssh_open() {
     local cfg="$1" control="$2"
     [ -S "$control" ] && return 0
     mkdir -p "$(dirname "$control")"
+    engine_ssh_alive
     ssh -F "$cfg" -o ControlMaster=yes -o "ControlPath=$control" \
         -o "ControlPersist=$ENGINE_SSH_PERSIST" "${ENGINE_SSH_ALIVE[@]}" -N -f default \
         </dev/null >/dev/null 2>&1 || true
@@ -566,6 +580,7 @@ engine_ssh() {
     local cfg="$1" script="$2" control
     control="$(engine_ssh_control)"
     engine_ssh_open "$cfg" "$control"
+    engine_ssh_alive
     printf 'export FLTH_GUEST=1\n%s\n' "$script" |
         ssh -F "$cfg" -o "ControlPath=$control" "${ENGINE_SSH_ALIVE[@]}" default -T 'sudo bash -s'
 }
@@ -578,6 +593,7 @@ engine_ssh_held() {
     local cfg="$1" script="$2" control
     control="$(engine_ssh_control)"
     engine_ssh_open "$cfg" "$control"
+    engine_ssh_alive
     flth_run_holding_stdin "$(printf 'export FLTH_GUEST=1\n%s' "$script")" \
         ssh -F "$cfg" -o "ControlPath=$control" "${ENGINE_SSH_ALIVE[@]}" default -T 'sudo bash -s'
 }

@@ -16,6 +16,7 @@ for profile_consumer in one two; do
 done
 profile_active=1
 # Prepare serially, then run both guests together. Neither needs a kernel package.
+# Boot, twice: two environments run side by side.
 if ! profile_vm one up || ! profile_vm two up; then
     bad "both preparation-only profiles must boot"
     verdict

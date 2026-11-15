@@ -189,6 +189,25 @@ check_eq "$(grep -c 'bash -s' "$STUBDIR/ssh-log" | tr -d ' ')" 2 "a 255 after wh
 check_contains "$(cat "$FLTH_MACHINE_DIR/ssh-config")" "50123" "with the refreshed settings"
 rm -f "$STUBDIR/ssh-exit"
 
+# The keepalive gives up on a lost guest after about two minutes. The smoke run's
+# lost-guest step sets a shorter one for its own call, on a master of its own.
+: > "$STUBDIR/ssh-log"
+engine_run 'true'
+check_contains "$(cat "$STUBDIR/ssh-log")" "-o ServerAliveInterval=15 -o ServerAliveCountMax=8" "the keepalive gives up after two minutes by default"
+shared_control="$(engine_ssh_control)"
+: > "$STUBDIR/ssh-log"
+FLTH_TEST_SSH_ALIVE_INTERVAL=2 FLTH_TEST_SSH_ALIVE_COUNT=3 engine_run 'true'
+short_alive="$(FLTH_TEST_SSH_ALIVE_INTERVAL=2 FLTH_TEST_SSH_ALIVE_COUNT=3 engine_ssh_control; cat "$STUBDIR/ssh-log")"
+check_contains "$short_alive" "-o ServerAliveInterval=2 -o ServerAliveCountMax=3" "a test's shorter keepalive reaches ssh"
+check_lacks "$short_alive" "ServerAliveInterval=15" "in place of the default"
+short_control="$(printf '%s\n' "$short_alive" | sed -n 1p)"
+if [ -n "$short_control" ] && [ "$short_control" != "$shared_control" ]; then
+    ok "on a master of its own, so the shared one keeps its keepalive"
+else
+    bad "a shorter keepalive shares the default's master ($short_control)"
+fi
+check_contains "$short_alive" "ControlPath=$short_control" "and its calls go through that master"
+
 # --- the virtiofs socket's directory ---------------------------------------
 
 # The macOS provider creates each virtiofs socket as
