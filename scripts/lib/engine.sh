@@ -14,10 +14,6 @@
 #   engine_identity            print a path unique to this machine. A
 #                              running VM's process names it on its
 #                              command line.
-#   engine_boot_identity       print the running VM process's PID and start
-#                              time, stable across callers' locales and
-#                              timezones. Exit 1 when absent, 2 when the
-#                              process table could not be read.
 #   engine_state               print exactly one of:
 #                                running   the VM is up
 #                                stopped   it exists and is not running
@@ -53,15 +49,9 @@
 #   engine_destroy             delete the VM, its disk and its cache
 #   engine_stop_host_daemons   stop what a boot left running on the host
 #                              beside a VM that has already gone
-#   engine_keep_kernel         on a provisioning boot, before it stops:
-#                              make the next boot run the newest kernel
-#                              on the disk, on a host whose guest does
-#                              not choose its own. Non-zero when it
-#                              could not. Elsewhere it does nothing.
-#   engine_kernel_known        exit 0 when a provisioning boot has done
-#                              that for this disk, or none needs to
-#   engine_forget_kernel       drop what engine_keep_kernel kept, when
-#                              the disk it came from is gone
+#   engine_forget_kernel       drop the boot files a run profile's
+#                              preparation kept, when the disk they came
+#                              from is gone
 #   engine_attach_tree <run> <dir>
 #                              attach a host directory to the running guest
 #                              as the run's device, tagged with the run id,

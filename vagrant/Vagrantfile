@@ -164,12 +164,12 @@ cache_args =
     )
   end
 
-# THE KERNEL A PROVISIONING BOOT LEFT ON THE DISK, ON macOS (#80). The box
+# THE KERNEL A RUN PROFILE'S PREPARATION CHOSE (#80, #225). The macOS box
 # has no bootloader in its boot path: its own Vagrantfile sets
 # firmware_format = nil and passes -kernel and -initrd naming files beside the
-# box, so a kernel installed in the guest is never run. The harness copies the
-# disk's newest kernel out when a provisioning boot ends
-# (scripts/lib/engine-vagrant.sh, engine_keep_kernel) and names it here. The
+# box, so a kernel installed in the guest is never run. A profile's preparation
+# boot copies the kernel it chose out of the disk
+# (scripts/lib/profile.sh, profile_install) and engine_up names it here. The
 # provider puts the box's arguments first when it merges the two, and QEMU
 # takes the last -kernel and -initrd it is given. A run profile also captures
 # the root command line and supplies -append; this enables exact direct boots on
