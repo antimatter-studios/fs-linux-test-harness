@@ -48,7 +48,9 @@ say() {
     local line
     line="$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"
     printf '%s\n' "$line" >> "$LOG"
-    printf '%s\n' "$line" > "$LAST"
+    # Replaced whole: `vm.sh status` reads it at any moment, and a file truncated
+    # before it is written reads as empty in between (#230).
+    printf '%s\n' "$line" > "$LAST.new" && mv -f "$LAST.new" "$LAST"
 }
 
 # Which suite a run belongs to, from the session markers.

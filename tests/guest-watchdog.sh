@@ -228,6 +228,25 @@ check_contains "$(cat "$MACHINE/watchdog.log")" "warning: memory" "low memory is
 check_contains "$(cat "$MACHINE/watchdog.log")" "warning: disk" "and low disk"
 check_eq "$(state)" running "and neither stops anything"
 check_contains "$(vm status 2>&1)" "warning" "vm.sh status shows the warning"
+# The watchdog writes again at every check, and vm.sh status reads the last line
+# whenever it is asked (#230). A file truncated and then written is empty between
+# the two, so a status read then shows no watchdog at all. Each write must replace
+# the file whole: after the next write, the name no longer leads to the file it
+# led to before. That file is held by a second link first, so its inode cannot be
+# freed and handed back to the next write, as Linux does with a freed inode.
+held="$MACHINE/watchdog.last.held"
+ln "$MACHINE/watchdog.last" "$held"
+lines_before="$(wc -l < "$MACHINE/watchdog.log")"
+# shellcheck disable=SC2329  # wait_until calls it by name
+log_grew() { [ "$(wc -l < "$MACHINE/watchdog.log")" -gt "$lines_before" ]; }
+if ! wait_until 100 log_grew; then
+    bad "watchdog.last is replaced whole, never emptied in place (the watchdog wrote nothing more)"
+elif [ "$MACHINE/watchdog.last" -ef "$held" ]; then
+    bad "watchdog.last is replaced whole, never emptied in place (it was rewritten in place)"
+else
+    ok "watchdog.last is replaced whole, never emptied in place"
+fi
+rm -f "$held"
 vm down 2>/dev/null
 export FLTH_WATCHDOG_STUCK_SECS=4
 
