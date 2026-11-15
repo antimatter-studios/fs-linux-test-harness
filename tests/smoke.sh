@@ -25,6 +25,8 @@
 #                 tool opens it (#26)
 #   file size     the root disk's 2 TiB file limit is what its features say,
 #                 and a run's own tmpfs takes a larger sparse file (#219)
+#   hard link     a file hard-linked on either share opens under its new
+#                 name at once after its first name is removed (#162)
 #   exec          the per-call path: never boots, and costs milliseconds
 #                 rather than a handshake (a test process makes hundreds)
 #   guest-test    the consumer's suite runs INSIDE the guest, from the
@@ -48,7 +50,8 @@
 #                 both kernels: the shared guest does not restart for it (#157)
 #   test          a passing suite passes and the guest stays up; a CORRUPTED
 #                 one FAILS with a non-zero exit
-#   down/destroy  confirmed
+#   down/destroy  confirmed; no forwarder watcher is started for the guest,
+#                 so none is left after a destroy (#164)
 #   shared guest  two consumers join one guest at once (tests/smoke-shared)
 #
 # The VM is destroyed on every exit path. The machine is in a cache directory of
@@ -216,6 +219,10 @@ memory="$(qemu_memory)"
 smoke_config="$("$VM" config)"
 check_contains "$smoke_config" "machine=$FLTH_CACHE_DIR/machines/shared-$SMOKE_GUEST" "the machine is the shared guest's, named for its release"
 check_contains "$(qemu_process)" "share=on" "guest memory is a shared backend, which a virtiofsd can reach"
+# The forwarder plugin starts a host watcher for each synced folder that is not
+# disabled, and the shared guest has none: a run's tree is attached by the harness
+# (#222). A watcher never started is none a destroy can leave behind (#164).
+check_eq "$(forwarders_left)" 0 "no forwarder watcher is started for the guest (#164)"
 
 step "attach: each run's tree is a device of its own (#222)"
 # The oracles are QEMU's own QMP, the guest's findmnt, and the process
@@ -423,6 +430,20 @@ case "$out" in
     *) bad "the guest root's ext4 features could not be read: $out $(tail -n 3 "$CONTENDER/big-file.err" | tr '\n' ' ')" ;;
 esac
 check_contains "$out" ram=fits "a 3 TiB sparse file fits on a tmpfs mounted in the run's own namespace"
+step "share: a hard-linked file opens at once after its first name goes (#162)"
+# An export that publishes with a hard link and then removes its staging name
+# reads the file straight after. On a Mac (virtiofsd 1.14.0) the new name was
+# not found for about two seconds on either share, while the guest's own disk
+# found it at once. The oracle is the guest's own shell, opening the file at
+# once with no retry; /var/tmp, on the guest's disk, is the control.
+for dir in /share "$repo_guest" /var/tmp; do
+    out="$("$VM" run "d=$dir/.smoke-hardlink; rm -rf \$d; mkdir \$d && cd \$d && head -c 6 /dev/zero > a && ln a b && rm a && wc -c < b; cd /; rm -rf \$d" 2>"$CONTENDER/hardlink.err")"
+    if [ "$out" = 6 ]; then
+        ok "on $dir a hard-linked file opens at once after its first name is removed"
+    else
+        bad "on $dir a hard-linked file is not found after its first name is removed: $(tail -n 3 "$CONTENDER/hardlink.err" | tr '\n' ' ')"
+    fi
+done
 
 step "guest resource limits: automatic updates stay off and builds default to one job"
 for unit in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service; do

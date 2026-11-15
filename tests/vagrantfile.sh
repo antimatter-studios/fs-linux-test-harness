@@ -199,6 +199,11 @@ receiver_out="$(cd "$SANDBOX" && bash "$receiver_off" receive -p 29324 2>&1)"
 check_eq "$?|$receiver_out" "0|" "  which exits at once, saying nothing, as the plugin starts it"
 check_lacks "$(grep -v '^[[:space:]]*#' "$receiver_off" 2>/dev/null)" ">" "  and writes to nothing"
 check_lacks "$(field config/vm.synced_folder)" '"type":"virtiofs"' "  no folder of the provider's: a run's tree is attached by the harness"
+# The forwarder plugin, 0.7.5 and 0.7.7 alike, starts a host watcher for each synced
+# folder that is not disabled, and up to 0.7.5 a destroy left them running (#164).
+# With every folder disabled it starts none.
+enabled="$(field config/vm.synced_folder | ruby -rjson -e 'puts JSON.parse(STDIN.read).count { |_, kw| kw["disabled"] != true }' 2>/dev/null)"
+check_eq "$enabled" 0 "  every synced folder is disabled, so the forwarder starts no watcher (#164)"
 check_eq "$(field config/$P.virtiofsd_bin)" null "  and the provider is given no virtiofsd"
 check_contains "$(field config/$P.extra_qemu_args)" "memory-backend-file,id=flth_mem" "  guest memory a virtiofsd can reach"
 check_contains "$(field config/vm.provision)" '"guest/apt-ready.sh"' "  the box's first-boot dialog is disabled and the package manager made ready"
