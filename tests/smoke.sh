@@ -45,7 +45,10 @@
 #   poweroff      a guest that powers itself off leaves no forwarder when its
 #                 session ends (#135)
 #   short deadline a guest whose deadline is already in logind's last five minutes
-#                 takes setup and new logins, then powers off on time (#150)
+#                 takes setup and new logins, then powers off on time (#150); a
+#                 call re-arms it inside a window of a sixth of it (#152)
+#   watchdog      a process stuck in uninterruptible sleep ends the guest within
+#                 the watchdog's limit, and the call it held says why (#190)
 #   kernel        a consumer whose setup installs a kernel is refused, naming
 #                 both kernels: the shared guest does not restart for it (#157)
 #   test          a passing suite passes and the guest stays up; a CORRUPTED
@@ -788,6 +791,20 @@ deadline_ssh() {
 check_eq "$(deadline_ssh 'sudo -n echo logged-in' 2>/dev/null </dev/null)" logged-in \
     "a new connection is let in and reaches root"
 poweroff_due() { deadline_vm run 'sed -n "s/^USEC=//p" /run/systemd/shutdown/scheduled' 2>/dev/null; }
+# The re-arm window on the guest's real logind (#152): a sixth of the deadline, 50s
+# of these five minutes. A call that finds the last re-arm 55s old re-arms as it ends;
+# under the old window of a whole minute it did not, and a one-minute deadline could
+# power the guest off during a call. A call that finds it 30s old leaves it alone.
+rearm_stamp="$(sed -n 's/^FLTH_GUEST_REARM_STAMP="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
+due_window="$(poweroff_due)"
+sleep 2
+deadline_vm run "echo \$(( \$(date +%s) - 55 )) > $rearm_stamp" >/dev/null 2>&1
+due_moved="$(poweroff_due)"
+check_true '[ -n "$due_window" ] && [ -n "$due_moved" ] && [ "$due_moved" -gt "$due_window" ]' \
+    "a call 55s after the last re-arm moves the poweroff, inside a five-minute deadline's 50s window ($due_window to $due_moved)" \
+    "a call 55s after the last re-arm did not move the poweroff ($due_window to $due_moved)"
+deadline_vm run "echo \$(( \$(date +%s) - 30 )) > $rearm_stamp" >/dev/null 2>&1
+check_eq "$(poweroff_due)" "$due_moved" "and a call 30s after one leaves the poweroff where it was"
 due_before="$(poweroff_due)"
 sleep 65
 due_after="$(poweroff_due)"
@@ -810,6 +827,48 @@ deadline_vm down
 check_eq "$?" 0 "down clears up after a guest that powered itself off"
 deadline_vm destroy
 check_eq "$?" 0 "the five-minute guest is destroyed"
+
+step "watchdog: a process stuck in the guest's kernel ends the guest, and the call says why (#190)"
+# The oracle is the guest's own kernel: a write into a filesystem that fsfreeze has
+# frozen waits in uninterruptible sleep, with no progress, until it is thawed, and
+# nothing thaws it. SIGKILL cannot clear it. The limits are short so that this takes
+# a minute or two; the watchdog takes them from the environment of the `up` that
+# starts it.
+stuck_vm() { FLTH_WATCHDOG_INTERVAL=5 FLTH_WATCHDOG_WARN_SECS=10 FLTH_WATCHDOG_STUCK_SECS=45 "$VM" "$@"; }
+stuck_vm destroy >/dev/null 2>&1 || true
+stuck_vm up
+rc=$?
+check_eq "$rc" 0 "a guest boots with a watchdog whose stuck limit is 45s"
+boot_or_stop "$rc"
+t0=$(date +%s)
+# Bounded on the host: a watchdog that never ends the guest fails this step in five
+# minutes, and the guest is then forced down the way the watchdog would have done it,
+# so nothing after this waits on the frozen filesystem.
+stuck_out="$(bounded 300 "$VM" run 'set -e
+    truncate -s 16M /var/tmp/flth-stuck.img
+    mkfs.ext4 -q -F /var/tmp/flth-stuck.img
+    dev="$(losetup -f --show /var/tmp/flth-stuck.img)"
+    mkdir -p /mnt/flth-stuck
+    mount "$dev" /mnt/flth-stuck && fsfreeze -f /mnt/flth-stuck
+    echo stuck > /mnt/flth-stuck/file' 2>&1)"
+rc=$?
+if [ "$rc" = 142 ]; then
+    bounded 120 "$VM" watchdog-end "smoke: the watchdog did not end the stuck guest in 300s" >/dev/null 2>&1
+fi
+took=$(( $(date +%s) - t0 ))
+check_eq "$rc" 75 "the call that holds the stuck process fails with the watchdog's own status"
+check_contains "$stuck_out" "the watchdog ended this guest: process " "naming the stuck process"
+check_contains "$stuck_out" "This is not a failure of the suite" "and saying it is not the suite's failure"
+check_true '[ "$took" -le 240 ]' "and the guest ends within its limit: ${took}s for a 45s limit" \
+    "the guest took ${took}s to end, for a 45s limit"
+stuck_machine="$(stuck_vm config | sed -n 's/^machine=//p')"
+check_contains "$(cat "$stuck_machine/watchdog.log" 2>/dev/null)" "has made no progress for" \
+    "the watchdog warned of the process before it ended the guest"
+check_contains "$(stuck_vm status 2>&1)" "the watchdog ended it: process " "status says the watchdog ended it, and why"
+stuck_vm down
+check_eq "$?" 0 "down clears up after a guest the watchdog ended"
+stuck_vm destroy
+check_eq "$?" 0 "the guest the watchdog ended is destroyed"
 
 step "kernel: a setup that installs a kernel is refused on the shared guest (#157)"
 # The shared guest does not restart for one consumer's setup, so its tests would run
