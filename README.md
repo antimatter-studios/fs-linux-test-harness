@@ -390,7 +390,7 @@ pipeline are the same evidence:
 | Job | Runs on | Steps |
 | --- | --- | --- |
 | `unit` | `ubuntu-24.04` | `chore siblings`, `chore test:unit`, with no fixtures present. |
-| `fixtures` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `../fs-linux-test-harness/scripts/ci-setup-linux.sh` (KVM access, QEMU, Vagrant; its `box-cache-key` output keys an `actions/cache` of `~/.vagrant.d/boxes`), `chore fixtures`, upload the images as an artifact. |
+| `fixtures` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `../fs-linux-test-harness/scripts/ci-setup-linux.sh` (KVM access, QEMU, Vagrant; its `box-cache-key` output keys an `actions/cache/restore` of `~/.vagrant.d/boxes`, saved from `main` by a workflow like the harness's `box-cache.yml`, since a merge queue run cannot read an entry another queue run saved), `chore fixtures`, upload the images as an artifact. |
 | `test` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `ci-setup-linux.sh`, download the fixtures, `chore lint`, `chore test`. Every oracle tool call and every kernel mount happens in the VM this job boots — and a step checks the tools are NOT installed on the runner, so a green run is evidence of that. |
 | `test` (other architectures) | e.g. `ubuntu-24.04-arm` | GitHub's arm64 runners have no KVM, so no VM can run there: this job runs the tiers that need none (lint, the unit tier, the fixture-reading tests). The oracles read the same images on every architecture and are covered by the x86_64 job. |
 | `suite-in-vm` | `ubuntu-24.04` (x86_64, KVM) | `chore test:vm`: the suite compiled and run inside the guest. It is the macOS path, exercised on every pull request so it cannot rot. |
@@ -1131,6 +1131,16 @@ reports `Runner gate reservation expired`, rerun the whole workflow with
 `gh run rerun <run-id> --repo antimatter-studios/fs-linux-test-harness`.
 Do not use `--failed`: `changes` must run again to make a fresh pick.
 GitHub cannot change a queued job's selected runner label.
+
+The smoke jobs only restore the Vagrant box cache.
+[`.github/workflows/box-cache.yml`](./.github/workflows/box-cache.yml) saves
+it, from `main`, on every push and weekly, keyed by the box and version the
+Vagrantfile pins. GitHub scopes a cache to the ref that saved it and that
+ref's base branch, so an entry a merge queue run saves sits on its own
+`gh-readonly-queue` ref and no other queue run can restore it, while an entry
+saved from `main` serves every pull request and queue run (#148). A consumer
+that boots a VM in its own merge queue needs the same save on its own `main`;
+`tests/box-cache.sh` holds the harness to it.
 
 The bootstrap, `ci-ok` and tag-only `release` jobs stay hosted, so they do
 not wait for private capacity selected before a long smoke run. The release

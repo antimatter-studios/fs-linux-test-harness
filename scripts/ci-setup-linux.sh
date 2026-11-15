@@ -12,10 +12,16 @@
 #
 #   - run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
 #     id: vm-host
-#   - uses: actions/cache@v4
+#   - uses: actions/cache/restore@v4
 #     with:
 #       path: ~/.vagrant.d/boxes
 #       key: ${{ steps.vm-host.outputs.box-cache-key }}
+#
+# Restore only, in jobs that run in the merge queue: an entry a queue run saves
+# sits on its own ref, which no other queue run can read. Save the entry from
+# main instead, with actions/cache/save under the same key, on every push and
+# on a schedule, as the harness's own .github/workflows/box-cache.yml does
+# (#148).
 #
 # One implementation, so a consumer cannot drift from the setup the
 # harness proves in its own smoke job.

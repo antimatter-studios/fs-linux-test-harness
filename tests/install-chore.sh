@@ -130,6 +130,11 @@ fail() {
     for i in $(seq 0 "$retries"); do echo "curl: (22) The requested URL returned error: $1" >&2; done
     exit 22
 }
+# FLTH_TEST_FAILING_CALLS=N: the first N calls answer 504 whatever they ask
+# for, as the storage host behind both paths would during an outage of its own.
+if [ -n "${FLTH_TEST_FAILING_CALLS:-}" ] && [ "$(wc -l < "$FLTH_TEST_CURL_LOG")" -le "$FLTH_TEST_FAILING_CALLS" ]; then
+    fail 504
+fi
 serve() { if [ -n "$out" ]; then cp "$1" "$out"; else cat "$1"; fi; }
 api=https://api.github.com/repos/antimatter-studios/chore/releases
 case "$url" in
@@ -157,7 +162,12 @@ cat > "$bin/uname" <<'STUB'
 #!/bin/sh
 case "$1" in -m) echo x86_64 ;; -s) echo Linux ;; *) exec /usr/bin/uname "$@" ;; esac
 STUB
-chmod +x "$bin/curl" "$bin/uname"
+# The stub sleep logs how long the action waited and returns at once.
+cat > "$bin/sleep" <<'STUB'
+#!/bin/sh
+echo "$1" >> "$FLTH_TEST_SLEEP_LOG"
+STUB
+chmod +x "$bin/curl" "$bin/uname" "$bin/sleep"
 export FLTH_TEST_RELEASE="$release"
 
 # install <case> [outage...] — run the action's script in a fresh runner;
@@ -170,11 +180,14 @@ install() {
     : > "$runner/github_path"
     export FLTH_TEST_CURL_LOG="$runner/curl.log"
     : > "$FLTH_TEST_CURL_LOG"
+    export FLTH_TEST_SLEEP_LOG="$runner/sleep.log"
+    : > "$FLTH_TEST_SLEEP_LOG"
     out="$(cd "$runner" && env PATH="$bin:$PATH" HOME="$runner/home" RUNNER_TEMP="$runner/temp" \
         GITHUB_PATH="$runner/github_path" CHORE_VERSION="$version" CHORE_TOKEN="$token" \
         FLTH_TEST_OUTAGE="$*" bash --noprofile --norc -e -o pipefail "$script" 2>&1)"
     status=$?
     calls="$(cat "$FLTH_TEST_CURL_LOG")"
+    slept="$(awk '{ s += $1 } END { print s + 0 }' "$FLTH_TEST_SLEEP_LOG")"
 }
 
 # installed_is_the_release <case> — the installed chore is the release's own.
@@ -247,6 +260,25 @@ install unrecoverable download api
 check_eq "$((status != 0))" 1 "unrecoverable: a 504 from the API as well fails the job"
 nothing_installed unrecoverable
 every_call_keeps_the_retry_budget unrecoverable
+# The outage of 2026-11-09 lasted minutes, and both paths end at the same
+# storage host, so the action waits out at least five minutes before it gives up.
+if [ "$slept" -ge 300 ]; then
+    ok "unrecoverable: the action waited ${slept}s across both paths before it failed"
+else
+    bad "unrecoverable: the action gave up after waiting only ${slept}s; an outage of minutes needs at least 300s"
+fi
+
+# Both paths answer 504 for a while, as an outage of the storage host they both
+# redirect to would, then recover: the action waits and tries both again.
+export FLTH_TEST_FAILING_CALLS=4
+install storage
+unset FLTH_TEST_FAILING_CALLS
+check_eq "$status" 0 "storage: the install succeeds once an outage of both paths ends"
+installed_is_the_release storage
+check_contains "$out" "$tarball: OK" "storage: the tarball still passes the checksum check"
+check_eq "$((slept > 0))" 1 "storage: the action waited before trying both paths again"
+every_call_keeps_the_retry_budget storage
+token_only_to_the_api storage
 
 mv "$release/release.json" "$release/release.json.kept"
 sed "s/\"name\": \"$tarball\"/\"name\": \"elsewhere.tar.gz\"/" "$release/release.json.kept" > "$release/release.json"
