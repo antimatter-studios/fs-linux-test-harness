@@ -36,6 +36,7 @@ shared_vm() {
 
 step "shared guest: two consumers join at once (#153)"
 t0=$(date +%s)
+# Boot: two consumers join one guest at once.
 shared_vm "$one" up > "$dir/up-one.log" 2>&1 &
 a_pid=$!
 shared_vm "$two" up > "$dir/up-two.log" 2>&1 &
@@ -122,6 +123,7 @@ check_true '! shared_vm "$one" status >/dev/null 2>&1' "and stops the guest" "an
 
 step "shared guest: a later boot of the same machine"
 # Nothing a boot writes reaches this machine's disk, Vagrant's own key included.
+# Boot: the machine boots again after its first boot wrote nothing to it.
 shared_vm "$one" up > "$dir/up-again.log" 2>&1
 rc=$?
 check_eq "$rc" 0 "the machine boots again"

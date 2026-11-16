@@ -211,6 +211,7 @@ step "clean start"
 check_eq "$(state)" not-running "no smoke VM is running"
 
 step "up: boot, setup, deadline"
+# Boot: the first, from a clean machine: the boot, the setup and the deadline.
 t0=$(date +%s)
 "$VM" up
 rc=$?
@@ -311,6 +312,7 @@ check_contains "$("$VM" run 'findmnt -n -o SOURCE /mnt/flth-smoke' 2>/dev/null)"
 check_eq "$?" 0 "the VM stops"
 check_artifacts_gone "$memory" down
 check_eq "$(sum "$disk")" "$before" "the machine's disk is byte for byte what it was before the run"
+# Boot: the next one sees nothing the last left behind.
 t0=$(date +%s)
 "$VM" up
 rc=$?
@@ -513,8 +515,12 @@ check_eq "$?" 0 "exec meets its per-call budget and beats measured calls without
 
 step "a lost guest: the call says what stopped it (#105)"
 # Paused through QEMU's own monitor, under a call that is running. ssh's keepalive
-# gives up about two minutes later, as it did on the runner whose disk filled.
-"$VM" exec 'sleep 600' > "$CONTENDER/lost.out" 2> "$CONTENDER/lost.err" &
+# gives up, as it did on the runner whose disk filled. That takes about two minutes
+# by default, so this call has a keepalive of about six seconds, on an ssh master
+# of its own (#252): what follows a lost connection is the same however long ssh
+# waited for it, and the shared master keeps the default.
+FLTH_TEST_SSH_ALIVE_INTERVAL=2 FLTH_TEST_SSH_ALIVE_COUNT=3 \
+    "$VM" exec 'sleep 600' > "$CONTENDER/lost.out" 2> "$CONTENDER/lost.err" &
 lost_call=$!
 sleep 5
 monitor stop >/dev/null
@@ -531,25 +537,14 @@ check_eq "$("$VM" run 'echo back' 2>/dev/null)" back "the guest carries on when 
 
 step "reload: the VM restarts in place"
 boot_before="$("$VM" run 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)"
+# Boot: a reload really reboots the guest in place (#122). Every step from here to
+# "hold and reap" runs on this boot, and none of them ends it.
 "$VM" reload
 check_eq "$?" 0 "reload stops the VM and boots it again"
 check_eq "$(state)" running "the VM is back"
 boot_after="$("$VM" run 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null)"
 check_true '[ -n "$boot_after" ] && [ "$boot_after" != "$boot_before" ]' "the guest really rebooted" \
     "the guest's boot id did not change across the reload ($boot_before, $boot_after)"
-
-step "hold and reap"
-"$VM" hold
-check_eq "$("$VM" run 'test -e /run/fs-linux-test-harness-held && ! test -e /run/systemd/shutdown/scheduled && echo held' 2>/dev/null)" held \
-    "hold marks the guest and cancels its deadline"
-"$VM" reap
-check_eq "$(state)" running "reap leaves a held VM running"
-machine="$("$VM" config | sed -n 's/^machine=//p')"
-rm -f "$machine/keep-running"
-"$VM" reap
-check_eq "$(state)" running "reap leaves an unheld shared guest running too: it is there for the next run"
-"$VM" down
-check_eq "$(state)" not-running "and down, with nobody using it, stops it"
 
 step "guest-test: the suite runs inside the guest"
 "$VM" guest-test > "$CONTENDER/guest-test.log" 2>&1
@@ -664,9 +659,22 @@ kill -TERM "$other_call" 2>/dev/null
 wait "$other_call"
 check_true 'wait_guest_runs "sleep 1002" 0' "a signal to the second session stops its command" "the second session's command outlived its signal"
 
+step "hold and reap"
+"$VM" hold
+check_eq "$("$VM" run 'test -e /run/fs-linux-test-harness-held && ! test -e /run/systemd/shutdown/scheduled && echo held' 2>/dev/null)" held \
+    "hold marks the guest and cancels its deadline"
+"$VM" reap
+check_eq "$(state)" running "reap leaves a held VM running"
+machine="$("$VM" config | sed -n 's/^machine=//p')"
+rm -f "$machine/keep-running"
+"$VM" reap
+check_eq "$(state)" running "reap leaves an unheld shared guest running too: it is there for the next run"
+# One down for both: the guest the signalled sessions left, held and reaped, stops
+# when nobody is using it. A boot between them would prove nothing (#252).
 bounded 600 "$VM" down
-check_eq "$?" 0 "the VM it left stops"
+check_eq "$?" 0 "the VM the signalled sessions left stops"
 check_eq "$(state)" not-running "and is down"
+check_eq "$(state)" not-running "and down, with nobody using it, stops it"
 
 step "poweroff: a guest that powers itself off leaves no forwarder (#135)"
 poweroff_session='
@@ -680,12 +688,14 @@ poweroff_session='
     "$1" status > /dev/null 2>&1 && exit 9
     exit 0
 '
+# Boot: a session that boots a guest which then powers itself off ends cleanly.
 bounded 1800 "$VM" session bash -c "$poweroff_session" flth-poweroff "$VM"
 check_eq "$?" 0 "a session whose guest powered itself off ends cleanly"
 check_eq "$(state)" not-running "and the VM is down"
 check_no_forwarders "a session ended on a powered-off guest"
 
 step "test: the guest a run booted stays up"
+# Boot: a run that has to boot the guest leaves it up for the next run.
 "$VM" test
 check_eq "$?" 0 "the suite passes"
 check_eq "$(state)" running "and the guest it booted is left running for the next run"
@@ -700,6 +710,7 @@ check_contains "$lost" "[console]" "with the tail of the console"
 step "boot signal: a boot that a signal stopped is not a VM to keep (#134)"
 boot_signal_dir="$CONTENDER/boot-signal"
 mkdir -p "$boot_signal_dir"
+# Boot, twice: one a signal stops part way, then the run after it, with its shares.
 perl -e 'alarm shift; exec @ARGV or exit 127' 1800 "$VM" session bash -c '
     "$1" up || exit
     : > "$2/booted"
@@ -720,27 +731,16 @@ check_eq "$(state)" not-running "and leaves no guest without its shares"
 bounded 1800 "$VM" run "timeout -s KILL 30 findmnt -n /share > /dev/null && timeout -s KILL 30 findmnt -n $repo_guest > /dev/null && echo mounted" > "$boot_signal_dir/run" 2>/dev/null
 check_eq "$(cat "$boot_signal_dir/run")" mounted "the next run boots a guest with /share and $repo_guest mounted"
 
-step "down"
-"$VM" down
-check_eq "$?" 0 "vm.sh down succeeds"
-check_eq "$(state)" not-running "the VM is confirmed stopped"
-check_no_forwarders "vm.sh down"
-
-step "destroy"
-"$VM" destroy
-check_eq "$?" 0 "vm.sh destroy succeeds"
-check_contains "$("$VM" status 2>&1)" "(absent)" "the VM no longer exists"
-check_no_forwarders "vm.sh destroy"
-check_artifacts_gone "$memory" destroy
-
 step "an abrupt QEMU stop: the next boot reclaims abandoned memory"
+# On the guest the last run booted, which `up` joins: what this proves is the boot
+# after the kill, and a boot before it would prove nothing (#252).
 "$VM" up
 rc=$?
-check_eq "$rc" 0 "the abrupt-stop guest boots"
+check_eq "$rc" 0 "the abrupt-stop guest is up"
 boot_or_stop "$rc"
-memory="$(qemu_memory)"
+abrupt_memory="$(qemu_memory)"
 generation=""
-if [ -n "$memory" ]; then generation="$(memory_stamp "$memory")"; fi
+if [ -n "$abrupt_memory" ]; then generation="$(memory_stamp "$abrupt_memory")"; fi
 pid="$(qemu_process | awk '{print $1}')"
 case "$pid" in
     '' | *[!0-9]*) bad "the smoke QEMU's pid could not be identified"; verdict; exit 1 ;;
@@ -754,11 +754,12 @@ while [ "$attempt" -lt 10 ]; do
     attempt=$((attempt + 1))
 done
 check_eq "$(qemu_process)" '' "the abruptly stopped QEMU is gone"
+# Boot: the one after an abrupt stop, which must not reuse what QEMU abandoned.
 "$VM" up
 rc=$?
 check_eq "$rc" 0 "a new boot follows the abrupt stop"
 boot_or_stop "$rc"
-if [ -n "$memory" ]; then
+if [ -n "$abrupt_memory" ]; then
     replacement="$(memory_stamp "$(qemu_memory)")"
     if [ "$generation" != "$replacement" ]; then
         ok "the abandoned memory file was replaced, not reused"
@@ -766,9 +767,24 @@ if [ -n "$memory" ]; then
         bad "the next boot reused abandoned memory"
     fi
 fi
+
+step "down"
+"$VM" down
+check_eq "$?" 0 "vm.sh down succeeds"
+check_eq "$(state)" not-running "the VM is confirmed stopped"
+check_no_forwarders "vm.sh down"
+
+step "destroy"
+# The guest booted after the abrupt stop: one destroy answers for it and for the
+# first boot's artifacts.
 "$VM" destroy
-check_eq "$?" 0 "the abrupt-stop guest is destroyed"
-check_artifacts_gone "$memory" 'destroy after abrupt stop'
+rc=$?
+check_eq "$rc" 0 "vm.sh destroy succeeds"
+check_eq "$rc" 0 "the abrupt-stop guest is destroyed"
+check_contains "$("$VM" status 2>&1)" "(absent)" "the VM no longer exists"
+check_no_forwarders "vm.sh destroy"
+check_artifacts_gone "$memory" destroy
+check_artifacts_gone "$abrupt_memory" 'destroy after abrupt stop'
 check_no_forwarders "vm.sh destroy after an abrupt stop"
 
 step "short deadline: the guest takes logins until it powers off on time (#150)"
@@ -778,6 +794,7 @@ step "short deadline: the guest takes logins until it powers off on time (#150)"
 # connection bypasses the harness's shared
 # one, which sshd has already let in. How long the guest stays up is timed from the
 # last call, whose start is the last re-arm: the rate limit is past by then.
+# Boot: the deadline is set at boot, so a five-minute one needs a guest of its own.
 deadline_vm destroy >/dev/null 2>&1 || true
 deadline_vm up
 rc=$?
@@ -835,6 +852,7 @@ step "watchdog: a process stuck in the guest's kernel ends the guest, and the ca
 # a minute or two; the watchdog takes them from the environment of the `up` that
 # starts it.
 stuck_vm() { FLTH_WATCHDOG_INTERVAL=5 FLTH_WATCHDOG_WARN_SECS=10 FLTH_WATCHDOG_STUCK_SECS=45 "$VM" "$@"; }
+# Boot: the watchdog takes its limits from the `up` that starts it.
 stuck_vm destroy >/dev/null 2>&1 || true
 stuck_vm up
 rc=$?
@@ -874,6 +892,7 @@ step "kernel: a setup that installs a kernel is refused on the shared guest (#15
 # The shared guest does not restart for one consumer's setup, so its tests would run
 # on the guest's kernel while the join reported success. The oracle is the guest's
 # own /boot and `uname -r`, as the refusal names them.
+# Boot: the refusal is made at the setup of a boot.
 kernel_vm destroy >/dev/null 2>&1 || true
 t0=$(date +%s)
 kernel_out="$(kernel_vm up 2>&1)"

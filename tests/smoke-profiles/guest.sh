@@ -27,6 +27,7 @@ for profile_consumer in one two; do
     printf '%s\n' "$profile_consumer" > "$CONTENDER/profile-$profile_consumer/name"
 done
 profile_active=1
+# Boot: a profile prepares its environment, then boots it disposable.
 if profile_vm one up; then
     ok "a profile prepares its persistent environment and boots disposable"
 else
@@ -46,6 +47,7 @@ check_eq "$(profile_vm two exec 'cat /repo/name' 2>/dev/null)" two "the second s
 profile_vm one exec 'echo disposable > /var/lib/profile-runtime-only'
 profile_vm one down
 check_eq "$?" 0 "the profile stops after its suites finish"
+# Boot: the next one runs the same kernel and none of the last boot's writes.
 profile_vm one up
 check_eq "$?" 0 "the prepared environment boots again without installing another kernel"
 check_eq "$(profile_vm one exec 'uname -r' 2>/dev/null)" "$profile_release" "the next boot still runs the requested kernel"
