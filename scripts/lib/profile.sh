@@ -4,7 +4,7 @@
 
 # shellcheck disable=SC2034  # read by vm.sh and common.sh
 flth_profile_load() {
-    FLTH_PROFILE_NAME="${FLTH_PROFILE:-$CFG_vm_profile}"
+    FLTH_PROFILE_NAME="${FLTH_VM_PROFILE:-$CFG_vm_profile}"
     FLTH_PROFILE_RELEASE="" FLTH_PROFILE_MODULES="" FLTH_PROFILE_PAYLOAD="" FLTH_PROFILE_ID=""
     [ -n "$FLTH_PROFILE_NAME" ] || return 0
     case "$FLTH_PROFILE_NAME" in
@@ -16,7 +16,7 @@ flth_profile_load() {
     case "$arch" in arm64) arch=aarch64 ;; esac
     FLTH_PROFILE_ARCH="$arch"
     records="$(ruby "$FLTH_HARNESS/scripts/run-profile.rb" resolve \
-        "${FLTH_PROFILE_DIR:-$FLTH_ROOT/run-profiles}/$FLTH_PROFILE_NAME.toml" "$arch")" || return 1
+        "${FLTH_VM_PROFILE_DIR:-$FLTH_ROOT/run-profiles}/$FLTH_PROFILE_NAME.toml" "$arch")" || return 1
     while IFS="$(printf '\t')" read -r key value; do
         case "$key" in
             guest) CFG_vm_guest="$value" ;;
@@ -73,6 +73,7 @@ profile_prepare() {
 profile_install() {
     local dir="$FLTH_MACHINE_DIR/boot" release="$FLTH_PROFILE_RELEASE" file target expected
     engine_run "set -euo pipefail
+export FLTH_BUILD_JOBS=$CFG_vm_build_jobs
 export CARGO_BUILD_JOBS=$CFG_vm_build_jobs
 payload='$FLTH_PROFILE_PAYLOAD'
 if [ -n \"\$payload\" ]; then

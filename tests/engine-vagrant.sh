@@ -11,6 +11,8 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMPDIR="${FLTH_TEST_SOCKET_ROOT:-/tmp}" new_sandbox
+# These check the low profile's defaults.
+export FLTH_RESOURCE_PROFILE=low
 
 BIN="$SANDBOX/bin"
 mkdir -p "$BIN"
@@ -82,11 +84,11 @@ ID="$(engine_identity)"
 check_eq "$VAGRANT_DOTFILE_PATH" "$FLTH_CACHE_DIR/machines/shared-debian-12/vagrant" "machine state goes to the shared guest's machine directory"
 check_eq "$VAGRANT_CWD" "$REPO/vagrant" "the Vagrantfile is the harness's own"
 check_eq "$FLTH_VM_NAME|$FLTH_VM_MEMORY|$FLTH_VM_CPUS|$FLTH_VM_DISK|$FLTH_VM_SSH_PORT|$FLTH_VM_DEADLINE_MINUTES" \
-    "shared-debian-12|8G|8|64G|50200|480" "the shared machine's settings reach the Vagrantfile through FLTH_VM_*"
+    "shared-debian-12|2G|2|64G|50200|480" "the low resource profile reaches the Vagrantfile through FLTH_VM_*"
 check_eq "${FLTH_SHARE_DIR-unset}|${FLTH_REPO_DIR-unset}" "unset|unset" "and no host directory to share at boot: a run attaches its own (#222)"
 # shellcheck disable=SC2153  # exported by engine_prepare
 check_contains "$FLTH_VM_QMP" "$FLTH_STATE_DIR/qmp/" "QMP's socket is under FLTH_STATE_DIR, where a socket path is short"
-check_eq "$FLTH_VM_SLOTS|$FLTH_VM_MEM_DIR" "32|$FLTH_STATE_DIR/tmp" "32 slots for runs' trees, and the memory backend beside the overlay"
+check_eq "$FLTH_VM_SLOTS|$FLTH_VM_MEM_DIR" "32|$FLTH_STATE_DIR/tmp" "32 slots for runs' trees on every profile, and the memory backend beside the overlay"
 check_eq "$ID" "$VAGRANT_DOTFILE_PATH" "the identity is the dotfile path, which QEMU's disk path contains"
 
 # --- firmware links, by host ---------------------------------------------

@@ -210,7 +210,7 @@ shared_kernel_explain() {
     echo "vm: $CFG_project_name's setup installed kernel $1, and this shared guest runs $2." >&2
     echo "    The shared guest does not restart for one consumer's setup, so its tests would run on $2." >&2
     echo "    Every consumer uses this guest: a setup that installs a kernel cannot be run on it (#207)." >&2
-    echo "    Select a run profile with [vm] profile or FLTH_PROFILE to prepare another kernel before suites join." >&2
+    echo "    Select a VM profile with [vm] profile or FLTH_VM_PROFILE to prepare another kernel before suites join." >&2
 }
 
 # ONE UP AT A TIME PER MACHINE. A test process that runs its oracle tests
@@ -1456,6 +1456,7 @@ guest_call() {
     window="$(rearm_window_secs)"
     cat <<EOF
 {
+export FLTH_BUILD_JOBS=$CFG_vm_build_jobs
 export CARGO_BUILD_JOBS=$CFG_vm_build_jobs
 flth_rearm() {
     local now last=0
@@ -1596,6 +1597,7 @@ vm.ssh_port=$CFG_vm_ssh_port
 vm.deadline_minutes=$CFG_vm_deadline_minutes
 vm.guest=$CFG_vm_guest
 vm.profile=${FLTH_PROFILE_NAME:-none}
+resource.profile=$FLTH_RESOURCE_PROFILE_NAME
 kernel.release=${FLTH_PROFILE_RELEASE:-box-default}
 kernel.modules=$FLTH_PROFILE_MODULES
 profile.fingerprint=${FLTH_PROFILE_ID:-none}

@@ -4,23 +4,25 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
+# These check the low profile's single-job default.
+export FLTH_RESOURCE_PROFILE=low
 make_stub_harness
 VM="$STUB_HARNESS/scripts/vm.sh"
 PARSER="$REPO/scripts/run-profile.rb"
 SRC="$SANDBOX/consumer"
 make_consumer "$SRC" profile-one '[vm]' 'profile = "pinned"'
 export FLTH_CONFIG="$SRC/fs-linux-test-harness.toml"
-export FLTH_PROFILE_DIR="$SANDBOX/profiles"
-mkdir -p "$FLTH_PROFILE_DIR"
+export FLTH_VM_PROFILE_DIR="$SANDBOX/profiles"
+mkdir -p "$FLTH_VM_PROFILE_DIR"
 RELEASE=6.12.1-profile-test
-cat > "$FLTH_PROFILE_DIR/prepare.sh" <<'SETUP'
+cat > "$FLTH_VM_PROFILE_DIR/prepare.sh" <<'SETUP'
 set -euo pipefail
 [ "$FLTH_GUEST" = 1 ]
 [ "$FLTH_KERNEL_RELEASE" = 6.12.1-profile-test ]
 printf prepared > "$FLTH_TEST_STUB/guest-lib/profile-setup"
 printf '%s\n' "${CARGO_BUILD_JOBS-unset}" > "$FLTH_TEST_STUB/guest-lib/profile-build-jobs"
 SETUP
-checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_PROFILE_DIR/prepare.sh")"
+checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_VM_PROFILE_DIR/prepare.sh")"
 manifest() {
     cat <<EOF
 [profile]
@@ -31,15 +33,15 @@ setup = "prepare.sh"
 setup_sha256 = "$checksum"
 EOF
 }
-manifest > "$FLTH_PROFILE_DIR/pinned.toml"
-cp "$FLTH_PROFILE_DIR/pinned.toml" "$FLTH_PROFILE_DIR/alias.toml"
+manifest > "$FLTH_VM_PROFILE_DIR/pinned.toml"
+cp "$FLTH_VM_PROFILE_DIR/pinned.toml" "$FLTH_VM_PROFILE_DIR/alias.toml"
 config="$("$VM" config 2>&1)"; rc=$?
 check_eq "$rc" 0 "a consumer selects a run profile"
 [ "$rc" = 0 ] || finish run-profiles
 check_contains "$config" "vm.profile=pinned" "config names the selected profile"
 check_contains "$config" "kernel.release=$RELEASE" "config names its exact kernel release"
 machine="$(printf '%s\n' "$config" | sed -n 's/^machine=//p')"
-other="$(FLTH_PROFILE="alias" "$VM" config | sed -n 's/^machine=//p')"
+other="$(FLTH_VM_PROFILE="alias" "$VM" config | sed -n 's/^machine=//p')"
 check_eq "$other" "$machine" "identical profile aliases share one machine"
 make_consumer "$SANDBOX/second" profile-two '[vm]' 'profile = "pinned"'
 second_config="$SANDBOX/second/fs-linux-test-harness.toml"
@@ -53,7 +55,7 @@ check_contains "$out" 'changed while taking the boot lock' "a concurrently chang
 check_eq "$(cat "$FLTH_TEST_STUB/calls")" "$before" "a profile changed between parent and child touches no engine state"
 
 # Architecture selection and canonical identity do not depend on catalog paths.
-cat > "$FLTH_PROFILE_DIR/arches.toml" <<'PROFILE'
+cat > "$FLTH_VM_PROFILE_DIR/arches.toml" <<'PROFILE'
 [profile]
 guest = "debian-13"
 modules = "loop fuse loop"
@@ -62,20 +64,20 @@ release = "6.12.1-amd64"
 [aarch64]
 release = "6.12.1-arm64"
 PROFILE
-out="$(ruby "$PARSER" resolve "$FLTH_PROFILE_DIR/arches.toml" x86_64)"
+out="$(ruby "$PARSER" resolve "$FLTH_VM_PROFILE_DIR/arches.toml" x86_64)"
 check_contains "$out" '6.12.1-amd64' "an x86_64 suite resolves its architecture's release"
 check_contains "$out" 'fuse loop' "module ordering and duplicates are canonicalized"
-arm="$(ruby "$PARSER" resolve "$FLTH_PROFILE_DIR/arches.toml" aarch64)"
+arm="$(ruby "$PARSER" resolve "$FLTH_VM_PROFILE_DIR/arches.toml" aarch64)"
 check_contains "$arm" '6.12.1-arm64' "an aarch64 suite resolves its architecture's release"
 check_eq "$([ "$arm" != "$out" ] && echo distinct)" distinct "different architectures have different identities"
-other="$(FLTH_PROFILE=arches "$VM" config)"
+other="$(FLTH_VM_PROFILE=arches "$VM" config)"
 check_contains "$other" 'vm.guest=debian-13' "the profile selects its pinned base guest"
 check_lacks "$other" "machine=$machine" "a different profile gets a different machine"
 
 reject() {
-    printf '%s\n' "$1" > "$FLTH_PROFILE_DIR/bad.toml"
+    printf '%s\n' "$1" > "$FLTH_VM_PROFILE_DIR/bad.toml"
     local out rc
-    out="$(FLTH_PROFILE=bad "$VM" config 2>&1)"; rc=$?
+    out="$(FLTH_VM_PROFILE=bad "$VM" config 2>&1)"; rc=$?
     check_eq "$rc" 1 "$3 fails before boot"
     check_contains "$out" "$2" "and diagnoses $3"
 }
@@ -111,17 +113,17 @@ reject '[profile]
 release = ""' 'exact kernel release' 'an explicitly empty kernel release'
 reject '[profile]
 release = 612' 'quoted string' 'a wrongly typed value'
-out="$(FLTH_PROFILE=../pinned "$VM" config 2>&1)"
+out="$(FLTH_VM_PROFILE=../pinned "$VM" config 2>&1)"
 check_eq "$?" 1 "a profile name cannot escape the catalog"
 check_eq "$(grep -c '^up' "$FLTH_TEST_STUB/calls" | tr -d ' ')" 0 "invalid profiles never boot or provision a guest"
-printf '# changed preparation\n' >> "$FLTH_PROFILE_DIR/prepare.sh"
-changed_checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_PROFILE_DIR/prepare.sh")"
-manifest | sed "s/$checksum/$changed_checksum/" > "$FLTH_PROFILE_DIR/changed.toml"
-other="$(FLTH_PROFILE=changed "$VM" config | sed -n 's/^machine=//p')"
+printf '# changed preparation\n' >> "$FLTH_VM_PROFILE_DIR/prepare.sh"
+changed_checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_VM_PROFILE_DIR/prepare.sh")"
+manifest | sed "s/$checksum/$changed_checksum/" > "$FLTH_VM_PROFILE_DIR/changed.toml"
+other="$(FLTH_VM_PROFILE=changed "$VM" config | sed -n 's/^machine=//p')"
 check_eq "$([ "$other" != "$machine" ] && echo separate)" separate "changed preparation bytes allocate a different machine"
 # Restore the original fixture; the already resolved identity remains the same.
-sed '$d' "$FLTH_PROFILE_DIR/prepare.sh" > "$SANDBOX/prepare-original"
-cp "$SANDBOX/prepare-original" "$FLTH_PROFILE_DIR/prepare.sh"
+sed '$d' "$FLTH_VM_PROFILE_DIR/prepare.sh" > "$SANDBOX/prepare-original"
+cp "$SANDBOX/prepare-original" "$FLTH_VM_PROFILE_DIR/prepare.sh"
 
 # Everything run by the stub engine stays inside its sandbox, including modules.
 mkdir -p "$FLTH_TEST_STUB/guest-boot" "$FLTH_TEST_STUB/guest-proc" "$FLTH_TEST_STUB/guest-modules/$RELEASE"
@@ -166,7 +168,7 @@ check_contains "$(cat "$FLTH_TEST_STUB/module-calls")" $'\nloop' "the running gu
 check_eq "$(cat "$machine/boot/release" 2>/dev/null)" "$RELEASE" "the exact kernel is exported for the next boot"
 check_eq "$(cat "$machine/boot/cmdline" 2>/dev/null)" 'root=UUID=profile-root ro console=ttyS0' "direct boot keeps the root and console, dropping bootloader paths"
 check_eq "$([ -s "$machine/profile-ready" ] && echo ready)" ready "only a stopped preparation produces a ready record"
-FLTH_PROFILE="alias" "$VM" up >/dev/null 2>&1
+FLTH_VM_PROFILE="alias" "$VM" up >/dev/null 2>&1
 check_eq "$?" 0 "another suite naming the same profile joins the running guest"
 FLTH_CONFIG="$second_config" "$VM" up >/dev/null 2>&1
 check_eq "$?" 0 "another consumer joins that same prepared guest"
@@ -229,46 +231,46 @@ check_eq "$([ -f "$machine/profile-ready" ] && echo false-ready)" '' "corrupted 
 rm -f "$FLTH_TEST_STUB/corrupt-transfer"
 "$VM" destroy >/dev/null 2>&1
 # A profile may isolate preparation alone and retain the pinned box's kernel.
-cat > "$FLTH_PROFILE_DIR/tools.sh" <<'SETUP'
+cat > "$FLTH_VM_PROFILE_DIR/tools.sh" <<'SETUP'
 set -eu
 [ -z "$FLTH_KERNEL_RELEASE" ]
 printf one > "$FLTH_TEST_STUB/guest-lib/run-flavor"
 SETUP
-tools_checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_PROFILE_DIR/tools.sh")"
-printf '[profile]\nsetup = "tools.sh"\nsetup_sha256 = "%s"\n' "$tools_checksum" > "$FLTH_PROFILE_DIR/tools.toml"
-config="$(FLTH_PROFILE=tools "$VM" config)"
+tools_checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_VM_PROFILE_DIR/tools.sh")"
+printf '[profile]\nsetup = "tools.sh"\nsetup_sha256 = "%s"\n' "$tools_checksum" > "$FLTH_VM_PROFILE_DIR/tools.toml"
+config="$(FLTH_VM_PROFILE=tools "$VM" config)"
 check_eq "$?" 0 "a run profile can omit every kernel override"
 check_contains "$config" 'kernel.release=box-default' "an omitted release keeps the box kernel"
 tools_machine="$(printf '%s\n' "$config" | sed -n 's/^machine=//p')"
 mkdir -p "$SRC/run-profiles"
-cp "$FLTH_PROFILE_DIR/tools.toml" "$FLTH_PROFILE_DIR/tools.sh" "$SRC/run-profiles/"
-default_config="$(unset FLTH_PROFILE_DIR; FLTH_PROFILE=tools "$VM" config)"
+cp "$FLTH_VM_PROFILE_DIR/tools.toml" "$FLTH_VM_PROFILE_DIR/tools.sh" "$SRC/run-profiles/"
+default_config="$(unset FLTH_VM_PROFILE_DIR; FLTH_VM_PROFILE=tools "$VM" config)"
 check_eq "$?" 0 "run-profiles is the consumer's default catalog directory"
 check_contains "$default_config" "machine=$tools_machine" "moving the catalog preserves its resolved identity"
-printf 'printf two > "$FLTH_TEST_STUB/guest-lib/run-flavor"\n' > "$FLTH_PROFILE_DIR/other-tools.sh"
-other_checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_PROFILE_DIR/other-tools.sh")"
-printf '[profile]\nsetup = "other-tools.sh"\nsetup_sha256 = "%s"\n' "$other_checksum" > "$FLTH_PROFILE_DIR/other-tools.toml"
-other_machine="$(FLTH_PROFILE=other-tools "$VM" config | sed -n 's/^machine=//p')"
+printf 'printf two > "$FLTH_TEST_STUB/guest-lib/run-flavor"\n' > "$FLTH_VM_PROFILE_DIR/other-tools.sh"
+other_checksum="$(ruby -rdigest -e 'puts Digest::SHA256.file(ARGV[0]).hexdigest' "$FLTH_VM_PROFILE_DIR/other-tools.sh")"
+printf '[profile]\nsetup = "other-tools.sh"\nsetup_sha256 = "%s"\n' "$other_checksum" > "$FLTH_VM_PROFILE_DIR/other-tools.toml"
+other_machine="$(FLTH_VM_PROFILE=other-tools "$VM" config | sed -n 's/^machine=//p')"
 check_eq "$([ "$tools_machine" != "$other_machine" ] && echo separate)" separate "different preparation gets separate VMs with the same box kernel"
-out="$(FLTH_PROFILE=tools "$VM" up 2>&1)"
+out="$(FLTH_VM_PROFILE=tools "$VM" up 2>&1)"
 check_eq "$?" 0 "a preparation-only profile boots without exported kernel files"
 check_eq "$(cat "$FLTH_TEST_STUB/disk/run-flavor" 2>/dev/null)" one "the profile's environment persists on its own prepared disk"
 check_eq "$(cat "$tools_machine/boot/guest-release" 2>/dev/null)" "$RELEASE" "the box kernel's running release is recorded for admission"
 check_eq "$([ -s "$tools_machine/boot/release" ] && echo override)" '' "the engine receives no kernel override for a preparation-only profile"
 check_eq "$([ -e "$tools_machine/boot/vmlinuz" ] && echo exported)" '' "the box profile needs no kernel artifact on its guest disk"
-FLTH_PROFILE=tools "$VM" down >/dev/null 2>&1
+FLTH_VM_PROFILE=tools "$VM" down >/dev/null 2>&1
 printf wrong-box-kernel > "$FLTH_TEST_STUB/runtime-release"
-out="$(FLTH_PROFILE=tools "$VM" up 2>&1)"
+out="$(FLTH_VM_PROFILE=tools "$VM" up 2>&1)"
 check_eq "$?" 1 "a preparation-only profile still checks its recorded kernel at runtime"
 check_contains "$out" 'guest runs wrong-box-kernel' "a changed box kernel is diagnosed before admission"
 printf '%s\n' "$RELEASE" > "$FLTH_TEST_STUB/runtime-release"
-FLTH_PROFILE=tools "$VM" up >/dev/null 2>&1
+FLTH_VM_PROFILE=tools "$VM" up >/dev/null 2>&1
 check_eq "$?" 0 "a prepared environment boots again with its original box kernel"
 check_eq "$(cat "$FLTH_TEST_STUB/guest-lib/run-flavor" 2>/dev/null)" one "the preparation survives its disposable runtime reboot"
-FLTH_PROFILE=tools "$VM" down >/dev/null 2>&1
+FLTH_VM_PROFILE=tools "$VM" down >/dev/null 2>&1
 printf changed > "$tools_machine/boot/guest-release"
-out="$(FLTH_PROFILE=tools "$VM" up 2>&1)"
+out="$(FLTH_VM_PROFILE=tools "$VM" up 2>&1)"
 check_eq "$?" 1 "the default kernel's admission record is integrity checked"
 check_contains "$out" 'profile boot artifacts changed' "a damaged default-kernel record asks for a rebuild"
-FLTH_PROFILE=tools "$VM" destroy >/dev/null 2>&1
+FLTH_VM_PROFILE=tools "$VM" destroy >/dev/null 2>&1
 finish run-profiles
