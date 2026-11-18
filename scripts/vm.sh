@@ -982,14 +982,18 @@ vm_session_end() {
 # A GUEST WITH LITTLE MEMORY LEFT (#185). Six suites building at once ran a 10G guest
 # out of memory, and none of them was told. A suite joining is told the numbers and who
 # is using it when what the guest has available is under FLTH_SHARED_MIN_AVAILABLE
-# (2048 MiB). It still joins: whether it fits is the suite's to know.
+# (2048 MiB). It still joins: whether it fits is the suite's to know. The floor is at
+# most a quarter of the guest's total (#265): a guest of 2G has less than 2048 MiB in
+# all, and being that size is not being short of memory.
 shared_tell_room() {
     local numbers total available floor="${FLTH_SHARED_MIN_AVAILABLE:-2048}"
     case "$floor" in '' | *[!0-9]*) floor=2048 ;; esac
     numbers="$(engine_run "awk '\$1 == \"MemTotal:\" { t = \$2 } \$1 == \"MemAvailable:\" { a = \$2 } END { print int(t / 1024), int(a / 1024) }' /proc/meminfo" 2>/dev/null)" || return 0
     read -r total available <<< "$numbers"
     case "$total$available" in '' | *[!0-9]*) return 0 ;; esac
-    [ "$total" -gt 0 ] && [ "$available" -lt "$floor" ] || return 0
+    [ "$total" -gt 0 ] || return 0
+    [ "$floor" -le $((total / 4)) ] || floor=$((total / 4))
+    [ "$available" -lt "$floor" ] || return 0
     echo "vm: the shared guest has $available MiB of $total MiB available, in use by: $(shared_suites)." >&2
     echo "    A suite that needs more may be killed for memory. FLTH_SHARED_MEMORY sizes the guest at its next boot." >&2
 }

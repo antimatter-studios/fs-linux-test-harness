@@ -6,8 +6,9 @@
 # Six suites building at once ran a 10G guest out of memory: the kernel killed
 # processes and a few `vm.sh exec` calls hung, and no suite was told why. The guest's
 # own /proc/meminfo is the measure, read as a suite joins. Below
-# FLTH_SHARED_MIN_AVAILABLE (2048 MiB by default) the join says so; it still runs,
-# because whether the suite fits is the suite's to know.
+# FLTH_SHARED_MIN_AVAILABLE (2048 MiB by default), or a quarter of the guest's total
+# when that is less, the join says so; it still runs, because whether the suite fits
+# is the suite's to know.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
@@ -39,6 +40,28 @@ check_contains "$out" "FLTH_SHARED_MEMORY" "and what sizes the guest"
 
 out="$(FLTH_SHARED_MIN_AVAILABLE=512 two up 2>&1)"
 check_lacks "$out" "MiB available" "FLTH_SHARED_MIN_AVAILABLE sets where that starts"
+
+# A guest's size is not a shortage (#265). The floor is at most a quarter of the
+# guest's total, so a guest smaller than it can still be told apart from a full one.
+meminfo 1973 1688
+out="$(two up 2>&1)"
+check_lacks "$out" "MiB available" "a 2G guest with most of its memory free says nothing"
+
+meminfo 1973 100
+out="$(two up 2>&1)"
+check_contains "$out" "the shared guest has 100 MiB of 1973 MiB available" "a 2G guest nearly out of memory is told"
+
+meminfo 1973 1688
+out="$(FLTH_SHARED_MIN_AVAILABLE=4096 two up 2>&1)"
+check_lacks "$out" "MiB available" "a configured floor above the guest's total is held to a quarter of it too"
+
+meminfo 16384 3000
+out="$(two up 2>&1)"
+check_lacks "$out" "MiB available" "a large guest above the floor says nothing"
+
+meminfo 16384 2000
+out="$(two up 2>&1)"
+check_contains "$out" "the shared guest has 2000 MiB of 16384 MiB available" "a large guest keeps the fixed floor"
 
 kill -KILL "$suite" 2>/dev/null; wait "$suite" 2>/dev/null
 finish guest-room
