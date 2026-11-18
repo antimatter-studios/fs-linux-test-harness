@@ -1179,7 +1179,14 @@ tests keep their real host, and both real VM smoke jobs keep hosted KVM.
 **The required status check is `ci-ok`.** Branch protection and
 auto-merge should require that one name and nothing else, so adding a
 job later never needs a settings change. Superseded runs on the same
-pull request are cancelled.
+pull request are cancelled. Before pushing to a lower pull request in a
+stack, run `scripts/cancel-pr-pipelines.sh <PR>` from the repository
+checkout. It force-cancels queued and running workflows for that pull
+request and its stacked descendants; it never pushes. It first requests
+ordinary cancellation, then force-cancels only runs that remain active after
+a short grace period. Push after it finishes so only checks for the new heads
+use runner time. A cancelled required check stays non-green until the
+replacement run passes.
 
 The arm64 path (Linux aarch64 under KVM) is proven by `chore smoke` on an
 arm64 host rather than in hosted CI: GitHub's hosted arm64 runners do not
