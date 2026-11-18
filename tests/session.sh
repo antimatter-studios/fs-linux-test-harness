@@ -62,9 +62,13 @@ signal_case() {
     (cd "$SANDBOX/consumer" && exec "${DEFAULT_INT[@]}" ./work.sh) >/dev/null 2>&1 &
     local pid=$! tries=0
     set +m
-    until grep -q "^begin $pid\$" "$LOG" 2>/dev/null || [ "$tries" -ge 100 ]; do
+    # The work has begun when its start is logged. A signal sent before that
+    # reaches a script that has not sourced the session yet, which has no
+    # teardown to run, so a slow host must be waited out, not signalled past.
+    until grep -q "^begin $pid\$" "$LOG" 2>/dev/null || [ "$tries" -ge 600 ]; do
         sleep 0.1; tries=$((tries + 1))
     done
+    grep -q "^begin $pid\$" "$LOG" 2>/dev/null || bad "SIG$1: the work never began, so there was nothing to signal"
     kill "-$1" "$pid"
     wait "$pid"
     check_eq "$?" "$((128 + $2))" "killed by SIG$1: the script's status is 128+$2"

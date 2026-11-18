@@ -203,11 +203,22 @@ start_session() {
     set +m
 }
 
+# How long a session may take to end after its signal. The cases end in 1 to 11
+# seconds on a quiet Apple Silicon host and in 1 to 24 on a hosted Linux runner
+# (20, 24 and 20 seconds in CI on pull request 259); part of that is the
+# end's own waiting, which a busy host does not shorten, and its work costs a
+# busy host more. A bound near those figures fails a runner that is merely slow,
+# which says nothing about the session (#254), so the bound is nearly four times
+# the longest end measured. A session that waits on something that never ends is
+# far past it, and the watchdog below stops it.
+SESSION_BOUND="${FLTH_TEST_SESSION_BOUND:-90}"
+SESSION_WATCHDOG=$((SESSION_BOUND + 30))
+
 # Signals the session and leaves STATUS and ELAPSED; bounded by a watchdog, so a
 # session that will not end fails here instead of holding the suite.
 signal_session() {
     local delivery="$1" started
-    start_watchdog 25 "$CASE/timeout" "$SESSION"
+    start_watchdog "$SESSION_WATCHDOG" "$CASE/timeout" "$SESSION"
     started=$SECONDS
     case "$delivery" in
         process) kill -TERM "$SESSION" 2>/dev/null ;;
@@ -224,8 +235,8 @@ check_session_bound() {
     # check_session_bound <label>
     if [ -e "$CASE/timeout" ]; then
         bad "$1: the watchdog stopped the session after $ELAPSED seconds"
-    elif [ "$ELAPSED" -ge 20 ]; then
-        bad "$1: the session took $ELAPSED seconds, and its bound is 20"
+    elif [ "$ELAPSED" -ge "$SESSION_BOUND" ]; then
+        bad "$1: the session took $ELAPSED seconds, and its bound is $SESSION_BOUND"
     else
         ok "$1: the session ends within its bound"
     fi
@@ -257,7 +268,7 @@ vm_stays_up() {
     # vm_stays_up <label> <delivery> <worktree>
     local label="$1" delivery="$2" worktree="$3" name group pid
     start_session "$label" "$worktree"
-    if wait_until 300 file_exists "$CASE/ready"; then
+    if wait_until 600 file_exists "$CASE/ready"; then
         ok "$label: the command booted the VM"
     else
         bad "$label: the command never finished booting ($(cat "$CASE/log"))"
@@ -291,13 +302,28 @@ vm_stays_up() {
     check_eq "$?" 0 "$label: the VM stays up"
     (cd "$ONE" && "$VM" down) > /dev/null 2>&1
     check_eq "$?" 0 "$label: a later down stops it"
-    if wait_until 30 forwarders_gone; then
+    if wait_until 300 forwarders_gone; then
         ok "$label: and the forwarders with it"
     else
         bad "$label: a forwarder outlived the down"
     fi
     clean_up
 }
+
+# --- The bound itself: it fails a session that took it, and passes one a slow
+# host stretched past the longest end measured (the 23 seconds of #254).
+
+CASE="$SANDBOX/bound-check"
+mkdir -p "$CASE"
+check_contains "$(ELAPSED="$SESSION_BOUND" check_session_bound "at the bound")" "FAIL" \
+    "a session that took the whole bound fails"
+check_contains "$(ELAPSED=$((SESSION_BOUND + 1)) check_session_bound "past the bound")" "its bound is $SESSION_BOUND" \
+    "and names the bound it passed"
+check_lacks "$(ELAPSED=23 check_session_bound "on a slow host")" "FAIL" \
+    "a session that took 23 seconds on a slow host passes"
+: > "$CASE/timeout"
+check_contains "$(ELAPSED=1 check_session_bound "stopped by the watchdog")" "the watchdog stopped" \
+    "a session the watchdog had to stop fails"
 
 # --- A session's end leaves the shared guest up, whoever booted it.
 
@@ -329,7 +355,7 @@ if [ -z "$(pid_of qemu)$(pid_of virtiofsd)" ]; then
 else
     bad "normal end: QEMU or virtiofsd is left after the down"
 fi
-if wait_until 30 forwarders_gone; then
+if wait_until 300 forwarders_gone; then
     ok "normal end: no forwarder is left"
 else
     bad "normal end: a forwarder outlived the down"
@@ -368,7 +394,7 @@ for action in down destroy; do
         printf '%s {"identity":"Wed Nov  4 12:00:00 2026 notify-forwarder-stub"}\n' "$unrelated"
     } >> "$record"
     (cd "$ONE" && "$VM" "$action") > /dev/null 2>&1
-    if wait_until 30 dead "$recorded"; then
+    if wait_until 300 dead "$recorded"; then
         ok "$action: a watcher recorded with its identity is stopped"
     else
         bad "$action: a watcher recorded with its identity outlived it"
@@ -398,7 +424,7 @@ for format in pid identity; do
     else
         bad "$label: QEMU is still running"
     fi
-    if wait_until 30 forwarders_gone; then
+    if wait_until 300 forwarders_gone; then
         ok "$label: no forwarder is left"
     else
         bad "$label: a forwarder outlived the session"
@@ -416,7 +442,7 @@ boot_interrupted() {
     local label="boot-$1" vagrant group virtiofsd forwarder name
     echo "$1" > "$STUB/boot"
     start_session "$label" "$ONE"
-    if wait_until 300 file_exists "$STUB/booting"; then
+    if wait_until 600 file_exists "$STUB/booting"; then
         ok "$label: the boot is under way"
     else
         bad "$label: the boot never started ($(cat "$CASE/log"))"
@@ -434,19 +460,19 @@ boot_interrupted() {
     else
         bad "$label: vagrant is outside the command's group with stdin it could be stopped for reading"
     fi
-    if wait_until 30 dead "$vagrant"; then
+    if wait_until 300 dead "$vagrant"; then
         ok "$label: vagrant has ended"
     else
         bad "$label: vagrant outlived the session"
     fi
     for name in virtiofsd:"$virtiofsd" notify-forwarder:"$forwarder"; do
-        if wait_until 30 dead "${name#*:}"; then
+        if wait_until 300 dead "${name#*:}"; then
             ok "$label: ${name%%:*} has ended"
         else
             bad "$label: ${name%%:*} outlived the boot"
         fi
     done
-    if wait_until 30 group_is_empty "$group"; then
+    if wait_until 300 group_is_empty "$group"; then
         ok "$label: nothing is left in vagrant's process group"
     else
         bad "$label: vagrant's process group $group still has members"

@@ -59,19 +59,19 @@ fresh
 vm up 2>/dev/null
 check_eq "$?" 0 "a guest boots"
 check_eq "$(watchdogs)" running "and a watchdog starts with it"
-if wait_until 100 file_holds "$MACHINE/watchdog.log" ' ok: '; then
+if wait_until 300 file_holds "$MACHINE/watchdog.log" ' ok: '; then
     ok "it logs what it sees"
 else
     bad "it logs what it sees ($(cat "$MACHINE/watchdog.log" 2>/dev/null))"
 fi
 check_contains "$(vm status 2>&1)" "watchdog" "and vm.sh status shows it"
 vm down 2>/dev/null
-if wait_until 100 no_watchdog; then ok "a down ends it"; else bad "a down ends it"; fi
+if wait_until 300 no_watchdog; then ok "a down ends it"; else bad "a down ends it"; fi
 
 fresh
 vm up 2>/dev/null
 stub_state stopped
-if wait_until 100 no_watchdog; then
+if wait_until 300 no_watchdog; then
     ok "a guest that stopped by itself ends it"
 else
     bad "a guest that stopped by itself ends it"
@@ -219,7 +219,7 @@ printf 'mem 100 16000000\ndisk 100 64000000\n' > "$STUB/report"
 export FLTH_WATCHDOG_STUCK_SECS=1000
 vm up 2>/dev/null
 printf 'mem 100 16000000\ndisk 100 64000000\nd 6161 999 same-token - sync\n' > "$STUB/report"
-if wait_until 100 file_holds "$MACHINE/watchdog.log" 'warning.*6161.*sync'; then
+if wait_until 300 file_holds "$MACHINE/watchdog.log" 'warning.*6161.*sync'; then
     ok "a process past the warning limit is named"
 else
     bad "a process past the warning limit is named ($(tail -n 3 "$MACHINE/watchdog.log"))"
@@ -239,9 +239,13 @@ ln "$MACHINE/watchdog.last" "$held"
 lines_before="$(wc -l < "$MACHINE/watchdog.log")"
 # shellcheck disable=SC2329  # wait_until calls it by name
 log_grew() { [ "$(wc -l < "$MACHINE/watchdog.log")" -gt "$lines_before" ]; }
-if ! wait_until 100 log_grew; then
+# The watchdog appends to its log and then replaces the last line, so the log
+# growing does not yet mean the replacement has happened: it is waited for too.
+# shellcheck disable=SC2329
+replaced() { ! [ "$MACHINE/watchdog.last" -ef "$held" ]; }
+if ! wait_until 300 log_grew; then
     bad "watchdog.last is replaced whole, never emptied in place (the watchdog wrote nothing more)"
-elif [ "$MACHINE/watchdog.last" -ef "$held" ]; then
+elif ! wait_until 300 replaced; then
     bad "watchdog.last is replaced whole, never emptied in place (it was rewritten in place)"
 else
     ok "watchdog.last is replaced whole, never emptied in place"
@@ -262,7 +266,7 @@ cat >> "$STUB/console.log" <<'CONSOLE'
 [ 1783.104902] CPU: 2 PID: 73 Comm: kswapd0 Not tainted 6.1.0-42-cloud-arm64 #1  Debian 6.1.159-1
 [ 1783.105301] pc : drop_buffers+0x3c/0x130
 CONSOLE
-if wait_until 100 file_holds "$MACHINE/watchdog.log" 'warning: the kernel oopsed'; then
+if wait_until 300 file_holds "$MACHINE/watchdog.log" 'warning: the kernel oopsed'; then
     ok "an oops on the console is warned of"
 else
     bad "an oops on the console is warned of ($(tail -n 3 "$MACHINE/watchdog.log"))"
@@ -272,7 +276,7 @@ check_contains "$(cat "$MACHINE/watchdog.log")" "[#1]" "and which oops it was"
 cat >> "$STUB/console.log" <<'CONSOLE'
 [ 2950.441870] watchdog: BUG: soft lockup - CPU#7 stuck for 24s! [rustc:62246]
 CONSOLE
-if wait_until 100 file_holds "$MACHINE/watchdog.log" 'warning: a soft lockup'; then
+if wait_until 300 file_holds "$MACHINE/watchdog.log" 'warning: a soft lockup'; then
     ok "a soft lockup on the console is warned of"
 else
     bad "a soft lockup on the console is warned of ($(tail -n 3 "$MACHINE/watchdog.log"))"
@@ -281,7 +285,7 @@ check_contains "$(cat "$MACHINE/watchdog.log")" "CPU#7 stuck for 24s! [rustc:622
 /bin/sleep 3
 check_eq "$(grep -c 'warning: the kernel oopsed' "$MACHINE/watchdog.log")" 1 "each is warned of once, not at every look"
 report 'tainted 17024'
-if wait_until 100 file_holds "$MACHINE/watchdog.log" 'warning: the kernel is tainted'; then
+if wait_until 300 file_holds "$MACHINE/watchdog.log" 'warning: the kernel is tainted'; then
     ok "a taint is warned of"
 else
     bad "a taint is warned of"
