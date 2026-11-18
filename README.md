@@ -496,7 +496,7 @@ relative, and must not leave the repository.
 | `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd` | The virtiofsd that serves a run's tree. |
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | `8G`, `8`, `64G` | The size of the shared guest. |
 | `FLTH_SHARED_DEADLINE` | `480` | Minutes the shared guest stays up **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
-| `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. |
+| `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. At most a quarter of the guest's total memory counts, so a small guest is not warned for its size. |
 | `FLTH_WATCHDOG` | on | `off` starts no [watchdog](#what-stops-a-vm) with a guest. |
 | `FLTH_WATCHDOG_INTERVAL` | `60` | Seconds between the watchdog's looks at a guest. |
 | `FLTH_WATCHDOG_WARN_SECS` | `300` | Seconds a process goes in uninterruptible sleep with no progress before it is warned of. |
@@ -959,7 +959,8 @@ the test variable unset and retain the same host reserve and memory check.
 
 **A suite joining a guest with little memory left is told** (#185): the guest's own
 `MemAvailable`, its total, and the suites using it, when what is available is under
-`FLTH_SHARED_MIN_AVAILABLE` (2048 MiB). It still joins. Size the guest from what its
+`FLTH_SHARED_MIN_AVAILABLE` (2048 MiB), or a quarter of the guest's total memory when
+that is less. It still joins. Size the guest from what its
 suites use at once: measured on an Apple Silicon host, three suites (two compiling
 their whole suites, one running tests) peaked at 6960 MiB used of a guest's memory,
 with 2986 MiB still available; six at once, three of them compiling in release, ran a
