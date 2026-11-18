@@ -23,7 +23,7 @@ canonical copy and propagate it, or rust-fs-core's `scripts/agents-core-check.sh
 (run in place from `../rust-fs-core`) will fail.
 Everything after the END marker is specific to this repository.
 
-<!-- BEGIN SHARED BLOCK: agent-core v7 sha256:1d6c04c827b22c2836e4b9d3977fda083f1ec322d8408a6b2ae5bf72de42b3e5 -->
+<!-- BEGIN SHARED BLOCK: agent-core v10 sha256:8defd170502f598507b5d7174acef1243c442fc67134a03812a2a1e81bc7e63e -->
 ## Claiming work
 
 Several agents work these repositories at the same time. Before you start on
@@ -107,23 +107,25 @@ Each repository names any further skills of its own below.
 
 ## A bug fix starts with a red
 
-**Prove it is broken first** — a failing check or test — *then* fix it, *then*
-prove that same check is green, *then* confirm the full baseline still passes.
-Never write the fix before you have a red. A fix with no failing test to its
-name is a claim, not a result.
+**Prove it is broken first** — a failing test — *then* fix it, *then* prove
+that same test is green, *then* confirm the full baseline still passes. Never
+write the fix before you have a red. A fix with no failing test to its name is
+a claim, not a result. The test stays, and guards against the bug returning.
 
-**Red and green happen in one pull request, on one branch.** Push the commit
-that adds the failing test on its own, and let CI show it red on that pull
-request. Then push the fix to the **same branch**, with the test untouched,
-until the same pull request is green.
+**The pattern never changes. Only where you prove it does.** Prove the red and
+the green in CI, or in the test harness on a local machine when your
+instructions allow it. It is the same test harness and the same tests. Running
+them locally saves pipeline runs when the machine has more power than the CI
+runners. Without such an instruction, use CI.
 
-- Never put a fix in a second pull request, stacked or not. A pull request
-  that only holds a red commit can never merge, and it blocks every pull
-  request built on it.
-- Never push the test and the fix together. The red has to be visible in CI,
-  not claimed in the description.
-- Wait for the red run to finish before pushing the fix: a new push cancels
-  the run in progress.
+- Red and green in the harness: push the test and the fix as one commit, and
+  quote the failing output in the pull request, naming the commit it ran on.
+- Red and green in CI: push the test alone, let that run finish, then push the
+  fix to the same branch with the test untouched, and link the run in the pull
+  request.
+- Either way, red and green belong to one pull request on one branch. Never
+  put a fix in a second pull request, stacked or not.
+- A red that fails for another reason proves nothing. Read it.
 
 ## Nothing skips
 
@@ -145,6 +147,35 @@ Every structure that is parsed or written gets a cross-validation test against
 an **independent oracle** — the platform's own tools, a real kernel, or a third
 implementation — before it is considered done. Each repository names its
 oracles below.
+
+## Checks that guard data are never weakened
+
+These drivers read and write real disks, and an application mounts them on
+people's machines. A checker that wrongly calls a damaged volume clean, or a
+test loosened until it passes, hides a defect that can destroy data nobody can
+get back. So, for every agent and every contributor:
+
+- **Never skip, disable, relax, quiet or retarget a test, gate, checker,
+  floor, budget or pass/fail rule to make a run go green.** That includes
+  turning a failure into a warning, narrowing what a gate accepts, dropping a
+  case, lowering an executed-case floor, and raising a budget to hide a
+  regression. A budget may be raised only for a run that passed everything,
+  with the measurement written beside the row.
+- **Never add a baseline line, expected-failure entry or ignore to make a
+  disagreement disappear** unless there is an issue for it *and* evidence of
+  which side is correct. "Probably harmless" is not evidence.
+- **When the driver and an independent oracle disagree,** work out from the
+  on-disk format and the oracle's own behaviour which side is right. If the
+  driver is wrong, fix the driver: the failing test first, then the fix, the
+  test untouched. If the oracle is wrong or the difference is correct, say why
+  with evidence in the issue.
+- **If you cannot tell which side is right, stop and report it as blocked**
+  with what you tried. A blocked item is a good result; a convenient guess is
+  not.
+- **Changing what a gate accepts is the owner's decision,** never an
+  agent's. Propose it in an issue with the numbers and leave it open.
+- A change that touches a gate, a floor, a budget or a baseline says so
+  plainly in its pull request, and names which of these it is.
 
 ## Output is budgeted
 
@@ -247,7 +278,7 @@ a fragment until it ships and a line of `CHANGELOG.md` after, never both.
   copying it is not.
 - **Each of these is a standalone project.** Never mention a consuming
   application in the README, the source, or CLI help.
-<!-- END SHARED BLOCK: agent-core v7 -->
+<!-- END SHARED BLOCK: agent-core v10 -->
 
 ## Where the shared block does not map cleanly
 

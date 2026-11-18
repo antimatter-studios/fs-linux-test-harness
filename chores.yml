@@ -17,7 +17,7 @@ vars:
   # in place rather than keeping copies of. A URL beside the ref, so nothing
   # rebuilds one from a repo name.
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
-  FS_CORE_REF: v0.3.12
+  FS_CORE_REF: v0.4.6
   # Where tests/smoke.sh keeps its machine, apart from the shared guest this
   # host's consumers use. tests/smoke.sh has the same default.
   SMOKE_CACHE_DIR: '${FLTH_SMOKE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fs-linux-test-harness-smoke}'
