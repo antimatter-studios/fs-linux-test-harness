@@ -103,8 +103,18 @@ check_macos() {
         fi
     fi
     if have vagrant; then
-        local p plugins
-        plugins="$(vagrant plugin list 2>/dev/null || true)"
+        local p plugins said rc=0
+        # Its errors are kept with its list: every read below is anchored on a
+        # plugin's name at the start of a line, and a failure needs them (#261).
+        plugins="$(vagrant plugin list 2>&1)" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            # A list that could not be read says nothing about what is installed.
+            said="$(printf '%s\n' "$plugins" | head -n 5 | tr '\n' ' ' | sed 's/ *$//')"
+            need "a working 'vagrant plugin list'" \
+                "it failed (exit $rc), so which plugins are installed is unknown: ${said:-it printed nothing}" \
+                "run 'vagrant plugin list' to see why; 'vagrant plugin repair' rebuilds a broken plugin set"
+            return
+        fi
         for p in vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas; do
             printf '%s\n' "$plugins" | grep -q "^$p " ||
                 need "$p" "the macOS QEMU provider and its required companion" "vagrant plugin install $p"
