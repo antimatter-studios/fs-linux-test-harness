@@ -54,7 +54,8 @@ check_eq "$(grep -c "mount -t virtiofs \"\$tag\" $repo_guest 2" "$REPO/scripts/l
 check_eq "$(grep -c "s|$repo_guest|" "$REPO/tests/stubs/engine.sh" | tr -d ' ')" 1 "and the stub engine redirects that mount too"
 
 cache_guest="$(sed -n 's/^FLTH_CACHE_GUEST="\(.*\)"$/\1/p' "$REPO/scripts/lib/common.sh")"
-check_eq "$(grep -c "cache_guest = \"$cache_guest\"" "$REPO/vagrant/Vagrantfile" | tr -d ' ')" 1 "and mounts a declared cache where vm.sh says it is"
+check_eq "$(grep -c "mount --bind \"\$cache\" $cache_guest" "$REPO/scripts/lib/guest-run.sh" | tr -d ' ')" 1 \
+    "and mounts a declared cache where vm.sh says it is"
 check_eq "$(grep -c "s|$cache_guest" "$REPO/tests/stubs/engine.sh" | tr -d ' ')" 1 "and the stub engine redirects that mount too"
 
 # Every public vm.sh command has a chore task, and every task's script exists.

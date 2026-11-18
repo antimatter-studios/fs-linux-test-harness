@@ -106,7 +106,7 @@ field() { printf '%s' "$json" | ruby -rjson -e 'd = JSON.parse(STDIN.read); v = 
 export FLTH_VM_NAME=rust-fs-demo FLTH_VM_MEMORY=2G FLTH_VM_CPUS=2 FLTH_VM_DISK=16G FLTH_VM_SSH_PORT=50122
 export FLTH_VM_DEADLINE_MINUTES=480 FLTH_QEMU_DIR="$SANDBOX/fw"
 export FLTH_VM_GUEST=debian-12
-export FLTH_VM_DISPOSABLE=1 FLTH_VM_CACHE_DISK=""
+export FLTH_VM_DISPOSABLE=1
 # Where a run's tree is attached while the guest runs (#222): tests/vagrantfile-hotplug.sh.
 export FLTH_VM_QMP="$SANDBOX/qmp.sock" FLTH_VM_SLOTS=4 FLTH_VM_MEM_DIR="$SANDBOX/mem"
 export FLTH_VM_CONSOLE_LOG="$SANDBOX/machine/console.log"
@@ -231,38 +231,6 @@ for h in "linux-gnu x86_64 1 vagrant-qemu" "linux-gnu aarch64 1 vagrant-qemu" \
         "  the provider retains the port selected by the harness's bind probe"
 done
 
-# --- the declared cache (#39) -----------------------------------------------
-# A disk of its own, attached through extra_qemu_args and NOT through the
-# provider's drive list: extra_drive_args (snapshot=on on a disposable
-# boot) is applied to every drive the provider attaches, and a cache it
-# reached would be discarded with the run it exists to outlive.
-cache_disk="$SANDBOX/machine/cache.img"
-FLTH_VM_CACHE_DISK="$cache_disk" evaluate linux-gnu x86_64 1 vagrant-qemu
-check_eq "$(field ok)" true "a declared cache evaluates on Linux"
-args="$(field config/$P.extra_qemu_args)"
-check_contains "$args" "if=none,id=flth_cache,file=$cache_disk,format=raw" "  the cache is a drive of its own"
-check_contains "$args" "virtio-blk-pci,drive=flth_cache,serial=flth-cache" \
-    "  with a serial the guest finds it by"
-# QEMU creates every -device before the device an -drive if=virtio
-# implies, so an unplaced cache took the PCI slot ahead of the machine's
-# own disk: the BIOS booted the empty cache, and the guest never came up.
-check_contains "$args" "serial=flth-cache,addr=0x10" \
-    "  on a PCI slot after the machine's own disk, which the BIOS boots"
-check_lacks "$args" "id=flth_cache,file=$cache_disk,format=raw,snapshot" "  and its writes are never sent to the overlay"
-check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  while the machine's own disk stays disposable"
-check_contains "$args" "pcie-root-port,id=flth_rp1" "  and the ports for a run's tree are still there, clear of it"
-check_contains "$(field config/vm.provision)" '"path":"guest/mount-cache.sh","args":["flth-cache","/cache"]' \
-    "  it is mounted at /cache on every boot"
-FLTH_VM_CACHE_DISK="$cache_disk" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
-check_eq "$(field ok)" true "a declared cache evaluates on macOS"
-check_contains "$(field config/$P.extra_qemu_args)" "if=none,id=flth_cache,file=$cache_disk,format=raw" "  the same drive"
-check_contains "$(field config/vm.provision)" '"guest/mount-cache.sh"' "  mounted the same way"
-FLTH_VM_CACHE_DISK="" evaluate linux-gnu x86_64 1 vagrant-qemu
-check_lacks "$(field config/$P.extra_qemu_args)" "flth_cache" "no cache declared: no cache drive"
-check_lacks "$(field config/vm.provision)" "mount-cache" "  and nothing mounted at /cache"
-FLTH_VM_CACHE_DISK="" evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
-check_lacks "$(field config/$P.extra_qemu_args)" "flth_cache" "  on macOS either"
-
 # --- the kernel a provisioning boot left on the disk (#80) -------------------
 # The box's own Vagrantfile passes -kernel and -initrd, which the provider
 # puts first when it merges the two; QEMU takes the last of each. That part
@@ -336,8 +304,6 @@ refuse_env FLTH_VM_SLOTS "0"
 refuse_env FLTH_VM_SLOTS "65"
 refuse_env FLTH_VM_DISPOSABLE "yes"
 refuse_env FLTH_VM_DISPOSABLE "1,file=/etc/shadow"
-refuse_env FLTH_VM_CACHE_DISK "relative/cache.img"
-refuse_env FLTH_VM_CACHE_DISK "/tmp/cache.img,snapshot=on"
 refuse_env FLTH_VM_CONSOLE_LOG "relative/console.log"
 refuse_env FLTH_VM_CONSOLE_LOG "/tmp/console.log
 -drive file=/etc/shadow"

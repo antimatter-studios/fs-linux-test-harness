@@ -424,8 +424,7 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   consumer's declared cache (`[cache] size`, mounted at `/cache`) is a directory
   of the guest's and lasts as long as the guest. Only a run profile's preparation
   boot keeps its writes (`engine_up --persist`), and only a profile's boot files
-  are passed to QEMU. The engine still carries the cache disk the removed
-  private VM used, which nothing calls now (#221).
+  are passed to QEMU.
 - **Status 255 from a call into the guest is ssh's or the script's.** `vm.sh`
   keeps it and reports what it found on stderr (`report_lost_guest`, #105). A
   new path into the guest goes through `guest_run` or it gets a bare 255.

@@ -96,7 +96,7 @@ qemu_line() {
 }
 
 # `info block -v`, cut down to what is read. The machine's disk comes first with
-# the overlay at the top of its chain, and a declared cache follows it.
+# the overlay at the top of its chain, and another drive follows it.
 block_answer() {
     cat > "$ANSWERS/info-block-v" <<ANSWER
 disk0 (#block164): json:{"backing":{"driver":"qcow2"},"driver":"qcow2"} (qcow2)
@@ -115,12 +115,12 @@ image: $ID/linked-box.img
 file format: qcow2
 disk size: 13.7 MiB
 
-flth_cache (#block512): $ID/../cache.img (raw)
+other (#block512): $ID/../other.img (raw)
     Attached to:      /machine/peripheral-anon/device[1]
     I/O status:       ok
 
 Images:
-image: $ID/../cache.img
+image: $ID/../other.img
 file format: raw
 disk size: 3 GiB
 

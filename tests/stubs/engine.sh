@@ -36,9 +36,8 @@
 # the engine's promise (lib/engine.sh, engine_up), modelled so the
 # orchestration can be held to using it.
 #
-# THE CACHE. A consumer that declares one ([cache] size) has $STUB/cache
-# as its guest's /cache for every boot, persist or not: it is a disk of
-# its own, outside the overlay. destroy deletes it with the machine.
+# THE CACHE. A consumer's declared cache is a directory of the guest's, bound over
+# /cache in its run (lib/guest-run.sh). Guest scripts see $STUB/guest-cache there.
 
 STUB="${FLTH_TEST_STUB:?the stub engine needs FLTH_TEST_STUB}"
 
@@ -93,10 +92,6 @@ engine_up() {
     cp -R "$STUB/disk" "$STUB/guest-lib"
     echo "$persist" > "$STUB/boot-persist"
     rm -f "$STUB/guest-cache"
-    if [ -n "${CFG_cache_size:-}" ]; then
-        mkdir -p "$STUB/cache"
-        ln -s "$STUB/cache" "$STUB/guest-cache"
-    fi
     stub_gate gate_up
     # A boot takes time, and until it ends the VM is not running.
     /bin/sleep "$(stub_read up_delay 0)"
@@ -127,7 +122,7 @@ engine_down() {
 engine_destroy() {
     stub_log destroy
     stub_read after_destroy absent > "$STUB/state"
-    rm -rf "$STUB/disk" "$STUB/guest-lib" "$STUB/boot-persist" "$STUB/cache" "$STUB/guest-cache" "$STUB/attached"
+    rm -rf "$STUB/disk" "$STUB/guest-lib" "$STUB/boot-persist" "$STUB/guest-cache" "$STUB/attached"
 }
 
 # A RUN'S TREE, ATTACHED WHILE THE GUEST RUNS (#222). Recorded here as a file naming
@@ -147,7 +142,6 @@ engine_tree_attached() {
     return 0
 }
 
-engine_tree_slot() { printf '1\n'; }
 
 engine_detach_tree() {
     stub_log "detach $1"
@@ -164,7 +158,6 @@ engine_attached_runs() {
 
 # Which kernel a boot runs is the real engine's business. Here there is
 # nothing kept to forget.
-engine_forget_kernel() { return 0; }
 
 # Runs the script HERE, with the guest's fixed paths — the setup stamp,
 # the hold marker, the repository mount, the cache — redirected into the stub

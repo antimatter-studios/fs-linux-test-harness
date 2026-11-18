@@ -49,7 +49,7 @@ one, which is how an oracle goes unnoticed running against nothing.
 | `scripts/host-tools.sh` | Checks the host and prints exactly what to install. |
 | `scripts/ci-setup-linux.sh` | Sets a hosted x86_64 Linux CI runner up to boot the VM (KVM access, QEMU, Vagrant, vagrant-qemu), for the harness's CI and every consumer's; `--box-cache-key` prints the box cache key. |
 | `scripts/lib/` | `config.sh` (the TOML reader), `engine.sh` (the engine interface), `engine-vagrant.sh` (its Vagrant implementation), `common.sh` (paths). |
-| `vagrant/` | The Vagrantfile (chooses box, accelerator, plugins and sharing by host) and the guest-side `apt-ready.sh`, `deadline.sh`, `mount-share.sh` and `mount-cache.sh`. |
+| `vagrant/` | The Vagrantfile (chooses box, accelerator, plugins and sharing by host) and the guest-side `apt-ready.sh`, `deadline.sh` and `mount-share.sh`. |
 | `examples/minimal/` | The smallest consumer: config, setup script, `chores.yml`. |
 | `tests/` | VM-free unit tests, `smoke.sh` (the real-VM end-to-end test), and `smoke-consumer/`, a realistic consumer CI boots on every pull request. |
 
