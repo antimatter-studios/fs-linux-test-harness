@@ -137,13 +137,47 @@ ended_within_limit() {
 }
 
 wait_for_file() {
+    # wait_for_file <file> <pid of the call that writes it>
+    # Until the file has content, while that call is alive (#229). The bound is only
+    # a backstop for a call that hangs: 2400 ticks, two minutes and more, where the
+    # slowest start measured took 249.
     local ticks=0
     until [ -s "$1" ]; do
-        [ "$ticks" -lt 200 ] || return 1
+        if ! alive "$2"; then
+            [ -s "$1" ]
+            return
+        fi
+        [ "$ticks" -lt 2400 ] || return 1
         command -p sleep 0.05
         ticks=$((ticks + 1))
     done
 }
+
+# The wait for a guest command to start (#229). Beside an eight-worker run, a start
+# took up to 77 seconds, and every one of them started: a fixed bound failed a host
+# that was only slow. So the wait goes on while the call that starts the command is
+# alive, and fails at once when that call has gone without starting it.
+late="$SANDBOX/late"
+mkdir -p "$late"
+( command -p sleep 20; echo started > "$late/shell" ) &
+late_writer=$!
+if wait_for_file "$late/shell" "$late_writer"; then
+    ok "a start slower than any fixed bound is waited for while its call lives"
+else
+    bad "a start slower than any fixed bound is waited for while its call lives (gave up while it lived)"
+fi
+wait "$late_writer"
+( exit 0 ) &
+gone=$!
+wait "$gone"
+waited=$SECONDS
+if wait_for_file "$late/never" "$gone"; then
+    bad "a call that ended without starting the command fails the wait (the wait succeeded)"
+elif [ $((SECONDS - waited)) -lt 3 ]; then
+    ok "a call that ended without starting the command fails the wait at once"
+else
+    bad "a call that ended without starting the command fails the wait at once (it took $((SECONDS - waited))s)"
+fi
 
 # The guest command, one per kind. Each records the shell's PID and its child's.
 guest_command() {
@@ -172,7 +206,7 @@ start_session() {
     "$VM" session "$BASH" -c '"$1" "$2" "$3"' flth-session "$VM" "$sub" "$command" > "$dir/log" 2>&1 &
     SESSION=$!
     set +m
-    if wait_for_file "$dir/shell" && wait_for_file "$dir/child"; then
+    if wait_for_file "$dir/shell" "$SESSION" && wait_for_file "$dir/child" "$SESSION"; then
         ok "$(basename "$dir"): the guest command started"
     else
         bad "$(basename "$dir"): the guest command never started: $(cat "$dir/log")"
@@ -267,7 +301,7 @@ set -m
 "$VM" run "$(guest_command plain "$killed")" > "$killed/log" 2>&1 &
 killed_call=$!
 set +m
-if wait_for_file "$killed/shell" && wait_for_file "$killed/child"; then
+if wait_for_file "$killed/shell" "$killed_call" && wait_for_file "$killed/child" "$killed_call"; then
     ok "killed: the guest command started"
 else
     bad "killed: the guest command never started: $(cat "$killed/log")"
@@ -282,7 +316,7 @@ direct="$SANDBOX/direct"
 mkdir -p "$direct"
 "$VM" run "$(guest_command plain "$direct")" > "$direct/log" 2>&1 &
 direct_call=$!
-if wait_for_file "$direct/shell" && wait_for_file "$direct/child"; then
+if wait_for_file "$direct/shell" "$direct_call" && wait_for_file "$direct/child" "$direct_call"; then
     ok "direct: the guest command started"
 else
     bad "direct: the guest command never started: $(cat "$direct/log")"
