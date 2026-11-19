@@ -48,7 +48,9 @@
 #                 takes setup and new logins, then powers off on time (#150); a
 #                 call re-arms it inside a window of a sixth of it (#152)
 #   watchdog      a process stuck in uninterruptible sleep ends the guest within
-#                 the watchdog's limit, and the call it held says why (#190)
+#                 the watchdog's limit, and the call it held says why; a guest
+#                 that stops answering ends within the silent limit, and each of
+#                 two sessions on it says why (#190)
 #   kernel        a consumer whose setup installs a kernel is refused, naming
 #                 both kernels: the shared guest does not restart for it (#157)
 #   test          a passing suite passes and the guest stays up; a CORRUPTED
@@ -887,6 +889,74 @@ stuck_vm down
 check_eq "$?" 0 "down clears up after a guest the watchdog ended"
 stuck_vm destroy
 check_eq "$?" 0 "the guest the watchdog ended is destroyed"
+
+step "watchdog: a guest that stops answering ends, and each session on it says why (#190)"
+# The oracle is QEMU's own monitor: `stop` pauses every vCPU, so the guest answers
+# nothing while its process lives on. Two sessions, each a run of its own, hold a
+# call into it. The watchdog must end the guest within its silent limit and tell both
+# suites why; neither may read it as its own failure. Each session's ssh keeps alive
+# for ten minutes, so it is the watchdog that ends the call and not ssh giving up.
+silent_vm() { FLTH_WATCHDOG_INTERVAL=5 FLTH_WATCHDOG_SILENT_SECS=30 "$VM" "$@"; }
+silent_dir="$CONTENDER/silent"
+mkdir -p "$silent_dir"
+# Boot: the watchdog takes its silent limit from the `up` that starts it.
+silent_vm destroy >/dev/null 2>&1 || true
+silent_vm up
+rc=$?
+check_eq "$rc" 0 "a guest boots with a watchdog whose silent limit is 30s"
+boot_or_stop "$rc"
+silent_session() {
+    # silent_session <name> <guest command>: a session holding one call, in the background
+    FLTH_TEST_SSH_ALIVE_INTERVAL=30 FLTH_TEST_SSH_ALIVE_COUNT=20 \
+        perl -e 'alarm shift; exec @ARGV or exit 127' 900 "$VM" session bash -c '"$1" run "$2"' \
+        "flth-silent-$1" "$VM" "$2" > "$silent_dir/$1.out" 2> "$silent_dir/$1.err" &
+    silent_pid=$!
+}
+silent_session one 'sleep 1011'
+silent_one=$silent_pid
+silent_session two 'sleep 1012'
+silent_two=$silent_pid
+check_true 'wait_guest_runs "sleep 1011" 1' "the first session's command is running in the guest" "the first session's command never showed in the guest"
+check_true 'wait_guest_runs "sleep 1012" 1' "the second session's too" "the second session's command never showed in the guest"
+silent_machine="$(silent_vm config | sed -n 's/^machine=//p')"
+silent_runs() { cat "$silent_machine"/sessions/* 2>/dev/null | awk -F '\t' '$4 != ""' | wc -l | tr -d ' '; }
+check_eq "$(silent_runs)" 2 "the guest lists both sessions, each with a run of its own"
+t0=$(date +%s)
+monitor stop >/dev/null
+check_eq "$?" 0 "QEMU's monitor pauses the guest under both sessions"
+# Bounded on the host: a watchdog that never ends the guest fails this step in five
+# minutes, and the guest is then forced down the way the watchdog would have done it.
+silent_waited=0
+while [ "$silent_waited" -lt 300 ] &&
+    { kill -0 "$silent_one" 2>/dev/null || kill -0 "$silent_two" 2>/dev/null; }; do
+    sleep 1
+    silent_waited=$((silent_waited + 1))
+done
+if [ "$silent_waited" -ge 300 ]; then
+    bounded 120 "$VM" watchdog-end "smoke: the watchdog did not end the silent guest in 300s" >/dev/null 2>&1
+fi
+took=$(( $(date +%s) - t0 ))
+wait "$silent_one"
+check_eq "$?" 75 "the first session fails with the watchdog's own status"
+wait "$silent_two"
+check_eq "$?" 75 "and so does the second"
+check_contains "$(cat "$silent_dir/one.err")" "the watchdog ended this guest: the guest did not answer for " \
+    "the first session says the guest stopped answering"
+check_contains "$(cat "$silent_dir/one.err")" "This is not a failure of the suite" "and that it is not its suite's failure"
+check_contains "$(cat "$silent_dir/two.err")" "the watchdog ended this guest: the guest did not answer for " \
+    "the second session says so too"
+check_contains "$(cat "$silent_dir/two.err")" "This is not a failure of the suite" "and that it is not its suite's failure either"
+check_true '[ "$took" -le 240 ]' "and the guest ends within its limit: ${took}s for a 30s limit" \
+    "the guest took ${took}s to end, for a 30s limit"
+check_contains "$(cat "$silent_machine/watchdog.log" 2>/dev/null)" "warning: the guest did not answer: " \
+    "the watchdog warned of each missed answer before it ended the guest"
+check_contains "$(silent_vm status 2>&1)" "the watchdog ended it: the guest did not answer for " \
+    "status says the watchdog ended it, and why"
+check_eq "$(state)" not-running "the guest is gone, so the next run boots another"
+silent_vm down
+check_eq "$?" 0 "down clears up after a guest the watchdog ended"
+silent_vm destroy
+check_eq "$?" 0 "the guest that stopped answering is destroyed"
 
 step "kernel: a setup that installs a kernel is refused on the shared guest (#157)"
 # The shared guest does not restart for one consumer's setup, so its tests would run
