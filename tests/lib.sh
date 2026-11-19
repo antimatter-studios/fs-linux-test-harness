@@ -63,7 +63,10 @@ new_sandbox() {
     # which no way of ending the test can leave answering yes.
     export FLTH_TEST_PID=$$
     export FLTH_CACHE_DIR="$SANDBOX/cache"
-    export FLTH_STATE_DIR="$SANDBOX/state"
+    # Spotlight never looks inside a directory named *.noindex. Elsewhere under an
+    # indexed TMPDIR it opens a new file for a moment, and the QEMU artifact helper
+    # keeps a file another process has open, so it kept a fixture by chance (#129).
+    export FLTH_STATE_DIR="$SANDBOX/state.noindex"
     unset FLTH_CONFIG
     # What a guest or a person's shell leaves set, which sends a test somewhere else.
     unset FLTH_GUEST FLTH_SHARED_ROOT FLTH_SHARED_MEMORY FLTH_SHARED_CPUS FLTH_SHARED_DISK FLTH_SHARED_DEADLINE

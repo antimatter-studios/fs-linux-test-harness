@@ -50,6 +50,11 @@ cp "$ARTIFACT_TEST/record/lsof" "$ARTIFACT_TEST/record/ps"
 chmod +x "$ARTIFACT_TEST/record/lsof" "$ARTIFACT_TEST/record/ps"
 export PATH="$ARTIFACT_TEST/record:$ARTIFACT_TEST/bin:$PATH"
 artifacts="$FLTH_STATE_DIR/tmp"
+# The helper keeps a file another process has open, as it must. On macOS Spotlight's
+# mdworker opens a new file under an indexed directory for a moment, so a fixture
+# there was kept by chance and `up` exited 19 (#129). Spotlight never looks inside a
+# directory named *.noindex, so the fixtures have to be in one.
+check_contains "$artifacts/" ".noindex/" "the fixtures are where Spotlight never opens them (#129)"
 memory="$artifacts/vagrant-qemu-vq_abandoned-mem"
 pidfile="$artifacts/vqemu-vq_abandoned-virtiofs0.sock.pid"
 for action in halt destroy up; do

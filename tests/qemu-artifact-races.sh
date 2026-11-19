@@ -7,6 +7,9 @@ export FLTH_HARNESS="$REPO"
 export ARTIFACT_RACE="$SANDBOX/race"
 mkdir -p "$ARTIFACT_RACE/bin" "$FLTH_STATE_DIR/tmp"
 export ARTIFACT_MEMORY="$FLTH_STATE_DIR/tmp/vagrant-qemu-vq_race-mem"
+# A file another process has open is kept, and Spotlight opens a new file under an
+# indexed directory on macOS, which would keep a fixture here by chance (#129).
+check_contains "$ARTIFACT_MEMORY" ".noindex/" "the fixtures are where Spotlight never opens them (#129)"
 # A loaded host takes seconds over each interpreter that starts, so these wait on
 # the marker with a bound a load of 400 does not reach. Only a failure waits it out.
 wait_for_marker() {
