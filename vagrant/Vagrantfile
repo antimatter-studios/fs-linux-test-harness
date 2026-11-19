@@ -90,7 +90,7 @@ console_log = flth_env("FLTH_VM_CONSOLE_LOG", %r{\A/[A-Za-z0-9._/ -]*\z}, "an ab
 # pcie.0, so free pcie-root-ports are reserved at boot, one per tree that can be
 # attached at once. io-reserve=0, or the 64 KiB of IO space runs out at about ten
 # ports. Packed eight to a device number, multifunction, from 0x11, clear of the
-# cache disk at 0x10 and of the q35 chipset at 0x1f. Each port has a chassis and
+# provider's own devices and of the q35 chipset at 0x1f. Each port has a chassis and
 # slot of its own, which is the name the guest gives its slot.
 #
 # virtiofsd reaches the guest's memory only through a memory backend with
@@ -128,42 +128,6 @@ hotplug_args = ["-object", memory_backend, "-numa", "node,memdev=flth_mem"] + po
 # prints its tail when a boot fails.
 console_args = ["-set", "chardev.ser0.logfile=#{console_log}", "-set", "chardev.ser0.logappend=off"]
 
-# THE DECLARED CACHE (#39): a raw disk image scripts/lib/engine-vagrant.sh
-# makes in the machine directory when the consumer's config has a [cache]
-# section, and the only thing a disposable boot writes that outlives it.
-# Empty when none is declared; optional, unlike every value above, because
-# most consumers keep nothing.
-#
-# IT IS ATTACHED THROUGH extra_qemu_args, NEVER AS A PROVIDER DISK. The
-# provider applies extra_drive_args — snapshot=on on a disposable boot —
-# to every drive it attaches, its extra disks included, and a cache that
-# reached that list would be discarded with the run it exists to outlive.
-# The serial is how the guest finds it: /dev/disk/by-id/virtio-<serial>,
-# whatever order the disks were probed in. At most 20 characters.
-#
-# ITS PCI SLOT IS FIXED, AFTER THE MACHINE'S OWN DISK. QEMU creates every
-# -device before the device an `-drive if=virtio` implies, so a cache
-# left to take the next free slot was found ahead of the provider's disk.
-# A BIOS boots the first disk it finds, and on Linux x86_64 that was the
-# empty cache: the guest never came up. Slot 0x10 is free on q35 and on
-# virt, and above every slot the provider's own devices are given.
-cache_disk = ENV["FLTH_VM_CACHE_DISK"].to_s
-unless cache_disk.empty? || cache_disk =~ %r{\A/[A-Za-z0-9._/ -]*\z}
-  raise "FLTH_VM_CACHE_DISK must be an absolute path, got #{cache_disk.inspect}"
-end
-cache_guest = "/cache"
-cache_id = "flth_cache"
-cache_serial = "flth-cache"
-cache_args =
-  if cache_disk.empty?
-    []
-  else
-    %W(
-      -drive if=none,id=#{cache_id},file=#{cache_disk.gsub(",", ",,")},format=raw
-      -device virtio-blk-pci,drive=#{cache_id},serial=#{cache_serial},addr=0x10
-    )
-  end
-
 # THE KERNEL A RUN PROFILE'S PREPARATION CHOSE (#80, #225). The macOS box
 # has no bootloader in its boot path: its own Vagrantfile sets
 # firmware_format = nil and passes -kernel and -initrd naming files beside the
@@ -174,7 +138,7 @@ cache_args =
 # takes the last -kernel and -initrd it is given. A run profile also captures
 # the root command line and supplies -append; this enables exact direct boots on
 # Linux too. Without it a Linux guest keeps choosing its kernel through GRUB.
-# Optional, like the cache: empty until a preparation boot leaves a kernel.
+# Optional: empty until a preparation boot leaves a kernel.
 boot_files = %w[FLTH_VM_BOOT_KERNEL FLTH_VM_BOOT_INITRD].map do |name|
   value = ENV[name].to_s
   unless value.empty? || value =~ %r{\A/[A-Za-z0-9._/ -]*\z}
@@ -198,7 +162,7 @@ end
 # kvm-probe workflow's debian-13-boot job): the box under plain QEMU
 # boots; add only `-vga none` and it resets 384 times in a minute; add
 # `-vga std` after it and it boots again. The other additions the harness
-# makes (the shares, the cache disk at 0x10, `-parallel none`) change
+# makes (the shares, `-parallel none`) change
 # nothing. Debian 12 boots either way. A later `-vga` replaces an earlier
 # one, so this gives the guest a standard VGA it never shows anywhere
 # (`-display none`), and its console is still the serial port.
@@ -313,7 +277,7 @@ Vagrant.configure("2") do |config|
       # The virtiofsd a run's tree is served by is the harness's own, started
       # with the flags this provider used for its folders
       # (scripts/lib/engine-vagrant.sh, engine_vagrant_virtiofsd_args).
-      qe.extra_qemu_args = console_args + cache_args + kernel_args + hotplug_args
+      qe.extra_qemu_args = console_args + kernel_args + hotplug_args
     when :linux_arm64
       qe.arch = "aarch64"
       qe.machine = "virt,accel=kvm,highmem=on"
@@ -328,7 +292,7 @@ Vagrant.configure("2") do |config|
     end
 
     if host != :macos_arm64
-      qe.extra_qemu_args = console_args + cache_args + display_args + hotplug_args +
+      qe.extra_qemu_args = console_args + display_args + hotplug_args +
                            (boot_cmdline.empty? ? [] : kernel_args)
     end
   end
@@ -379,13 +343,6 @@ Vagrant.configure("2") do |config|
     config.notify_forwarder.binaries = {
       [:linux, :arm64] => ["file://#{URI::DEFAULT_PARSER.escape(receiver_off)}", Digest::SHA256.file(receiver_off).hexdigest],
     }
-  end
-
-  # The declared cache, at the same place on every boot. The guest gives
-  # a new disk the filesystem its own root uses, so the harness names none.
-  unless cache_disk.empty?
-    config.vm.provision "cache", type: "shell", run: "always",
-                        path: "guest/mount-cache.sh", args: [cache_serial, cache_guest]
   end
 
   # A DEADLINE THE HOST CANNOT FAIL TO ENFORCE. Every other teardown is

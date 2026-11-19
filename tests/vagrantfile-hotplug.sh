@@ -77,7 +77,7 @@ qemu_args() { printf '%s' "$json" | ruby -rjson -e 'd = JSON.parse(STDIN.read); 
 # Everything the Vagrantfile reads, and nothing about a host directory to share.
 export FLTH_VM_NAME=shared-debian-12 FLTH_VM_MEMORY=2G FLTH_VM_CPUS=2 FLTH_VM_DISK=16G FLTH_VM_SSH_PORT=50200
 export FLTH_VM_DEADLINE_MINUTES=480 FLTH_QEMU_DIR="$SANDBOX/fw" FLTH_VM_GUEST=debian-12
-export FLTH_VM_DISPOSABLE=1 FLTH_VM_CACHE_DISK="" FLTH_VM_CONSOLE_LOG="$SANDBOX/console.log"
+export FLTH_VM_DISPOSABLE=1 FLTH_VM_CONSOLE_LOG="$SANDBOX/console.log"
 export FLTH_VM_QMP="$SANDBOX/qmp.sock" FLTH_VM_SLOTS=32 FLTH_VM_MEM_DIR="$SANDBOX/mem"
 unset FLTH_SHARE_DIR FLTH_REPO_DIR
 

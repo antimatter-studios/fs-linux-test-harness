@@ -28,11 +28,7 @@
 #                              writes to the machine's disk is thrown
 #                              away when it stops, however it stops.
 #                              With --persist the writes are kept; that
-#                              is for applying the setup script only.
-#                              A consumer that declares a cache
-#                              ([cache] size) has it at
-#                              FLTH_CACHE_GUEST on EVERY boot, and what
-#                              is written there is kept either way.
+#                              is for a run profile's preparation only.
 #   engine_box_failure         after a failed engine_up: exit 0 and print
 #                              where the box comes from and what it
 #                              answered, when no VM started because the
@@ -46,19 +42,16 @@
 #   engine_down [--force]      ask the VM to stop. Its exit status is
 #                              NOT trusted; callers confirm with
 #                              engine_state.
-#   engine_destroy             delete the VM, its disk and its cache
+#   engine_destroy             delete the VM, its disk and the boot files
+#                              a run profile's preparation kept from it
 #   engine_stop_host_daemons   stop what a boot left running on the host
 #                              beside a VM that has already gone
-#   engine_forget_kernel       drop the boot files a run profile's
-#                              preparation kept, when the disk they came
-#                              from is gone
 #   engine_attach_tree <run> <dir>
 #                              attach a host directory to the running guest
 #                              as the run's device, tagged with the run id,
 #                              served by a virtiofsd of its own (#222)
 #   engine_tree_attached <run> 0 attached, 1 not, 3 attached with its
 #                              virtiofsd gone
-#   engine_tree_slot <run>     the slot its device is on
 #   engine_detach_tree <run>   remove the device, then stop its daemon; the
 #                              guest has let go of the mount already
 #   engine_attached_runs       the runs with a device, one a line

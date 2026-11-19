@@ -74,7 +74,6 @@ jobs:
         run: |
           set +e
           img="$(find ~/.vagrant.d/boxes -path "*debian-13*" -name '*.img' | head -1)"
-          truncate -s 1G /tmp/cache.img
           run() {
             tag="$1"; shift
             qemu-img create -q -f qcow2 -F qcow2 -b "$img" "/tmp/$tag.qcow2"
@@ -88,7 +87,6 @@ jobs:
           run plain
           run vga-none -vga none
           run parallel-none -parallel none
-          run cache-disk -drive if=none,id=c,file=/tmp/cache.img,format=raw -device virtio-blk-pci,drive=c,serial=flth-cache,addr=0x10
           run vga-none-then-std -vga none -vga std
           run vga-none-plus-device -vga none -device VGA
 
