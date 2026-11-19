@@ -5,9 +5,12 @@
 # the root ports flth_rp1..<slots> and the devices added since, as
 # /machine/peripheral's children; a device's parent_bus; chardev-add and -remove;
 # device_add and device_del, which removes the device at once, as q35's ACPI unplug
-# does in tens of milliseconds. Every command is appended to <socket>.log. It serves
-# one connection at a time, and ends with its owner (the stand-in QEMU), or with the
-# test (FLTH_TEST_PID), whichever goes first.
+# does in tens of milliseconds. A chardev is connected to its socket for as long as it
+# exists, as QEMU connects to a virtiofsd, so the stand-in daemon sees it go (#262).
+# x-flth-slot-off is not QEMU's: it is what QEMU does when the guest powers a slot off,
+# for a test whose stand-in guest was asked to. Every command is appended to
+# <socket>.log. It serves one connection at a time, and ends with its owner (the
+# stand-in QEMU), or with the test (FLTH_TEST_PID), whichever goes first.
 use strict;
 use warnings;
 use IO::Select;
@@ -46,7 +49,10 @@ while (1) {
             if (exists $devices{$id}) { reply($client, { return => "/machine/peripheral/$devices{$id}/$devices{$id}" }) }
             else { reply($client, { error => { class => "DeviceNotFound", desc => "Device '$id' not found" } }) }
         } elsif ($cmd eq "chardev-add") {
-            $chardevs{ $a->{id} } = 1;
+            # A path nothing listens on is still a chardev here: a test adds one so.
+            my $path = eval { $a->{backend}{data}{addr}{data}{path} };
+            my $peer = defined $path ? IO::Socket::UNIX->new(Type => SOCK_STREAM(), Peer => $path) : undef;
+            $chardevs{ $a->{id} } = $peer // 1;
             reply($client, { return => {} });
         } elsif ($cmd eq "chardev-remove") {
             delete $chardevs{ $a->{id} };
@@ -58,6 +64,10 @@ while (1) {
                 $devices{ $a->{id} } = $a->{bus};
                 reply($client, { return => {} });
             }
+        } elsif ($cmd eq "x-flth-slot-off") {
+            my $bus = "flth_rp$a->{slot}";
+            delete $devices{$_} for grep { $devices{$_} eq $bus } keys %devices;
+            reply($client, { return => {} });
         } elsif ($cmd eq "device_del") {
             if (delete $devices{ $a->{id} }) { reply($client, { return => {} }) }
             else { reply($client, { error => { class => "DeviceNotFound", desc => "Device '$a->{id}' not found" } }) }

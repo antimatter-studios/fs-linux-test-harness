@@ -18,6 +18,8 @@
 #   - a session's end leaves the shared guest up (#220), and then the daemons
 #     survive and every descendant of the command still ends, within the
 #     session's own bound;
+#   - that end waits out neither of the engine's bounds on a detach (#262): the guest
+#     powers the run's slot off, and the run's virtiofsd leaves with its device;
 #   - a `down` after it leaves nothing, although the provider's halt does not
 #     stop the forwarders itself;
 #   - a guest that powered itself off leaves no forwarder when its session ends;
@@ -50,8 +52,16 @@ printf '#!/bin/sh\nexit 1\n' > "$BIN/pgrep"
 cat > "$BIN/ssh" <<'STUB'
 #!/bin/sh
 # To the end of the script, not of stdin: a call into the guest holds stdin open
-# for as long as it lives, and ends its script with this line.
+# for as long as it lives, and ends its script with this line. A slot the guest is
+# told to power off goes, as it does on a real guest (#262).
 while IFS= read -r line; do
+    case "$line" in
+        'echo 0 > /sys/bus/pci/slots/'*/power)
+            slot="${line#echo 0 > /sys/bus/pci/slots/}"
+            perl "$(dirname "$VM")/lib/qmp.pl" "$FLTH_VM_QMP" \
+                "{\"execute\":\"x-flth-slot-off\",\"arguments\":{\"slot\":${slot%/power}}}" >/dev/null
+            ;;
+    esac
     [ "$line" != 'exit "$flth_status"' ] || break
 done
 exit 0
@@ -203,16 +213,18 @@ start_session() {
     set +m
 }
 
-# How long a session may take to end after its signal. The cases end in 1 to 11
-# seconds on a quiet Apple Silicon host and in 1 to 24 on a hosted Linux runner
-# (20, 24 and 20 seconds in CI on pull request 259); part of that is the
-# end's own waiting, which a busy host does not shorten, and its work costs a
-# busy host more. A bound near those figures fails a runner that is merely slow,
-# which says nothing about the session (#254), so the bound is nearly four times
-# the longest end measured. A session that waits on something that never ends is
-# far past it, and the watchdog below stops it.
+# How long a session may take to end after its signal. A bound near what a session
+# takes fails a runner that is merely slow, which says nothing about the session
+# (#254), so this one only catches a session waiting on something that never ends,
+# which the watchdog below then stops. What a session's end waits for is held by the
+# checks in vm_stays_up instead (#262), which no runner's speed changes, and the time
+# each end took is in its check's name, for reading in a run's log.
 SESSION_BOUND="${FLTH_TEST_SESSION_BOUND:-90}"
 SESSION_WATCHDOG=$((SESSION_BOUND + 30))
+
+# What the stand-in QMP was asked, and what became of each run's stand-in virtiofsd.
+export FLTH_TEST_VFS_LOG="$STUB/virtiofsd.log"
+QMP_LOG="$(cd "$ONE" && "$VM" config | sed -n 's/^qmp=//p').log"
 
 # Signals the session and leaves STATUS and ELAPSED; bounded by a watchdog, so a
 # session that will not end fails here instead of holding the suite.
@@ -238,7 +250,7 @@ check_session_bound() {
     elif [ "$ELAPSED" -ge "$SESSION_BOUND" ]; then
         bad "$1: the session took $ELAPSED seconds, and its bound is $SESSION_BOUND"
     else
-        ok "$1: the session ends within its bound"
+        ok "$1: the session ends within its bound (${ELAPSED}s of ${SESSION_BOUND}s)"
     fi
 }
 
@@ -265,8 +277,8 @@ clean_up() {
 # The session ended, the VM stayed: the daemons are where it needs them, and
 # everything of the command's is gone.
 vm_stays_up() {
-    # vm_stays_up <label> <delivery> <worktree>
-    local label="$1" delivery="$2" worktree="$3" name group pid
+    # vm_stays_up <label> <delivery> <worktree> [<trees the run has attached>]
+    local label="$1" delivery="$2" worktree="$3" trees="${4:-1}" name group pid
     start_session "$label" "$worktree"
     if wait_until 600 file_exists "$CASE/ready"; then
         ok "$label: the command booted the VM"
@@ -283,9 +295,17 @@ vm_stays_up() {
         fi
     done
     pid="$(cat "$CASE/descendant" 2>/dev/null)"
+    : > "$QMP_LOG"
+    : > "$FLTH_TEST_VFS_LOG"
     signal_session "$delivery"
     check_eq "$STATUS" 143 "$label: the session exits 143"
     check_session_bound "$label"
+    # Each of these is a bound the end would otherwise sit out in full: three seconds
+    # for the slot, then five for the daemon.
+    check_eq "$(grep -c '"execute":"device_del"' "$QMP_LOG")" 0 \
+        "$label: the guest powered the run's slot off, so the end did not wait for it"
+    check_eq "$(grep -c '^client-left$' "$FLTH_TEST_VFS_LOG")" "$trees" \
+        "$label: the run's virtiofsd left with its device, so the end did not wait to stop it"
     if dead "$pid"; then
         ok "$label: the command's descendant has ended"
     else
@@ -334,8 +354,9 @@ export HOLD_AFTER_UP=1
 vm_stays_up held process "$ONE"
 unset HOLD_AFTER_UP
 
+# The boot is the other worktree's, so this run has no tree of its own to detach.
 UP_FROM="$ONE"
-vm_stays_up other-worktree process "$TWO"
+vm_stays_up other-worktree process "$TWO" 0
 UP_FROM=""
 
 # --- And a command that simply ends: the guest stays, and a down leaves nothing.
