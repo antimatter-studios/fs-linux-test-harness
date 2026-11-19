@@ -145,6 +145,32 @@ wait_for_file() {
     done
 }
 
+# The wait for a guest command to start (#229). Beside an eight-worker run, a start
+# took up to 77 seconds, and every one of them started: a fixed bound failed a host
+# that was only slow. So the wait goes on while the call that starts the command is
+# alive, and fails at once when that call has gone without starting it.
+late="$SANDBOX/late"
+mkdir -p "$late"
+( command -p sleep 20; echo started > "$late/shell" ) &
+late_writer=$!
+if wait_for_file "$late/shell" "$late_writer"; then
+    ok "a start slower than any fixed bound is waited for while its call lives"
+else
+    bad "a start slower than any fixed bound is waited for while its call lives (gave up while it lived)"
+fi
+wait "$late_writer"
+( exit 0 ) &
+gone=$!
+wait "$gone"
+waited=$SECONDS
+if wait_for_file "$late/never" "$gone"; then
+    bad "a call that ended without starting the command fails the wait (the wait succeeded)"
+elif [ $((SECONDS - waited)) -lt 3 ]; then
+    ok "a call that ended without starting the command fails the wait at once"
+else
+    bad "a call that ended without starting the command fails the wait at once (it took $((SECONDS - waited))s)"
+fi
+
 # The guest command, one per kind. Each records the shell's PID and its child's.
 guest_command() {
     # guest_command <kind> <dir>
