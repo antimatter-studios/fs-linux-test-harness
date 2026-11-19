@@ -42,6 +42,7 @@ flth_die() {
 flth_load() {
     FLTH_CONFIG="$(flth_find_config)" || return 1
     export FLTH_CONFIG
+    flth_resource_profile_load || return 1
     flth_config_load "$FLTH_CONFIG" || return 1
     flth_profile_load || return 1
     FLTH_SHARE_HOST="$FLTH_ROOT/$CFG_share_dir"
@@ -50,14 +51,71 @@ flth_load() {
     FLTH_HOLD="$FLTH_MACHINE_DIR/keep-running"
 }
 
+# Resource profiles are host-wide defaults for the shared guest's memory and
+# CPUs and for guest build jobs. Explicit FLTH_SHARED_* and FLTH_BUILD_JOBS
+# values override them; unset selects from the host running the harness, not
+# the guest being booted. A profile never sets FLTH_SHARED_SLOTS: a worktree's
+# standing run holds a slot for the life of the guest, so `up` and a session
+# already need two, and a root port costs little (#264).
+# flth_detect_resource_profile <uname -s> <GITHUB_ACTIONS> [<device-tree model>]
+flth_detect_resource_profile() {
+    local host="$1" github_actions="$2" model="${3:-}"
+    [ "$github_actions" != true ] || { printf '%s\n' low; return; }
+    case "$host" in
+        Darwin) printf '%s\n' high ;;
+        Linux)
+            if [ -z "$model" ] && [ -r /proc/device-tree/model ]; then
+                model="$(tr -d '\000' < /proc/device-tree/model 2>/dev/null || true)"
+            fi
+            case "$model" in
+                *Raspberry*Pi*) printf '%s\n' medium ;;
+                *) printf '%s\n' low ;;
+            esac
+            ;;
+        *) printf '%s\n' low ;;
+    esac
+}
+
+flth_resource_profile_load() {
+    if [ "${FLTH_PROFILE+x}" = x ]; then
+        flth_config_error "FLTH_PROFILE was removed; use FLTH_VM_PROFILE"
+        return 1
+    fi
+    if [ "${FLTH_PROFILE_DIR+x}" = x ]; then
+        flth_config_error "FLTH_PROFILE_DIR was removed; use FLTH_VM_PROFILE_DIR"
+        return 1
+    fi
+    FLTH_RESOURCE_PROFILE_NAME="${FLTH_RESOURCE_PROFILE:-}"
+    [ -n "$FLTH_RESOURCE_PROFILE_NAME" ] || FLTH_RESOURCE_PROFILE_NAME="$(flth_detect_resource_profile "$(uname -s)" "${GITHUB_ACTIONS:-}")"
+    case "$FLTH_RESOURCE_PROFILE_NAME" in
+        high)
+            FLTH_BUILD_JOBS_DEFAULT=8
+            FLTH_SHARED_MEMORY_DEFAULT=8G
+            FLTH_SHARED_CPUS_DEFAULT=8
+            ;;
+        medium)
+            FLTH_BUILD_JOBS_DEFAULT=2
+            FLTH_SHARED_MEMORY_DEFAULT=4G
+            FLTH_SHARED_CPUS_DEFAULT=2
+            ;;
+        low)
+            FLTH_BUILD_JOBS_DEFAULT=1
+            FLTH_SHARED_MEMORY_DEFAULT=2G
+            FLTH_SHARED_CPUS_DEFAULT=2
+            ;;
+        *)
+            flth_config_error "FLTH_RESOURCE_PROFILE must be high, medium or low, got '$FLTH_RESOURCE_PROFILE_NAME'"
+            return 1
+            ;;
+    esac
+    FLTH_SHARED_DISK_DEFAULT=64G
+}
+
 # THE SHARED GUEST (#153, #220, #222). Suites with the same run environment use
 # one guest. The machine is therefore nobody's: it is named for its profile (or
 # its default guest release), and what a
 # consumer's [vm] section says about memory, CPUs, disk, the SSH port and the
 # deadline is not read. A host with other needs says so here.
-FLTH_SHARED_MEMORY_DEFAULT=8G
-FLTH_SHARED_CPUS_DEFAULT=8
-FLTH_SHARED_DISK_DEFAULT=64G
 FLTH_SHARED_SSH_PORT=50200
 FLTH_SHARED_DEADLINE_MINUTES=480
 

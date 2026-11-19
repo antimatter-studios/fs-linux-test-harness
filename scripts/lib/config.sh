@@ -26,7 +26,7 @@
 #   [project] name              string, required
 #   [vm]      memory            string, default "2G"
 #   [vm]      cpus              integer, default 4
-#   [vm]      build_jobs        integer, default 1; environment override
+#   [vm]      build_jobs        integer, resource-profile default; environment override
 #   [vm]      disk              string, default "32G"
 #   [vm]      ssh_port          integer, default 50122
 #   [vm]      deadline_minutes  integer, default 480
@@ -115,7 +115,7 @@ flth_config_load() {
     # Shared-host method and results: docs/guest-memory-2026-11-03.md.
     CFG_vm_memory="2G"
     CFG_vm_cpus="4"
-    CFG_vm_build_jobs="1"
+    CFG_vm_build_jobs="${FLTH_BUILD_JOBS_DEFAULT:-1}"
     CFG_vm_disk="32G"
     CFG_vm_ssh_port="50122"
     CFG_vm_deadline_minutes="480"
@@ -210,7 +210,9 @@ flth_config_load() {
                 { flth_config_error "$file: [cache] size must look like 16G, got '$CFG_cache_size'"; return 1; }
             ;;
     esac
-    CFG_vm_build_jobs="${CARGO_BUILD_JOBS:-$CFG_vm_build_jobs}"
+    # FLTH_BUILD_JOBS is the harness's own name. The variable it is exported as in
+    # the guest is still read from the host below it, as before resource profiles (#264).
+    CFG_vm_build_jobs="${FLTH_BUILD_JOBS:-${CARGO_BUILD_JOBS:-$CFG_vm_build_jobs}}"
     flth_config_validate "$file"
 }
 

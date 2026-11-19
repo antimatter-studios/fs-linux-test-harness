@@ -11,6 +11,8 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
+# These check the low profile's defaults.
+export FLTH_RESOURCE_PROFILE=low
 make_stub_harness
 VM="$STUB_HARNESS/scripts/vm.sh"
 MACHINE="$FLTH_CACHE_DIR/machines/shared-debian-12"
@@ -48,7 +50,7 @@ check_eq "$?" 0 "a suite that opted in boots"
 check_eq "$(cat "$FLTH_TEST_STUB/state")" running "the guest is up"
 check_eq "$([ -d "$MACHINE" ] && echo one)" one "on the one machine every consumer that opted in shares"
 check_eq "$([ -e "$FLTH_CACHE_DIR/machines/shared-one" ] && echo own)" "" "and not on a machine of its own"
-check_contains "$(two config)" "vm.memory=8G" "the shared machine's memory is its own, not a consumer's"
+check_contains "$(two config)" "vm.memory=2G" "the shared machine's memory is its own, not a consumer's"
 check_contains "$(FLTH_SHARED_MEMORY=12G two config)" "vm.memory=12G" "and a host can change it"
 
 suite; A=$SUITE; suites="$suites $A"

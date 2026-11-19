@@ -86,6 +86,10 @@ unset FLTH_SHARED_DEADLINE
 # chores.yml's net for a smoke run that never ends names the same directory.
 export FLTH_CACHE_DIR="${FLTH_SMOKE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fs-linux-test-harness-smoke}"
 # The shared machine's size, as a CI runner can give it.
+# The low profile, with the default 32 slots: a standing run and two sessions,
+# and later two standing runs and two suites, all fit (#264).
+export FLTH_RESOURCE_PROFILE=low FLTH_BUILD_JOBS=1
+unset FLTH_SHARED_SLOTS
 export FLTH_SHARED_MEMORY=2G FLTH_SHARED_CPUS=2 FLTH_SHARED_DISK=16G
 # Looks often enough to be seen here, with the limits as a consumer gets them.
 export FLTH_WATCHDOG_INTERVAL=5
@@ -185,7 +189,7 @@ profile_pids=""
 profile_vm() {
     local consumer="$1"; shift
     FLTH_CONFIG="$CONTENDER/profile-$consumer/fs-linux-test-harness.toml" \
-        FLTH_PROFILE_DIR="$CONTENDER/run-profiles" "$VM" "$@"
+        FLTH_VM_PROFILE_DIR="$CONTENDER/run-profiles" "$VM" "$@"
 }
 cleanup() {
     step "cleanup: destroy the smoke VM"
@@ -463,7 +467,7 @@ done
 check_eq "$("$VM" run 'printf "%s" "${CARGO_BUILD_JOBS-unset}"' 2>/dev/null)" 1 'a real guest run exports one build job'
 check_eq "$("$VM" exec 'printf "%s" "${CARGO_BUILD_JOBS-unset}"' 2>/dev/null)" 1 'a real guest exec exports one build job'
 check_eq "$("$VM" run 'cat /share/setup-build-jobs' 2>/dev/null)" 1 'the real consumer setup receives one build job'
-check_eq "$(CARGO_BUILD_JOBS=2 "$VM" run 'printf "%s" "${CARGO_BUILD_JOBS-unset}"' 2>/dev/null)" 2 'a real guest receives an explicit build override'
+check_eq "$(FLTH_BUILD_JOBS=2 "$VM" run 'printf "%s" "${CARGO_BUILD_JOBS-unset}"' 2>/dev/null)" 2 'a real guest receives an explicit build override'
 
 step "apt-ready: the package manager's lock, as the guest's own dpkg sees it"
 # The boot ran vagrant/guest/apt-ready.sh; the consumer's setup then

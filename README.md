@@ -125,13 +125,14 @@ the locks are free it runs `dpkg --configure -a`, finishing any transaction
 an earlier boot was stopped in the middle of, so a setup script never meets
 "dpkg was interrupted" and needs no recovery of its own.
 
-Every guest command, including consumer setup, profile preparation and
-`vm:guest-test`, exports `CARGO_BUILD_JOBS=1` by default. This prevents a
-Cargo build from starting one compiler per guest CPU in a small guest.
-Set `[vm] build_jobs` to a positive integer to choose another limit, or set
-`CARGO_BUILD_JOBS` on the host for an individual invocation; the environment
-takes precedence over the config. The value is per call, so consumers
-sharing a guest keep their own limits. Commands on the host are unchanged.
+Every guest command, including consumer setup, VM-profile preparation and
+`vm:guest-test`, exports `FLTH_BUILD_JOBS` and maps the same limit to
+`CARGO_BUILD_JOBS` for Cargo consumers. The default comes from the host's
+resource profile. Set `[vm] build_jobs` for a consumer-specific default, or
+`FLTH_BUILD_JOBS` on the host for an invocation-wide override. A host
+`CARGO_BUILD_JOBS` still overrides the config too, below `FLTH_BUILD_JOBS`. The value is
+per call, so consumers sharing a guest keep their own build limits. Commands
+on the host are unchanged.
 
 **4. Use it.**
 
@@ -441,11 +442,11 @@ chose.
 | `[test] guest_command` | string | none | Run by `chore vm:guest-test` **inside the guest**, from `/repo` (this repository, mounted there read-write), with arguments appended and `FLTH_GUEST=1` set. Output streams as it happens and its exit status is the task's. The harness knows nothing about what it is: the `[setup]` script installs whatever the guest needs to run it — a compiler, an interpreter, a package manager's worth of tools — and anything the run should leave behind goes in the share. |
 | `[cache] size` | string | none | **Declares a cache that outlives a run**, e.g. `16G`. A directory of the shared guest's, mounted at `/cache` in every run of this consumer and kept across its runs for as long as the guest is up. It goes with the boot (#186), and the size is not enforced. For in-guest build state a run can rebuild but should not have to: point a toolchain's home or build directory under `/cache`. No `[cache]` section, no `/cache`. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
-| `[vm] build_jobs` | integer | `1` | Guest build concurrency, exported as `CARGO_BUILD_JOBS` for setup, profile preparation, `run`, `exec` and `guest-test`. Positive, at most six digits. Host `CARGO_BUILD_JOBS` overrides it. |
+| `[vm] build_jobs` | integer | resource profile | Guest build concurrency, exported as `FLTH_BUILD_JOBS` and mapped to `CARGO_BUILD_JOBS` for setup, VM-profile preparation, `run`, `exec` and `guest-test`. Positive, at most six digits. `FLTH_BUILD_JOBS`, then a host `CARGO_BUILD_JOBS`, overrides this config value. |
 | *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
 | `[vm] memory`, `[vm] cpus`, `[vm] disk`, `[vm] ssh_port`, `[vm] deadline_minutes` | | | **Read and validated, and not used.** They described the VM of its own a consumer had before the shared guest was the only one. The shared guest's size and deadline are the host's: `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` and `FLTH_SHARED_DEADLINE` (see [Environment](#environment)). They may be removed from a consumer's config. |
 | `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. Each release is a shared guest of its own (`machines/shared-<guest>/`). A consumer needing both runs a second config with its own `[project] name` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
-| `[vm] profile` | string | none | A named run environment from `run-profiles/<name>.toml`. The profile selects the base guest, pinned preparation script and optional exact kernel release and modules. Suites with identical resolved profiles share one VM. `FLTH_PROFILE` overrides this key for an individual suite. See [Run profiles](#run-profiles). |
+| `[vm] profile` | string | none | A named VM environment from `run-profiles/<name>.toml`. The profile selects the base guest, pinned preparation script and optional exact kernel release and modules. Suites with identical resolved profiles share one VM. `FLTH_VM_PROFILE` overrides this key for an individual suite. See [Run profiles](#run-profiles). |
 
 Paths may contain only letters, digits, `.`, `_`, `-` and `/`, must be
 relative, and must not leave the repository.
@@ -488,13 +489,15 @@ relative, and must not leave the repository.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `FLTH_CONFIG` | search upward | Path of the consumer's config. |
-| `CARGO_BUILD_JOBS` | `[vm] build_jobs`, otherwise `1` | Positive guest build limit, at most six digits. The host value overrides the config and is explicitly exported into each guest command. |
+| `FLTH_RESOURCE_PROFILE` | selected from host | Resource preset: `high`, `medium` or `low`. Host detection selects `high` on macOS, `medium` on a Raspberry Pi, and `low` on GitHub Actions or other hosts. |
+| `FLTH_BUILD_JOBS` | selected resource profile | Positive guest build limit, at most six digits. Overrides `[vm] build_jobs` and is exported into guest commands. |
+| `CARGO_BUILD_JOBS` | none | Read on the host when `FLTH_BUILD_JOBS` is unset, and overrides `[vm] build_jobs` the same way. |
 | `FLTH_TEST_MEMINFO` | `/proc/meminfo` on Linux | Explicit Linux host-memory fixture for stub-engine tests. It must contain a `MemAvailable:` field in KiB; missing or unreadable input refuses the boot. Leave unset for real host admission. |
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/shared-<guest>/`) and firmware links. Must be the same for every consumer on the host, or each gets a guest of its own. |
 | `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | Sockets and Vagrant's temporary directory, on a path short enough for a socket. |
 | `FLTH_SHARED_SLOTS` | `32` | How many runs' trees can be attached to the shared guest at once: the free PCIe root ports it boots with, 1–64. A run past it is refused, naming the setting. |
 | `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd` | The virtiofsd that serves a run's tree. |
-| `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | `8G`, `8`, `64G` | The size of the shared guest. |
+| `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | selected resource profile | Shared guest memory, virtual CPU count and disk size. Explicit values override the selected resource profile. |
 | `FLTH_SHARED_DEADLINE` | `480` | Minutes the shared guest stays up **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
 | `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. At most a quarter of the guest's total memory counts, so a small guest is not warned for its size. |
 | `FLTH_WATCHDOG` | on | `off` starts no [watchdog](#what-stops-a-vm) with a guest. |
@@ -505,8 +508,8 @@ relative, and must not leave the repository.
 | `FLTH_WATCHDOG_LOW_PERCENT` | `5` | Memory or disk left, as a percentage, below which it warns. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
 | `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
-| `FLTH_PROFILE` | `[vm] profile`, or none | Select a named run profile for this suite and its whole session. |
-| `FLTH_PROFILE_DIR` | `<consumer>/run-profiles` | Host directory containing profile manifests and their pinned preparation scripts; use one catalog across repositories if desired. |
+| `FLTH_VM_PROFILE` | `[vm] profile`, or none | Select a named VM/kernel profile for this suite and its whole session. `FLTH_PROFILE` is removed; setting it fails with a migration message. |
+| `FLTH_VM_PROFILE_DIR` | `<consumer>/run-profiles` | Host directory containing VM-profile manifests and their pinned preparation scripts; use one catalog across repositories if desired. `FLTH_PROFILE_DIR` is removed and fails with migration guidance. |
 | `FLTH_FIRMWARE_CODE`, `FLTH_FIRMWARE_VARS` | `/usr/share/AAVMF/AAVMF_{CODE,VARS}.fd` | UEFI firmware for arm64 guests on a Linux host. |
 
 ## The VM
@@ -794,8 +797,8 @@ Put `profile = "kernel-oracle"` in its config's `[vm]` section, or
 select a profile for a tier with an environment variable:
 
 ```sh
-FLTH_PROFILE=kernel-oracle chore test:vm
-FLTH_PROFILE=another-kernel chore test:vm
+FLTH_VM_PROFILE=kernel-oracle chore test:vm
+FLTH_VM_PROFILE=another-kernel chore test:vm
 ```
 
 Each selection applies to the whole session, including its `up`, `run`, `exec`,
@@ -881,9 +884,31 @@ Each profile has its own boot lock, suite list, lifecycle and hotplug devices.
 The existing host memory admission check applies before every preparation or
 runtime boot. Profiles do not reserve a machine-wide slot.
 
-Set `FLTH_PROFILE_DIR` to a common catalog directory when several repositories
+Set `FLTH_VM_PROFILE_DIR` to a common catalog directory when several repositories
 use the same definitions. Without a profile, the existing pinned guest and
 `machines/shared-<guest>/` identity are unchanged.
+
+## Resource profiles
+
+The harness chooses a resource profile from the host running it: `high` on
+macOS, `medium` on a Raspberry Pi, and `low` on GitHub Actions or an unrecognized
+host. Set `FLTH_RESOURCE_PROFILE=high`, `medium` or `low` to choose explicitly.
+The selected profile supplies build jobs and the shared guest's memory and
+CPUs; `FLTH_BUILD_JOBS`, `FLTH_SHARED_MEMORY` and `FLTH_SHARED_CPUS` override
+those defaults. Guest memory and CPUs take effect when the shared guest next
+boots; build jobs apply to each call.
+
+| Profile | Guest memory | Guest CPUs | Build jobs |
+| --- | ---: | ---: | ---: |
+| `high` | 8G | 8 | 8 |
+| `medium` | 4G | 2 | 2 |
+| `low` | 2G | 2 | 1 |
+
+A profile does not limit how many runs' trees the guest holds:
+`FLTH_SHARED_SLOTS` is 32 on every profile. A worktree's standing run keeps
+its slot for as long as the guest is up, so `vm.sh up` and then `vm.sh session`
+already take two, and each further worktree takes one more. A root port costs
+little, so the guest keeps room for them.
 
 ## One guest for every consumer
 
