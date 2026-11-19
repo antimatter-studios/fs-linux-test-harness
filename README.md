@@ -1197,6 +1197,21 @@ saved from `main` serves every pull request and queue run (#148). A consumer
 that boots a VM in its own merge queue needs the same save on its own `main`;
 `tests/box-cache.sh` holds the harness to it.
 
+Every job installs chore through
+[`.github/actions/install-chore`](./.github/actions/install-chore/action.yml),
+which commits the SHA-256 of each platform's tarball for the pinned chore
+version and trusts those hashes, not the release's own `checksums.txt`
+(#212). A tarball that passes its pinned hash is kept in `actions/cache`,
+keyed by version, platform and hash, so a later run installs it with no
+download, and an outage of GitHub's release storage does not stop the job.
+A cached or downloaded tarball that does not match fails the job; it never
+falls through to another source. The entry saved by a run on `main` serves
+every pull request and queue run. To bump chore, download the new release's
+tarballs once, check `sha256sum` against its `checksums.txt`, replace the
+hashes in the action, and change `CHORE_VERSION` in `ci.yml`;
+`tests/install-chore.sh` fails while any platform of the pinned version has
+no hash.
+
 The bootstrap, `ci-ok` and tag-only `release` jobs stay hosted, so they do
 not wait for private capacity selected before a long smoke run. The release
 job publishes the tagged CHANGELOG section after `ci-ok` succeeds. macOS
