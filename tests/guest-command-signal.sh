@@ -137,9 +137,17 @@ ended_within_limit() {
 }
 
 wait_for_file() {
+    # wait_for_file <file> <pid of the call that writes it>
+    # Until the file has content, while that call is alive (#229). The bound is only
+    # a backstop for a call that hangs: 2400 ticks, two minutes and more, where the
+    # slowest start measured took 249.
     local ticks=0
     until [ -s "$1" ]; do
-        [ "$ticks" -lt 200 ] || return 1
+        if ! alive "$2"; then
+            [ -s "$1" ]
+            return
+        fi
+        [ "$ticks" -lt 2400 ] || return 1
         command -p sleep 0.05
         ticks=$((ticks + 1))
     done
@@ -198,7 +206,7 @@ start_session() {
     "$VM" session "$BASH" -c '"$1" "$2" "$3"' flth-session "$VM" "$sub" "$command" > "$dir/log" 2>&1 &
     SESSION=$!
     set +m
-    if wait_for_file "$dir/shell" && wait_for_file "$dir/child"; then
+    if wait_for_file "$dir/shell" "$SESSION" && wait_for_file "$dir/child" "$SESSION"; then
         ok "$(basename "$dir"): the guest command started"
     else
         bad "$(basename "$dir"): the guest command never started: $(cat "$dir/log")"
@@ -293,7 +301,7 @@ set -m
 "$VM" run "$(guest_command plain "$killed")" > "$killed/log" 2>&1 &
 killed_call=$!
 set +m
-if wait_for_file "$killed/shell" && wait_for_file "$killed/child"; then
+if wait_for_file "$killed/shell" "$killed_call" && wait_for_file "$killed/child" "$killed_call"; then
     ok "killed: the guest command started"
 else
     bad "killed: the guest command never started: $(cat "$killed/log")"
@@ -308,7 +316,7 @@ direct="$SANDBOX/direct"
 mkdir -p "$direct"
 "$VM" run "$(guest_command plain "$direct")" > "$direct/log" 2>&1 &
 direct_call=$!
-if wait_for_file "$direct/shell" && wait_for_file "$direct/child"; then
+if wait_for_file "$direct/shell" "$direct_call" && wait_for_file "$direct/child" "$direct_call"; then
     ok "direct: the guest command started"
 else
     bad "direct: the guest command never started: $(cat "$direct/log")"
