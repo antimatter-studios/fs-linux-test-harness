@@ -1,0 +1,131 @@
+name: Install virtiofsd
+description: Install upstream virtiofsd's x86_64 Linux release build, verified against the SHA-256 committed here, from the cache or upstream's release, and name it in FLTH_VIRTIOFSD.
+inputs:
+  version:
+    description: virtiofsd version, without the leading v; it must have a pinned entry in this action
+    required: false
+    default: "1.14.0"
+outputs:
+  path:
+    description: the installed virtiofsd, also exported as FLTH_VIRTIOFSD and put on PATH
+    value: ${{ steps.install.outputs.path }}
+runs:
+  using: composite
+  steps:
+    # Ubuntu packages virtiofsd 1.10.0, and every upstream release before 1.14.0
+    # panics in setxattr on an extended attribute name that is not UTF-8, so the
+    # guest's request is never answered and the call hangs (#274). Upstream
+    # publishes a static x86_64 Linux build with each release, as a zip uploaded
+    # to the release notes. The SHA-256 of that zip and of the binary in it are
+    # committed here: the root of trust is this repository, not the host serving
+    # the download.
+    #
+    # To add a version: download the zip linked from the release at
+    # https://gitlab.com/virtio-fs/virtiofsd/-/releases, check that the binary in
+    # it prints `virtiofsd <version>` for --version, then add one line below:
+    # version, the zip's SHA-256, the binary's SHA-256 and the upload's id (the
+    # path segment before the zip's name in its link). tests/install-virtiofsd.sh
+    # fails while the default version has no line here.
+    - id: pin
+      shell: bash
+      env:
+        VIRTIOFSD_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
+          echo "::error::upstream publishes a virtiofsd build for x86_64 Linux only, and this is $(uname -s) $(uname -m). Build it instead (cargo install virtiofsd --version $VIRTIOFSD_VERSION --locked, which needs libcap-ng-dev and libseccomp-dev) and name it in FLTH_VIRTIOFSD." >&2
+          exit 1
+        fi
+        zip_sha256="" bin_sha256="" upload=""
+        while read -r version zsha bsha up; do
+          if [ "$version" = "$VIRTIOFSD_VERSION" ]; then zip_sha256="$zsha"; bin_sha256="$bsha"; upload="$up"; fi
+        done <<'PINNED'
+        1.14.0 2e4fe9571f492b00baa34bc4e708e950039c5da05b830b31a8d179cb6ac8978e 15b2e72a78cc08a9bd8a6943e89fb69c88cb3cbeb63069efceade835342ac7d4 f505704014ae7a816e515f2a05a93d8b
+        PINNED
+        if ! printf '%s\n' "$zip_sha256" | grep -qE '^[0-9a-f]{64}$' ||
+          ! printf '%s\n' "$bin_sha256" | grep -qE '^[0-9a-f]{64}$' ||
+          ! printf '%s\n' "$upload" | grep -qE '^[0-9a-f]{32}$'; then
+          echo "::error::no pinned virtiofsd $VIRTIOFSD_VERSION in .github/actions/install-virtiofsd/action.yml; adding a version means adding its line there" >&2
+          exit 1
+        fi
+        zip="virtiofsd-v${VIRTIOFSD_VERSION}.zip"
+        {
+          echo "zip=$zip"
+          echo "url=https://gitlab.com/-/project/21523468/uploads/$upload/$zip"
+          echo "zip_sha256=$zip_sha256"
+          echo "bin_sha256=$bin_sha256"
+          echo "dir=$RUNNER_TEMP/virtiofsd-cache"
+          echo "key=virtiofsd-$VIRTIOFSD_VERSION-linux-x86_64-$zip_sha256"
+        } >> "$GITHUB_OUTPUT"
+    # A copy kept by an earlier run, so an outage of upstream's host does not stop
+    # the job. It is checked against the pinned hash like a download.
+    - id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.pin.outputs.dir }}
+        key: ${{ steps.pin.outputs.key }}
+    - id: install
+      shell: bash
+      env:
+        VIRTIOFSD_VERSION: ${{ inputs.version }}
+        VIRTIOFSD_ZIP: ${{ steps.pin.outputs.zip }}
+        VIRTIOFSD_URL: ${{ steps.pin.outputs.url }}
+        VIRTIOFSD_ZIP_SHA256: ${{ steps.pin.outputs.zip_sha256 }}
+        VIRTIOFSD_BIN_SHA256: ${{ steps.pin.outputs.bin_sha256 }}
+        VIRTIOFSD_CACHE_DIR: ${{ steps.pin.outputs.dir }}
+      run: |
+        set -euo pipefail
+        zip="$VIRTIOFSD_ZIP"
+        dir="$RUNNER_TEMP/virtiofsd-download"
+        bin_dir="$RUNNER_TEMP/virtiofsd-$VIRTIOFSD_VERSION"
+        mkdir -p "$dir" "$bin_dir"
+        # check <sha256> <file> <what>: the file matches its pinned hash, or the
+        # job fails here. A mismatch never falls through to another source.
+        check() {
+          printf '%s  %s\n' "$1" "$2" | sha256sum -c - >/dev/null && return 0
+          echo "::error::$3 does not match its pinned SHA-256 $1" >&2
+          exit 1
+        }
+        if [ -f "$VIRTIOFSD_CACHE_DIR/$zip" ]; then
+          echo "$zip comes from the cache"
+          cp "$VIRTIOFSD_CACHE_DIR/$zip" "$dir/$zip"
+          check "$VIRTIOFSD_ZIP_SHA256" "$dir/$zip" "the cached $zip"
+        else
+          # curl retries each attempt; an outage that outlasts them gets two
+          # more, a minute and then two apart, before the job fails.
+          fetched=0
+          for wait in 60 120 ""; do
+            if curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+                --write-out '%{stderr}%{http_code} from %{urle.host}\n' \
+                -o "$dir/$zip" "$VIRTIOFSD_URL"; then
+              fetched=1
+              break
+            fi
+            [ -n "$wait" ] || break
+            echo "::warning::the download of $zip failed; trying again in ${wait}s" >&2
+            sleep "$wait"
+          done
+          [ "$fetched" = 1 ] || { echo "::error::every attempt at $VIRTIOFSD_URL failed" >&2; exit 1; }
+          check "$VIRTIOFSD_ZIP_SHA256" "$dir/$zip" "the downloaded $zip"
+          mkdir -p "$VIRTIOFSD_CACHE_DIR"
+          cp "$dir/$zip" "$VIRTIOFSD_CACHE_DIR/$zip"
+        fi
+        member=target/x86_64-unknown-linux-musl/release/virtiofsd
+        unzip -o -q "$dir/$zip" "$member" -d "$dir"
+        check "$VIRTIOFSD_BIN_SHA256" "$dir/$member" "the virtiofsd in $zip"
+        install -m 0755 "$dir/$member" "$bin_dir/virtiofsd"
+        said="$("$bin_dir/virtiofsd" --version 2>&1 | sed -n 1p)"
+        if [ "$said" != "virtiofsd $VIRTIOFSD_VERSION" ]; then
+          echo "::error::the installed virtiofsd says '$said', not 'virtiofsd $VIRTIOFSD_VERSION'" >&2
+          exit 1
+        fi
+        echo "$said at $bin_dir/virtiofsd"
+        echo "FLTH_VIRTIOFSD=$bin_dir/virtiofsd" >> "$GITHUB_ENV"
+        echo "$bin_dir" >> "$GITHUB_PATH"
+        echo "path=$bin_dir/virtiofsd" >> "$GITHUB_OUTPUT"
+    # Saved only once its zip passed the pinned hash in the step above.
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.pin.outputs.dir }}
+        key: ${{ steps.pin.outputs.key }}

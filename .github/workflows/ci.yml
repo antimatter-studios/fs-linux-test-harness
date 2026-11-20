@@ -169,6 +169,12 @@ jobs:
       - uses: ./.github/actions/install-chore
         with:
           version: ${{ env.CHORE_VERSION }}
+      # Upstream virtiofsd 1.14.0, pinned by SHA-256 and named in
+      # FLTH_VIRTIOFSD: Ubuntu's 1.10.0 panics in setxattr on an extended
+      # attribute name that is not UTF-8 (#274). Before ci-setup-linux.sh,
+      # whose host check refuses an older one. Every consumer's Linux job
+      # uses the same action.
+      - uses: ./.github/actions/install-virtiofsd
       # The same script every consumer's CI runs from its sibling
       # checkout: KVM access, QEMU, Vagrant and vagrant-qemu, pinned.
       - name: KVM, QEMU and Vagrant

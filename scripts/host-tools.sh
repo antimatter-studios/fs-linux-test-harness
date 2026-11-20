@@ -40,6 +40,12 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # failed with ENOTDIR (christhomas/virtiofsd#3, released in v1.14.0).
 VIRTIOFSD_MIN=1.14.0
 
+# The oldest virtiofsd the Linux path works with: upstream's own release, not
+# the macOS port. Every release before it panics in setxattr on an extended
+# attribute name that is not UTF-8, and the guest's request is never answered,
+# so the call hangs (#274). Ubuntu 24.04 packages 1.10.0.
+VIRTIOFSD_LINUX_MIN=1.14.0
+
 # The oldest forwarder plugin that stops what it starts. Before it, a watcher
 # outlives its VM with nothing left to end it (#164), and a host that boots VMs all
 # day collects them.
@@ -132,6 +138,18 @@ check_macos() {
     fi
 }
 
+# The virtiofsd the engine starts, in its order of choice
+# (engine_vagrant_virtiofsd in lib/engine-vagrant.sh; tests/host-tools-linux.sh
+# holds the two to the same order).
+linux_virtiofsd() {
+    local candidate
+    for candidate in "${FLTH_VIRTIOFSD:-}" "$(command -v virtiofsd 2>/dev/null || true)" \
+        /usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd; do
+        [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+    done
+    return 1
+}
+
 check_linux() {
     local arch qemu pkg kvm="/dev/kvm"
     arch="$(uname -m)"
@@ -143,9 +161,19 @@ check_linux() {
     check_vagrant "HashiCorp's apt repository (x86_64), or Vagrant 2.4.x from source on arm64 — see README 'Host setup'"
     have "$qemu" || need "$qemu" "the hypervisor" "apt-get install $pkg"
     have qemu-img || need "qemu-img" "creates the VM's disk overlay" "apt-get install qemu-utils"
-    # Each run's tree is attached to the running guest over virtiofs (#222).
-    if [ -z "${FLTH_VIRTIOFSD:-}" ] && ! have virtiofsd && [ ! -x /usr/libexec/virtiofsd ] && [ ! -x /usr/lib/qemu/virtiofsd ]; then
-        need "virtiofsd" "serves each run's tree to the guest (FLTH_VIRTIOFSD names another)" "apt-get install virtiofsd"
+    # Each run's tree is attached to the running guest over virtiofs (#222), by
+    # the virtiofsd the engine would start.
+    local vfs v vfs_install
+    vfs_install="upstream's release build: in CI, the install-virtiofsd action (README 'CI and automated merging'); elsewhere, built from upstream's v$VIRTIOFSD_LINUX_MIN as README 'Host setup' shows, on PATH or named in FLTH_VIRTIOFSD"
+    if ! vfs="$(linux_virtiofsd)"; then
+        need "virtiofsd $VIRTIOFSD_LINUX_MIN or newer" "serves each run's tree to the guest (FLTH_VIRTIOFSD names another)" "$vfs_install"
+    else
+        v="$("$vfs" --version 2>/dev/null | awk 'NR == 1 && $1 == "virtiofsd" && $2 ~ /^[0-9]/ { print $2 }')"
+        if [ -z "$v" ] || ! version_at_least "$v" "$VIRTIOFSD_LINUX_MIN"; then
+            need "virtiofsd $VIRTIOFSD_LINUX_MIN or newer (found '${v:-unreadable}' at $vfs)" \
+                "each release before it panics in setxattr on an extended attribute name that is not UTF-8, and the guest's call never returns (#274)" \
+                "$vfs_install"
+        fi
     fi
     if [ ! -e "$kvm" ]; then
         need "$kvm" "hardware acceleration; software emulation is refused" "enable KVM for this host (kvm module / nested virtualisation)"
