@@ -1181,24 +1181,30 @@ Every pull request, merge-queue group, main push and version-tag push runs
 
 | Job | Runs on | What a green run proves |
 | --- | --- | --- |
-| `unit (VM-free, OS)` | `antimatter-vps-linux-x64` or `ubuntu-24.04`, and `macos-15` arm64 | `chore check` with each host's system Bash: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the orchestration against a stub engine (the shared guest's default root, worktrees, the list of suites, the host memory check, boot retries, never taking an unread state for a stop, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
-| `smoke (real VM, x86_64 KVM)` | `ubuntu-latest` with KVM | `chore smoke`: a real Debian VM boots through the harness under KVM; the smoke consumer's setup installs `e2fsprogs` inside it; the machine is the shared guest's and sees the directory holding the checkout, with nothing set; a run that leaves a file, a loop device and a mount behind changes no byte of the machine's disk, and the next boot sees none of it; exit status, output and files cross host↔guest; the reaper leaves the shared guest up; a consumer whose setup installs a kernel is refused; two consumers join one guest at once; a realistic suite (build an ext4 image from host files, read back with `debugfs`, compare, `e2fsck -fn`, collect results on the host) **passes**; the same suite with one byte of file data corrupted **fails with a non-zero exit**; `down` and `destroy` behave. |
-| `ci-ok` | `ubuntu-latest` | Green only if every job above ran and succeeded (a failed, cancelled **or skipped** job fails it). |
+| `unit (VM-free, Linux x86_64)`, `unit (VM-free, macOS arm64)` | gate class `linux-x64`, `macos-arm64` | `chore check` with each host's system Bash: every script parses and is shellcheck-clean; the config reader accepts the shipped configs and refuses invalid ones with clear errors; the orchestration against a stub engine (the shared guest's default root, worktrees, the list of suites, the host memory check, boot retries, never taking an unread state for a stop, setup stamping, hold/reap, the session rules); the Vagrant engine against stub `vagrant`/`ssh`/`ps`; the guest deadline script; the Vagrantfile evaluated for all three hosts with hostile inputs refused; and that the harness names no filesystem. |
+| `smoke (real VM, x86_64 KVM)` | gate class `linux-x64-kvm` | `chore smoke`: a real Debian VM boots through the harness under KVM; the smoke consumer's setup installs `e2fsprogs` inside it; the machine is the shared guest's and sees the directory holding the checkout, with nothing set; a run that leaves a file, a loop device and a mount behind changes no byte of the machine's disk, and the next boot sees none of it; exit status, output and files cross host↔guest; the reaper leaves the shared guest up; a consumer whose setup installs a kernel is refused; two consumers join one guest at once; a realistic suite (build an ext4 image from host files, read back with `debugfs`, compare, `e2fsck -fn`, collect results on the host) **passes**; the same suite with one byte of file data corrupted **fails with a non-zero exit**; `down` and `destroy` behave. |
+| `ci-ok` | gate class `linux-x64`, else `ubuntu-latest` | Green only if every job above ran and succeeded (a failed, cancelled **or skipped** job fails it). |
 
-The hosted `changes` job asks the [runner gate](https://runner-gate.antimatter-studios.com/status)
-to select the Linux unit runner immediately before that job can start. Only
-the allowed user, across the actor, triggering actor, sender and PR author,
-can use the private pool. Other identities, a full pool, a failed request or
-an unexpected answer select `ubuntu-24.04`, matching the private runner image.
-Requests have a ten-second
-deadline, and the decision appears in the job summary. The private image
-installs its unit-test prerequisites explicitly. The pick is the last step
-of `changes` and identifies the run, attempt and `unit` job. The gate can
-enforce a 120-second window for the runner to claim that pick. If setup
-reports `Runner gate reservation expired`, rerun the whole workflow with
-`gh run rerun <run-id> --repo antimatter-studios/fs-linux-test-harness`.
-Do not use `--failed`: `changes` must run again to make a fresh pick.
-GitHub cannot change a queued job's selected runner label.
+Every job takes its runner from a gate job, `<job>-gate`, placed just
+before it. The gate job runs on the `antimatter-vps-gate` runner, and its one
+step, `runner-gate pick <class>`, answers the label the job runs on: one of
+our runners when the class has a free one, otherwise GitHub's. The classes
+here are `linux-x64` (`changes`, the Linux unit job, `ci-ok`, `release`),
+`linux-x64-kvm` (every job that boots a VM: the smoke jobs, the box cache
+save and the `kvm-probe` jobs), `linux-arm64` (the arm64 KVM probe) and
+`macos-arm64` (the macOS unit job and `macos-host`). A gate has its job's
+`needs` and `if`, so it never picks a runner for a job that will not run; a
+matrix job has one gate for all its legs; `ci-ok`, which runs whatever became
+of the jobs before it, falls back to `ubuntu-latest` when its gate answered
+nothing. The gate never fails a job, and a fork's pull request always gets
+GitHub's runner. The gate accepts no job name but `gate` or `<job>-gate`.
+`.github/actionlint.yaml` declares the gate's label, and `tests/ci-gates.sh`
+holds every workflow to this shape and each job to its class.
+
+Our runners' image carries less than GitHub's, so a Linux job installs what
+it calls when `runner.environment` is `self-hosted`: the unit job its test
+tools, `ci-ok` `jq`, and `release` `gh` and `jq`. `ci-setup-linux.sh` installs
+what a VM job needs on either.
 
 The smoke jobs only restore the Vagrant box cache.
 [`.github/workflows/box-cache.yml`](./.github/workflows/box-cache.yml) saves
@@ -1247,10 +1253,8 @@ zip's binary prints its version and add its line, with both hashes and the
 upload id, to the action; `tests/install-virtiofsd.sh` fails while the default
 version, the oldest `host-tools.sh` accepts on Linux, has no line.
 
-The bootstrap, `ci-ok` and tag-only `release` jobs stay hosted, so they do
-not wait for private capacity selected before a long smoke run. The release
-job publishes the tagged CHANGELOG section after `ci-ok` succeeds. macOS
-tests keep their real host, and both real VM smoke jobs keep hosted KVM.
+The tag-only `release` job publishes the tagged CHANGELOG section after
+`ci-ok` succeeds.
 
 **The required status check is `ci-ok`.** Branch protection and
 auto-merge should require that one name and nothing else, so adding a
@@ -1273,7 +1277,7 @@ has the Apple Silicon smoke evidence recorded under "The VM" (#84, #86,
 GitHub's hosted macOS runners cannot boot it either: they are M1 virtual
 machines with no nested virtualisation, so HVF is unavailable. The
 [`macos-host`](./.github/workflows/macos-host.yml) workflow takes it as far
-as a hosted runner can, on `macos-15` (arm64), whenever the Vagrantfile,
+as a hosted runner can, on a `macos-arm64` runner, whenever the Vagrantfile,
 `host-tools.sh` or the Vagrant engine changes: the macOS host setup
 installs, QEMU has the `vhost-user-fs` device, `host:check` names the
 unpublished box and nothing else, and `vagrant validate` accepts the

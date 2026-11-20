@@ -2,8 +2,8 @@ name: CI
 
 # WHAT A GREEN RUN PROVES, job by job (README "CI and automated merging"):
 #
-#   unit            every script parses and is shellcheck-clean; the config
-#                   parser, the shared guest's orchestration (against a
+#   unit-linux,     every script parses and is shellcheck-clean; the config
+#   unit-macos      parser, the shared guest's orchestration (against a
 #                   stub engine), the session rules, the Vagrant engine
 #                   (against stub vagrant/ssh/ps), the guest deadline, the
 #                   Vagrantfile for every host, and the no-filesystem-
@@ -17,6 +17,14 @@ name: CI
 #                   above ran and succeeded.
 #   release         a version tag publishes its CHANGELOG notes as a GitHub
 #                   Release, only after ci-ok succeeds.
+#
+# WHERE EACH JOB RUNS. Every job has a gate job, `<job>-gate`, just before it,
+# on the runner gate (`antimatter-vps-gate`): its one step, `runner-gate pick
+# <class>`, answers the runner label the job then runs on, ours or GitHub's.
+# The gate never fails a job, and a fork's pull request always gets GitHub's
+# runner. A gate has its job's `needs` and `if`, so it never picks a runner for
+# a job that will not run. The gate refuses any other name than `gate` or
+# `<job>-gate`. tests/ci-gates.sh holds every workflow to this shape.
 
 on:
   pull_request:
@@ -51,14 +59,21 @@ jobs:
   # to land), or a push to main's (before to after); a tag or a push it cannot
   # diff runs everything. The x86_64 VM smoke test run only when the answer is
   # true, and ci-ok accepts their skip when, and only when, it is false.
+  changes-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   changes:
     name: changes (does this need the full pipeline?)
-    # Bootstrap on a hosted runner: no preceding job can pick this runner,
-    # and merge-queue bot senders cannot use the user-only private pool.
-    runs-on: ubuntu-latest
+    needs: changes-gate
+    runs-on: ${{ needs.changes-gate.outputs.runner }}
     outputs:
       code: ${{ steps.c.outputs.code }}
-      linux_runner: ${{ steps.runner.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,31 +117,66 @@ jobs:
           fi
           echo "code=$code ($EVENT${range:+ $range})"
           echo "code=$code" >> "$GITHUB_OUTPUT"
-      - name: Select the Linux unit runner
-        id: runner
-        run: |
-          runner="$(scripts/pick-ci-runner.sh)"
-          printf 'runner=%s\n' "$runner" >> "$GITHUB_OUTPUT"
-          printf 'Linux unit runner: `%s`\n' "$runner" >> "$GITHUB_STEP_SUMMARY"
 
-  unit:
-    name: unit (VM-free, ${{ matrix.os }})
+  # The VM-free suite runs once per host, as two jobs rather than a matrix, so
+  # each host has its own gate and picks its own runner.
+  unit-linux-gate:
     needs: changes
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && (needs.changes.outputs.linux_runner || 'ubuntu-24.04') || matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-15]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
+  unit-linux:
+    name: unit (VM-free, Linux x86_64)
+    needs: [changes, unit-linux-gate]
+    runs-on: ${{ needs.unit-linux-gate.outputs.runner }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Private Linux runner unit tools
-        if: runner.os == 'Linux' && runner.environment == 'self-hosted'
+      # Our runner's image carries less than GitHub's: the suite's own tools.
+      - name: VM-free tools for our runner
+        if: runner.environment == 'self-hosted'
         run: |
           sudo -n apt-get update -qq
           sudo -n apt-get install -y --no-install-recommends ruby shellcheck perl coreutils jq procps lsof
+      - name: The host uses its system Bash
+        run: echo '/bin:/usr/bin:/usr/sbin:/sbin' >> "$GITHUB_PATH"
+      - uses: ./.github/actions/install-chore
+        with:
+          version: ${{ env.CHORE_VERSION }}
+      - name: Tool versions
+        run: |
+          bash --version | head -1
+          shellcheck --version | sed -n 2p
+          ruby --version
+      # tests/agents-core.sh runs rust-fs-core's agents-core check in place.
+      - name: chore siblings
+        run: chore siblings
+      - name: chore check
+        run: chore check
+
+  unit-macos-gate:
+    needs: changes
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick macos-arm64
+
+  unit-macos:
+    name: unit (VM-free, macOS arm64)
+    needs: [changes, unit-macos-gate]
+    runs-on: ${{ needs.unit-macos-gate.outputs.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
       - name: macOS VM-free tools
-        if: runner.os == 'macOS'
         run: |
           brew install shellcheck coreutils bash jq
           echo "FLTH_TEST_GUEST_BASH=$(brew --prefix bash)/bin/bash" >> "$GITHUB_ENV"
@@ -149,11 +199,25 @@ jobs:
 
   # Every guest a consumer can pin boots here, so one that cannot boot
   # fails before a release names it (#70).
-  smoke-x86_64:
-    name: smoke (real VM, x86_64 KVM, ${{ matrix.guest }})
+  #
+  # One gate for both legs of the matrix: they share the class linux-x64-kvm,
+  # so each leg runs on the label this gate answers.
+  smoke-x86_64-gate:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
+  smoke-x86_64:
+    name: smoke (real VM, x86_64 KVM, ${{ matrix.guest }})
+    needs: [changes, smoke-x86_64-gate]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ needs.smoke-x86_64-gate.outputs.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -200,12 +264,29 @@ jobs:
           path: tests/smoke-consumer/.vm-share/results
           if-no-files-found: ignore
 
+  # ci-ok-gate picks only ci-ok's runner. Like ci-ok it runs whatever became
+  # of the jobs before it, and ci-ok falls back to GitHub's runner when it
+  # answered nothing.
+  ci-ok-gate:
+    if: always()
+    needs: [changes-gate, changes, unit-linux-gate, unit-linux, unit-macos-gate, unit-macos, smoke-x86_64-gate, smoke-x86_64]
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, unit, smoke-x86_64]
-    runs-on: ubuntu-latest
+    needs: [changes-gate, changes, unit-linux-gate, unit-linux, unit-macos-gate, unit-macos, smoke-x86_64-gate, smoke-x86_64, ci-ok-gate]
+    runs-on: ${{ needs.ci-ok-gate.outputs.runner || 'ubuntu-latest' }}
     steps:
+      - name: jq for our runner
+        if: runner.environment == 'self-hosted'
+        run: command -v jq >/dev/null || { sudo -n apt-get update -qq && sudo -n apt-get install -y --no-install-recommends jq; }
       - name: Every job ran and succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -223,11 +304,22 @@ jobs:
           fi
           echo "all required jobs succeeded"
 
-  release:
-    name: release (publish the version tag)
+  release-gate:
     needs: ci-ok
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
+  release:
+    name: release (publish the version tag)
+    needs: [ci-ok, release-gate]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ needs.release-gate.outputs.runner }}
     timeout-minutes: 5
     permissions:
       contents: write
@@ -236,6 +328,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # scripts/release.sh calls gh and jq, which our runner's image may lack.
+      - name: gh and jq for our runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
+            sudo -n apt-get update -qq
+            sudo -n apt-get install -y --no-install-recommends gh jq
+          fi
       - name: Publish the tagged CHANGELOG section
         env:
           GH_TOKEN: ${{ github.token }}

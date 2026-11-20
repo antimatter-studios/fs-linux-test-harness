@@ -317,7 +317,6 @@ The host scripts support system Bash 3.2 and Ruby 2.6. VM-free guest scripts
 need a separate Bash 4.2+ interpreter: on macOS use
 `FLTH_TEST_GUEST_BASH="$(brew --prefix bash)/bin/bash" chore check` after
 `brew install bash shellcheck coreutils jq`. This does not replace host Bash.
-The CI runner-selection checks also require `jq` to read event payloads.
 The suite fails once up front when the guest interpreter cannot run the
 deadline's time-format `printf`. `timeout` is required for the apt checks.
 Set `FS_CORE_ROOT` to the pinned core checkout when it is not the sibling.
@@ -328,16 +327,22 @@ CI (`.github/workflows/ci.yml`):
 
 | job | proves |
 |---|---|
-| `unit (VM-free, OS)` | `chore check` on Linux and macOS arm64, using each host's system Bash |
-| `smoke (real VM, x86_64 KVM)` | `chore smoke` on `ubuntu-latest` with KVM |
+| `unit (VM-free, Linux x86_64)`, `unit (VM-free, macOS arm64)` | `chore check` on Linux and macOS arm64, using each host's system Bash |
+| `smoke (real VM, x86_64 KVM)` | `chore smoke` on a runner with KVM |
 | `ci-ok` | the single required check: every job above ran and succeeded |
 
-The hosted `changes` job picks only the Linux unit runner through the gate,
-as its last step, with the run ID, attempt and `unit` job key. The bootstrap,
-aggregate, release, macOS and real KVM smoke jobs stay hosted. If runner setup
-fails with `Runner gate reservation expired`, rerun the **whole** workflow
-(`gh run rerun <run-id> --repo antimatter-studios/fs-linux-test-harness`),
-not `--failed`, so `changes` makes a new pick.
+Every job in every workflow takes its runner from a gate job, `<job>-gate`,
+just before it: `runs-on: antimatter-vps-gate`, one step `runner-gate pick
+<class>`, and the job runs on `${{ needs.<job>-gate.outputs.runner }}`. The
+gate has the job's `needs` and `if`; a job with `if: always()` (`ci-ok`) adds
+`|| 'ubuntu-latest'`. A matrix job has one gate for every leg, so legs of
+different classes are separate jobs (`unit-linux`, `unit-macos`). A job that
+boots a VM asks for `linux-x64-kvm`. A job that only calls a reusable workflow
+(`branch-reap`) has no gate. Our runners lack tools GitHub's have: a Linux job
+installs what it calls in a step under `if: runner.environment ==
+'self-hosted'`. `tests/ci-gates.sh` holds every workflow to all of this and
+each job to the class listed in it, so a new job is added there too, and
+`.github/actionlint.yaml` declares the gate's label.
 
 The Linux aarch64 path is proven by `chore smoke` on an arm64 host by hand
 (hosted arm64 runners expose no KVM). Apple Silicon smoke evidence was
@@ -353,7 +358,7 @@ Hosted macOS runners cannot boot it (no nested virtualisation, so no
 HVF); `macos-host.yml`, outside
 `ci-ok` and run only when the Vagrantfile, `host-tools.sh` or the Vagrant
 engine changes, proves the host setup installs and the Vagrantfile
-validates under the real forked provider on `macos-15`, and nothing more.
+validates under the real forked provider on a `macos-arm64` runner, and nothing more.
 
 **Do not boot VMs from an agent on a shared host** unless you were asked to.
 A VM takes gigabytes, and the smoke run's guest sits beside the one every
