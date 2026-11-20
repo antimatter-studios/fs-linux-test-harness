@@ -27,6 +27,9 @@
 #                 and a run's own tmpfs takes a larger sparse file (#219)
 #   hard link     a file hard-linked on either share opens under its new
 #                 name at once after its first name is removed (#162)
+#   xattr name    an extended attribute whose name is not UTF-8 sets and reads
+#                 back on /repo on Linux, and is refused with EINVAL at once on
+#                 macOS: never a hang (#274)
 #   exec          the per-call path: never boots, and costs milliseconds
 #                 rather than a handshake (a test process makes hundreds)
 #   guest-test    the consumer's suite runs INSIDE the guest, from the
@@ -116,6 +119,9 @@ boot_or_stop() {
     fi
 }
 state() { "$VM" status >/dev/null 2>&1 && echo running || echo not-running; }
+# bounded <seconds> <command...>: the command, ended by SIGALRM (status 142) once
+# its limit passes. A call that a dead share holds would otherwise wait for ever.
+bounded() { local limit="$1"; shift; perl -e 'alarm shift; exec @ARGV or exit 127' "$limit" "$@"; }
 
 qemu_process() {
     local identity
@@ -456,6 +462,36 @@ for dir in /share "$repo_guest" /var/tmp; do
     fi
 done
 
+step "share: an extended attribute whose name is not UTF-8 (#274)"
+# A consumer that tests byte-exact attribute names sets one such as
+# user.caf\xe9\xff on /repo. Upstream virtiofsd before 1.14.0 panicked in
+# setxattr on a name that is not UTF-8, so the guest's request was never
+# answered and the call hung until its job's limit; scripts/host-tools.sh
+# refuses those builds on Linux. The oracle is the guest's own kernel, through
+# tests/smoke-xattr.py's os.setxattr, getxattr and listxattr on the raw bytes. On Linux the
+# host's filesystem takes any bytes, so the name sets and reads back. On macOS
+# APFS refuses a name that is not UTF-8, so the answer there is EINVAL, at once:
+# a refusal is that host's correct answer, a hang is not. Either way the call
+# has a limit, and a call still held when it passes stops the run, since the
+# guest then holds a request that will never complete.
+xattr_script="$("$VM" put "$REPO/tests/smoke-xattr.py" 2>/dev/null)"
+bounded 60 "$VM" run "python3 $xattr_script $repo_guest/.smoke-xattr" > "$CONTENDER/xattr.out" 2> "$CONTENDER/xattr.err"
+rc=$?
+out="$(tr '\n' ' ' < "$CONTENDER/xattr.out")"
+if [ "$rc" -eq 142 ]; then
+    bad "setting an extended attribute whose name is not UTF-8 on $repo_guest did not return within 60s: the host's virtiofsd never answered (#274)"
+    echo "  smoke: the guest holds a request on $repo_guest that will never complete, so no later step can trust it; stopping" >&2
+    verdict
+    exit 1
+fi
+case "$(uname -s)" in
+    Darwin)
+        check_eq "$out" "set=EINVAL " "on macOS a name that is not UTF-8 is refused with EINVAL at once (APFS), and the call returns" ;;
+    *)
+        check_eq "$out" "value=0102 listed=True " "on $repo_guest an extended attribute whose name is not UTF-8 sets, reads back and is listed by its bytes" ;;
+esac
+[ "$rc" -eq 0 ] || bad "the extended attribute call exited $rc: $(tail -n 3 "$CONTENDER/xattr.err" | tr '\n' ' ')"
+
 step "guest resource limits: automatic updates stay off and builds default to one job"
 for unit in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service; do
     out="$("$VM" run "state=\$(systemctl is-enabled '$unit' 2>/dev/null || true); case \$state in ''|not-found) echo absent ;; masked) systemctl is-active --quiet '$unit' || echo masked-inactive ;; *) echo \$state ;; esac" 2>/dev/null)"
@@ -586,7 +622,6 @@ step "signal: a VM that stays up keeps its shares (#130)"
 # Each call has a limit of its own: a dead share holds whatever reads it, in the
 # guest and in the ssh waiting on it, for as long as anyone lets it. Answers go to
 # a file: an ssh outliving its limit would hold a capture's pipe open.
-bounded() { local limit="$1"; shift; perl -e 'alarm shift; exec @ARGV or exit 127' "$limit" "$@"; }
 signal_dir="$CONTENDER/signal"
 mkdir -p "$signal_dir"
 # Not through `bounded`: a function run in the background is a subshell, and $! has
