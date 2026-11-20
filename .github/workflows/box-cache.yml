@@ -22,10 +22,24 @@ permissions:
   contents: read
 
 jobs:
+  # One gate for both legs of the matrix: they share the class linux-x64-kvm
+  # (ci-setup-linux.sh refuses a runner with no /dev/kvm), so each leg runs on
+  # the label this gate answers.
+  save-gate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   save:
     name: save the box cache (${{ matrix.guest }})
+    needs: save-gate
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.save-gate.outputs.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false

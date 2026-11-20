@@ -1,9 +1,11 @@
 name: kvm-probe
 
-# Does a GitHub-hosted runner expose KVM? Manual, and not a gate: the
-# answer decides whether a smoke job can run there. As of 2026-09-17:
-# ubuntu-latest (x86_64) has /dev/kvm; ubuntu-24.04-arm has none, so the
-# arm64 path is proven by `chore smoke` on an arm64 host instead.
+# Does a runner expose KVM? Manual, and not a gate: the answer decides
+# whether a smoke job can run there. As of 2026-09-17: ubuntu-latest (x86_64)
+# has /dev/kvm; ubuntu-24.04-arm has none, so the arm64 path is proven by
+# `chore smoke` on an arm64 host instead. Each job takes its runner from its
+# gate job (`<job>-gate`, `runner-gate pick <class>`), so the notice names the
+# runner the gate answered.
 on:
   workflow_dispatch:
 
@@ -11,14 +13,23 @@ permissions:
   contents: read
 
 jobs:
-  probe:
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04-arm, ubuntu-latest]
-    runs-on: ${{ matrix.runner }}
+  # One job per architecture rather than a matrix, so each has its own gate.
+  probe-arm64-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-arm64
+
+  probe-arm64:
+    needs: probe-arm64-gate
+    runs-on: ${{ needs.probe-arm64-gate.outputs.runner }}
     steps:
       - name: Look for /dev/kvm
+        env:
+          RUNNER: ${{ runner.name }}
         run: |
           uname -a
           grep -m1 -iE 'model name|CPU implementer' /proc/cpuinfo || true
@@ -29,9 +40,41 @@ jobs:
             sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm || true
           fi
           if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-            echo "::notice::${{ matrix.runner }}: /dev/kvm is present and usable"
+            echo "::notice::${RUNNER}: /dev/kvm is present and usable"
           else
-            echo "::notice::${{ matrix.runner }}: no usable /dev/kvm"
+            echo "::notice::${RUNNER}: no usable /dev/kvm"
+          fi
+          lsmod | grep -i kvm || echo "no kvm modules loaded"
+
+  probe-x64-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
+  probe-x64:
+    needs: probe-x64-gate
+    runs-on: ${{ needs.probe-x64-gate.outputs.runner }}
+    steps:
+      - name: Look for /dev/kvm
+        env:
+          RUNNER: ${{ runner.name }}
+        run: |
+          uname -a
+          grep -m1 -iE 'model name|CPU implementer' /proc/cpuinfo || true
+          ls -l /dev/kvm 2>&1 || true
+          if [ -e /dev/kvm ]; then
+            sudo mkdir -p /etc/udev/rules
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm || true
+          fi
+          if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "::notice::${RUNNER}: /dev/kvm is present and usable"
+          else
+            echo "::notice::${RUNNER}: no usable /dev/kvm"
           fi
           lsmod | grep -i kvm || echo "no kvm modules loaded"
 
@@ -39,8 +82,18 @@ jobs:
   # box's own disk under plain QEMU, once per CPU model, with QEMU logging
   # each reset and guest error, so the first boot's console and the CPU
   # state it reset in are both in the log.
+  debian-13-boot-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   debian-13-boot:
-    runs-on: ubuntu-latest
+    needs: debian-13-boot-gate
+    runs-on: ${{ needs.debian-13-boot-gate.outputs.runner }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -103,8 +156,18 @@ jobs:
   #   and a second tree attached into the freed slot, read and detached the same way.
   # What the guest makes of ownership, xattrs, loop devices, O_DIRECT and mmap is
   # printed for the README, and does not decide the job.
+  virtiofs-hotplug-gate:
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64-kvm
+
   virtiofs-hotplug:
-    runs-on: ubuntu-latest
+    needs: virtiofs-hotplug-gate
+    runs-on: ${{ needs.virtiofs-hotplug-gate.outputs.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
