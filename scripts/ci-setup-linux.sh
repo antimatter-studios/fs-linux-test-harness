@@ -23,6 +23,11 @@
 # on a schedule, as the harness's own .github/workflows/box-cache.yml does
 # (#148).
 #
+# virtiofsd comes first, from the harness's install-virtiofsd action (upstream's
+# release build; the distribution's is too old, #274):
+#
+#   - uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@<the harness tag this checkout pins>
+#
 # One implementation, so a consumer cannot drift from the setup the
 # harness proves in its own smoke job.
 #
@@ -130,8 +135,12 @@ group "QEMU"
 # printing nothing (#77). The attempt after a stall uses another Ubuntu
 # mirror, since a stall can outlast every fresh attempt on one (#200).
 flth_apt "the package index" update -qq
-# virtiofsd serves each run's tree to the guest (#222).
-flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils virtiofsd
+# virtiofsd, which serves each run's tree to the guest (#222), is not the
+# distribution's: Ubuntu packages 1.10.0, which panics in setxattr on an
+# extended attribute name that is not UTF-8 (#274). The install-virtiofsd
+# action installs upstream's 1.14.0 before this runs, and the host check at the
+# end refuses anything older.
+flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
 qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
 endgroup
 

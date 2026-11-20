@@ -35,6 +35,8 @@ jobs:
       FLTH_VM_GUEST: ${{ matrix.guest }}
     steps:
       - uses: actions/checkout@v4
+      # ci-setup-linux.sh's host check needs upstream's virtiofsd (#274).
+      - uses: ./.github/actions/install-virtiofsd
       # The same script every consumer's CI runs: Vagrant pinned, and the key
       # derived from the box and version the Vagrantfile pins for this guest.
       - name: KVM, QEMU and Vagrant

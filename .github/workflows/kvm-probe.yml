@@ -44,6 +44,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-virtiofsd
       - name: KVM, QEMU and Vagrant
         run: scripts/ci-setup-linux.sh
       - name: Fetch the pinned boxes
@@ -91,7 +92,8 @@ jobs:
           run vga-none-plus-device -vga none -device VGA
 
   # Runtime virtiofs attach on a real KVM host (#222): the gate for building on it.
-  # The distribution's virtiofsd, run unprivileged, serves a tree to a q35 guest with
+  # Upstream's virtiofsd (the install-virtiofsd action; the distribution's 1.10.0
+  # panics on a non-UTF-8 xattr name, #274), run unprivileged, serves a tree to a q35 guest with
   # free pcie-root-ports, a memfd memory backend and QMP. Every step the harness would
   # take is asserted, and any one that fails fails the job:
   #   virtiofsd starts as the runner's own user; chardev-add and device_add
@@ -105,18 +107,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-virtiofsd
       - name: Tools
         run: |
           set -eu
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 qemu-utils virtiofsd cloud-image-utils >/dev/null
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
           sudo chmod 666 /dev/kvm
-          vfs="$(command -v virtiofsd || ls /usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd 2>/dev/null | head -1)"
+          vfs="$FLTH_VIRTIOFSD"
           echo "VFS=$vfs" >> "$GITHUB_ENV"
           echo "virtiofsd: $vfs"; "$vfs" --version
           "$vfs" --help 2>&1 | grep -E -- '--(sandbox|translate|inode-file|cache|xattr)' || true
           qemu-system-x86_64 --version | sed -n 1p
-          dpkg -l virtiofsd | tail -1
           echo "runner user: $(id)"
       - name: Guest image
         run: |

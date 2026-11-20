@@ -48,6 +48,7 @@ one, which is how an oracle goes unnoticed running against nothing.
 | `scripts/vm-session.sh` | A session: `vm.sh session <command...>` runs a command inside one, and a script that sources it becomes one. It is one run on the shared guest, ended when the command ends, however it ends; the guest stays up for the next run. |
 | `scripts/host-tools.sh` | Checks the host and prints exactly what to install. |
 | `scripts/ci-setup-linux.sh` | Sets a hosted x86_64 Linux CI runner up to boot the VM (KVM access, QEMU, Vagrant, vagrant-qemu), for the harness's CI and every consumer's; `--box-cache-key` prints the box cache key. |
+| `.github/actions/install-virtiofsd` | Installs upstream virtiofsd's x86_64 Linux release build, pinned by SHA-256, and names it in `FLTH_VIRTIOFSD`. Every Linux CI job runs it before `ci-setup-linux.sh` (#274). |
 | `scripts/lib/` | `config.sh` (the TOML reader), `engine.sh` (the engine interface), `engine-vagrant.sh` (its Vagrant implementation), `common.sh` (paths). |
 | `vagrant/` | The Vagrantfile (chooses box, accelerator, plugins and sharing by host) and the guest-side `apt-ready.sh`, `deadline.sh` and `mount-share.sh`. |
 | `examples/minimal/` | The smallest consumer: config, setup script, `chores.yml`. |
@@ -413,8 +414,8 @@ pipeline are the same evidence:
 | Job | Runs on | Steps |
 | --- | --- | --- |
 | `unit` | `ubuntu-24.04` | `chore siblings`, `chore test:unit`, with no fixtures present. |
-| `fixtures` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `../fs-linux-test-harness/scripts/ci-setup-linux.sh` (KVM access, QEMU, Vagrant; its `box-cache-key` output keys an `actions/cache/restore` of `~/.vagrant.d/boxes`, saved from `main` by a workflow like the harness's `box-cache.yml`, since a merge queue run cannot read an entry another queue run saved), `chore fixtures`, upload the images as an artifact. |
-| `test` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `ci-setup-linux.sh`, download the fixtures, `chore lint`, `chore test`. Every oracle tool call and every kernel mount happens in the VM this job boots — and a step checks the tools are NOT installed on the runner, so a green run is evidence of that. |
+| `fixtures` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@<LINUX_HARNESS_REF>` (upstream virtiofsd 1.14.0; see [CI and automated merging](#ci-and-automated-merging)), `../fs-linux-test-harness/scripts/ci-setup-linux.sh` (KVM access, QEMU, Vagrant; its `box-cache-key` output keys an `actions/cache/restore` of `~/.vagrant.d/boxes`, saved from `main` by a workflow like the harness's `box-cache.yml`, since a merge queue run cannot read an entry another queue run saved), `chore fixtures`, upload the images as an artifact. |
+| `test` | `ubuntu-24.04` (x86_64, KVM) | `chore siblings`, `install-virtiofsd`, `ci-setup-linux.sh`, download the fixtures, `chore lint`, `chore test`. Every oracle tool call and every kernel mount happens in the VM this job boots — and a step checks the tools are NOT installed on the runner, so a green run is evidence of that. |
 | `test` (other architectures) | e.g. `ubuntu-24.04-arm` | GitHub's arm64 runners have no KVM, so no VM can run there: this job runs the tiers that need none (lint, the unit tier, the fixture-reading tests). The oracles read the same images on every architecture and are covered by the x86_64 job. |
 | `suite-in-vm` | `ubuntu-24.04` (x86_64, KVM) | `chore test:vm`: the suite compiled and run inside the guest. It is the macOS path, exercised on every pull request so it cannot rot. |
 | `ci-ok` | `ubuntu-latest`, `if: always()` | Needs every other job; fails if any failed, was cancelled **or was skipped**. |
@@ -496,7 +497,7 @@ relative, and must not leave the repository.
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/shared-<guest>/`) and firmware links. Must be the same for every consumer on the host, or each gets a guest of its own. |
 | `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | Sockets and Vagrant's temporary directory, on a path short enough for a socket. |
 | `FLTH_SHARED_SLOTS` | `32` | How many runs' trees can be attached to the shared guest at once: the free PCIe root ports it boots with, 1–64. A run past it is refused, naming the setting. |
-| `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd` | The virtiofsd that serves a run's tree. |
+| `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd`, then `/usr/lib/qemu/virtiofsd` | The virtiofsd that serves a run's tree. On Linux it must be upstream's 1.14.0 or newer; `chore vm:host:check` refuses an older one (#274). |
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | selected resource profile | Shared guest memory, virtual CPU count and disk size. Explicit values override the selected resource profile. |
 | `FLTH_SHARED_DEADLINE` | `480` | Minutes the shared guest stays up **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
 | `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. At most a quarter of the guest's total memory counts, so a small guest is not warned for its size. |
@@ -572,8 +573,8 @@ command that adds a copy of the `.box` file by hand.
 
 **Why virtiofs on Linux too:** a run's tree is attached while the guest runs, and
 QEMU has no way to add a 9p device's backend at runtime, only from its command line.
-The stock provider has no virtiofs support of its own, so the harness starts the
-distribution's virtiofsd itself, unprivileged and with no sandbox, and attaches the
+The stock provider has no virtiofs support of its own, so the harness starts
+upstream's virtiofsd (1.14.0 or newer, #274) itself, unprivileged and with no sandbox, and attaches the
 device through QMP (see [One guest for every consumer](#one-guest-for-every-consumer)).
 The Linux aarch64 path is untested: its guest boots UEFI with ACPI, so it takes the
 same `device_del` as x86_64.
@@ -1114,17 +1115,29 @@ vagrant plugin install vagrant-notify-forwarder-christhomas --plugin-version 0.7
 # boot fetches it from its public GitHub release (#8)
 ```
 
-**Linux x86_64** (a CI runner does all of this with `scripts/ci-setup-linux.sh`)
+**Linux x86_64** (a CI runner does all of this with the `install-virtiofsd`
+action and `scripts/ci-setup-linux.sh`)
 
 ```sh
-sudo apt-get install qemu-system-x86 qemu-utils virtiofsd
+sudo apt-get install qemu-system-x86 qemu-utils
+# virtiofsd 1.14.0 or newer, upstream's: on PATH or named in FLTH_VIRTIOFSD.
+# Ubuntu 24.04 packages 1.10.0, too old (below). Upstream's release notes link a
+# static x86_64 build; or build it:
+sudo apt-get install libcap-ng-dev libseccomp-dev
+cargo install virtiofsd --version 1.14.0 --locked
 # Vagrant 2.4.9 from HashiCorp's apt repository, then:
 vagrant plugin install vagrant-qemu --plugin-version 0.6.3
 # and read-write /dev/kvm (the kvm group)
 ```
 
-**Linux aarch64.** `apt-get install qemu-system-arm qemu-utils qemu-efi-aarch64 virtiofsd`
-and read-write `/dev/kvm`. HashiCorp ships no linux-arm64 Vagrant, so a
+Every upstream virtiofsd before 1.14.0 panics in `setxattr` on an extended
+attribute name that is not UTF-8, so the guest's call is never answered and the
+run hangs (#274). `chore vm:host:check` refuses such a virtiofsd on Linux, naming
+the one it found. The macOS port is macOS-only; Linux uses upstream's.
+
+**Linux aarch64.** `apt-get install qemu-system-arm qemu-utils qemu-efi-aarch64`,
+upstream virtiofsd 1.14.0 or newer built as above (upstream publishes no arm64
+build), and read-write `/dev/kvm`. HashiCorp ships no linux-arm64 Vagrant, so a
 current one runs from source under bundler, with its plugins in the
 Gemfile's `:plugins` group (Vagrant's bundler mode does not use
 `vagrant plugin install`):
@@ -1211,6 +1224,28 @@ tarballs once, check `sha256sum` against its `checksums.txt`, replace the
 hashes in the action, and change `CHORE_VERSION` in `ci.yml`;
 `tests/install-chore.sh` fails while any platform of the pinned version has
 no hash.
+
+Every Linux job that boots or probes a VM installs virtiofsd through
+[`.github/actions/install-virtiofsd`](./.github/actions/install-virtiofsd/action.yml),
+before `ci-setup-linux.sh`, whose host check refuses the distribution's 1.10.0
+(#274). It downloads upstream's static x86_64 build, from the zip linked in the
+release notes, checks the zip and the binary in it against SHA-256 hashes
+committed in the action, checks that the binary says the version asked for,
+keeps the verified zip in `actions/cache`, and exports the binary as
+`FLTH_VIRTIOFSD` and on `PATH`. A consumer's Linux CI runs the same action,
+pinned to the harness tag it uses:
+
+```yaml
+- uses: antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@<LINUX_HARNESS_REF>   # the tag your harness checkout pins
+- run: ../fs-linux-test-harness/scripts/ci-setup-linux.sh
+  id: vm-host
+```
+
+Upstream publishes no arm64 build, so the action fails on an arm64 runner,
+naming the `cargo install` that builds one. To add a version, check the new
+zip's binary prints its version and add its line, with both hashes and the
+upload id, to the action; `tests/install-virtiofsd.sh` fails while the default
+version, the oldest `host-tools.sh` accepts on Linux, has no line.
 
 The bootstrap, `ci-ok` and tag-only `release` jobs stay hosted, so they do
 not wait for private capacity selected before a long smoke run. The release

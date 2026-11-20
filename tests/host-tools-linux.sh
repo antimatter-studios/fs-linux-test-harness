@@ -43,7 +43,7 @@ for v in "virtiofsd 1.10.0" "virtiofsd 1.13.3" "virtiofsd 1.9.0" "virtiofsd 1.14
     check_contains "$out" "at $BIN/virtiofsd" "  naming the virtiofsd it checked"
     check_contains "$out" "panics in setxattr" "  and why"
     check_contains "$out" "install-virtiofsd" "  and the CI action that installs upstream's build"
-    check_contains "$out" "cargo install virtiofsd --version 1.14.0 --locked" "  and how to build it elsewhere"
+    check_contains "$out" "built from upstream's v1.14.0 as README 'Host setup' shows" "  and where to read how to build it elsewhere"
 done
 check_contains "$(echo "virtiofsd 1.10.0" > "$SANDBOX/virtiofsd-version"; host_tools)" "(found '1.10.0' at" "the version found is named"
 check_contains "$(echo "garbled output" > "$SANDBOX/virtiofsd-version"; host_tools)" "(found 'unreadable' at" "a version that cannot be read is called unreadable"
