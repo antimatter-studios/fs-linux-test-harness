@@ -40,6 +40,14 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # failed with ENOTDIR (christhomas/virtiofsd#3, released in v1.14.0).
 VIRTIOFSD_MIN=1.14.0
 
+# The oldest macOS port release the macOS path works with. Before it, a file
+# whose first hard link was removed could not be opened through another, and
+# one whose first name another file was renamed over opened that other file
+# (christhomas/virtiofsd#9). Its --version prints upstream's 1.14.0 like the
+# build before it, so the release is read from --port-version, which builds
+# from 1.14.0.2 print; one that does not know the flag is older (#276).
+VIRTIOFSD_PORT_MIN=1.14.0.1
+
 # The oldest virtiofsd the Linux path works with: upstream's own release, not
 # the macOS port. Every release before it panics in setxattr on an extended
 # attribute name that is not UTF-8, and the guest's request is never answered,
@@ -108,6 +116,23 @@ check_macos() {
                 "brew upgrade antimatter-studios/tap/virtiofsd"
         fi
     fi
+    if brew list --formula virtiofsd >/dev/null 2>&1; then
+        # The virtiofsd the engine would start, which FLTH_VIRTIOFSD may name.
+        local vfs port
+        if ! vfs="$(engine_virtiofsd)"; then
+            need "virtiofsd port release $VIRTIOFSD_PORT_MIN or newer" \
+                "serves each run's tree to the guest, and none is on PATH (FLTH_VIRTIOFSD names another)" \
+                "brew update && brew upgrade antimatter-studios/tap/virtiofsd"
+        else
+            port="$("$vfs" --port-version 2>/dev/null)" || port=""
+            port="$(printf '%s\n' "$port" | awk 'NR == 1 && NF == 1 && $1 ~ /^[0-9]+(\.[0-9]+)*$/ { print $1 }')"
+            if [ -z "$port" ] || ! version_at_least "$port" "$VIRTIOFSD_PORT_MIN"; then
+                need "virtiofsd port release $VIRTIOFSD_PORT_MIN or newer (found '${port:-no --port-version}' at $vfs)" \
+                    "older builds cannot open a hard-linked file once its first name is removed, and open another file once one is renamed over it (christhomas/virtiofsd#9)" \
+                    "brew update && brew upgrade antimatter-studios/tap/virtiofsd"
+            fi
+        fi
+    fi
     if have vagrant; then
         local p plugins said rc=0
         # Its errors are kept with its list: every read below is anchored on a
@@ -141,7 +166,7 @@ check_macos() {
 # The virtiofsd the engine starts, in its order of choice
 # (engine_vagrant_virtiofsd in lib/engine-vagrant.sh; tests/host-tools-linux.sh
 # holds the two to the same order).
-linux_virtiofsd() {
+engine_virtiofsd() {
     local candidate
     for candidate in "${FLTH_VIRTIOFSD:-}" "$(command -v virtiofsd 2>/dev/null || true)" \
         /usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd; do
@@ -165,7 +190,7 @@ check_linux() {
     # the virtiofsd the engine would start.
     local vfs v vfs_install
     vfs_install="upstream's release build: in CI, the install-virtiofsd action (README 'CI and automated merging'); elsewhere, built from upstream's v$VIRTIOFSD_LINUX_MIN as README 'Host setup' shows, on PATH or named in FLTH_VIRTIOFSD"
-    if ! vfs="$(linux_virtiofsd)"; then
+    if ! vfs="$(engine_virtiofsd)"; then
         need "virtiofsd $VIRTIOFSD_LINUX_MIN or newer" "serves each run's tree to the guest (FLTH_VIRTIOFSD names another)" "$vfs_install"
     else
         v="$("$vfs" --version 2>/dev/null | awk 'NR == 1 && $1 == "virtiofsd" && $2 ~ /^[0-9]/ { print $2 }')"

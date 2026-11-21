@@ -346,13 +346,17 @@ each job to the class listed in it, so a new job is added there too, and
 
 The Linux aarch64 path is proven by `chore smoke` on an arm64 host by hand
 (hosted arm64 runners expose no KVM). Apple Silicon smoke evidence was
-recorded on 2026-11-03: six `tests/smoke.sh` runs during the work on #84,
-using virtiofsd 1.14.0, `vagrant-qemu-christhomas` 0.6.0 and
-`vagrant-notify-forwarder-christhomas` 0.7.5 (#86, #89). With the #86 fix,
-two of three runs passed all 95 checks; the third failed only the exec
-cost check in #83 (299ms against its 250ms limit). All six passed both
-`O_DIRECT` checks. Describe that recorded result, not an unconditional
-pass: #83 still fails on some Mac smoke runs.
+recorded on 2026-11-20 (#162, #164): one `tests/smoke.sh` run from `main`
+at e0458d2, using the virtiofsd port release 1.14.0.1 (its `--version`
+prints 1.14.0), `vagrant-notify-forwarder-christhomas` 0.7.8,
+`vagrant-qemu-christhomas` 0.6.0, QEMU 10.2.2 and the guest kernel
+`6.1.0-42-cloud-arm64`. It passed 250 of 251 checks, among them both
+`O_DIRECT` checks and the hard-link checks of #162. The one failure was the
+exec cost check in #83 (295.1ms per call, not 20% faster than 365.8ms with
+a fresh SSH connection). Earlier runs on 2026-11-03, with virtiofsd 1.14.0
+and plugin 0.7.5 (#84, #86, #89), failed the same check in one run of three.
+Describe that recorded result, not an unconditional pass: #83 still fails
+on some Mac smoke runs.
 
 Hosted macOS runners cannot boot it (no nested virtualisation, so no
 HVF); `macos-host.yml`, outside
