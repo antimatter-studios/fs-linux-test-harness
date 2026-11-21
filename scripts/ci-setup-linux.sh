@@ -145,7 +145,7 @@ qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
 endgroup
 
 group "Vagrant $VAGRANT_VERSION and vagrant-qemu $VAGRANT_QEMU_VERSION"
-if ! vagrant --version 2>/dev/null | grep -qx "Vagrant $VAGRANT_VERSION"; then
+if ! vagrant --version 2>/dev/null | grep -x "Vagrant $VAGRANT_VERSION" >/dev/null; then
     curl -fsSL https://apt.releases.hashicorp.com/gpg |
         sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" |
@@ -154,7 +154,7 @@ if ! vagrant --version 2>/dev/null | grep -qx "Vagrant $VAGRANT_VERSION"; then
     flth_apt "Vagrant $VAGRANT_VERSION" install -y -qq "vagrant=${VAGRANT_VERSION}-*"
 fi
 vagrant --version
-if ! vagrant plugin list 2>/dev/null | grep -q "^vagrant-qemu ($VAGRANT_QEMU_VERSION"; then
+if ! vagrant plugin list 2>/dev/null | grep "^vagrant-qemu ($VAGRANT_QEMU_VERSION" >/dev/null; then
     vagrant plugin install vagrant-qemu --plugin-version "$VAGRANT_QEMU_VERSION"
 fi
 vagrant plugin list

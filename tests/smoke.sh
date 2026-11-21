@@ -261,7 +261,7 @@ attach_machine="$(printf '%s\n' "$smoke_config" | sed -n 's/^machine=//p')"
 check_eq "$?" 0 "a session runs on its own tree ($(tail -n 1 "$attach_dir/err"))"
 session_run="$(cat "$attach_dir/run" 2>/dev/null)"
 check_eq "$(cat "$attach_dir/source" 2>/dev/null)" "$session_run" "a device tagged with the session's run"
-check_true '! devices | grep -q "\"fs-$session_run\""' "and when it ended its device was removed from QEMU" "its device is still in QEMU"
+check_true '! devices | grep "\"fs-$session_run\"" >/dev/null' "and when it ended its device was removed from QEMU" "its device is still in QEMU"
 attach_pid="$(cat "$attach_dir/pid" 2>/dev/null)"
 check_true '[ -n "$attach_pid" ] && ! kill -0 "$attach_pid" 2>/dev/null' "and its virtiofsd ($attach_pid) is gone" "its virtiofsd is still running"
 check_contains "$(devices)" "\"fs-$standing\"" "while the standing run keeps its own"
@@ -286,7 +286,7 @@ probe_out="$("$VM" run "$(cat "$REPO/vagrant/guest/watchdog-probe.sh")" 2>/dev/n
 check_contains "$probe_out" "mem " "the probe reads the guest's memory"
 check_contains "$probe_out" "disk " "and its disk"
 attempt=0
-until "$VM" status 2>/dev/null | grep -q 'vm: watchdog: .* ok: ' || [ "$attempt" -ge 24 ]; do
+until "$VM" status 2>/dev/null | grep 'vm: watchdog: .* ok: ' >/dev/null || [ "$attempt" -ge 24 ]; do
     sleep 5
     attempt=$((attempt + 1))
 done
@@ -438,7 +438,7 @@ out="$("$VM" run 'f=/var/tmp/.smoke-big; rm -f $f
 if truncate -s 3T $f 2>/dev/null; then echo root=fits; else echo root=efbig; fi; rm -f $f
 dev="$(df --output=source / | tail -n 1)"
 if ! features="$(tune2fs -l "$dev" 2>/dev/null | sed -n "s/^Filesystem features://p")"; then echo features=unknown
-elif printf "%s\n" "$features" | grep -qw huge_file; then echo features=huge; else echo features=nohuge; fi
+elif printf "%s\n" "$features" | grep -w huge_file >/dev/null; then echo features=huge; else echo features=nohuge; fi
 d="$(mktemp -d /var/tmp/.smoke-ram.XXXXXX)"
 mount -t tmpfs -o size=64m flth-smoke "$d" && truncate -s 3T "$d/big" && echo ram=fits; umount "$d" 2>/dev/null; rmdir "$d"' 2>"$CONTENDER/big-file.err")"
 case "$out" in
