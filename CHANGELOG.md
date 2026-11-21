@@ -9,6 +9,17 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## v0.9.1 — 2026-11-21
+
+### Fixed
+
+- **A check that greps a command's output no longer fails because the line was
+  there.** Under `pipefail`, `grep -q` stops reading at its first match, and a
+  writer that writes again after that dies of SIGPIPE, so the pipeline failed
+  only when it had matched. `host-tools.sh`, `ci-setup-linux.sh` and the
+  Vagrant engine's device and status checks now let `grep` read all of its
+  input (#286).
+
 ## v0.9.0 — 2026-11-21
 
 ### Fixed
