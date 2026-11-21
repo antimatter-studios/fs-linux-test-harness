@@ -9,6 +9,57 @@ pull request; a release gathers them into a section here.
 
 ## [Unreleased]
 
+## v0.8.0 — 2026-11-21
+
+### Added
+
+- `FLTH_RESOURCE_PROFILE` selects a host resource profile, `high`, `medium` or `low`, which sets the shared guest's memory and CPUs and the guest's build jobs. Unset, the host picks one: `high` on macOS, `medium` on a Raspberry Pi, and `low` on GitHub Actions and other hosts. `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS` and the new `FLTH_BUILD_JOBS` still override it.
+- Guest commands export `FLTH_BUILD_JOBS` beside `CARGO_BUILD_JOBS`, with the same value.
+
+- **`.github/actions/install-virtiofsd` installs upstream virtiofsd for Linux CI.**
+  It downloads upstream's static x86_64 build of 1.14.0, checks the zip and the
+  binary against SHA-256 hashes committed in the action, keeps the verified zip
+  in `actions/cache`, and exports the binary as `FLTH_VIRTIOFSD` (#274).
+
+### Changed
+
+- `scripts/ci-setup-linux.sh` documents restoring the Vagrant box cache with `actions/cache/restore` and saving it only from `main`, since a merge queue run cannot restore an entry another queue run saved; the harness's own `.github/workflows/box-cache.yml` is the example (#148).
+
+- The shared guest's default memory and CPUs, and the guest's default build jobs, come from the resource profile: `high` keeps 8G and 8 CPUs and gives 8 build jobs, `medium` gives 4G, 2 CPUs and 2 jobs, and `low` gives 2G, 2 CPUs and 1 job. The previous defaults were 8G, 8 CPUs and 1 job on every host.
+- `FLTH_SHARED_SLOTS` is not part of a profile: it stays 32 by default on every host.
+- A host `CARGO_BUILD_JOBS` still overrides `[vm] build_jobs`; `FLTH_BUILD_JOBS` now overrides both.
+
+- **Linux needs upstream virtiofsd 1.14.0 or newer.** `chore vm:host:check`
+  refuses an older one, naming the one it found and where to get a newer one.
+  `scripts/ci-setup-linux.sh` no longer installs the distribution's virtiofsd,
+  and its host check fails without one. A consumer's Linux CI must run
+  `antimatter-studios/fs-linux-test-harness/.github/actions/install-virtiofsd@<tag>`
+  before `ci-setup-linux.sh` (#274).
+
+### Removed
+
+- `FLTH_PROFILE` and `FLTH_PROFILE_DIR` are renamed `FLTH_VM_PROFILE` and `FLTH_VM_PROFILE_DIR`. Setting an old name fails with a message naming the new one.
+
+### Fixed
+
+- A consumer whose setup was refused for installing a kernel the shared guest does not run is refused before that same setup runs on a later boot, instead of after it, and the message says the setup was not run again (#207).
+
+- A `vm.sh run` or `exec` outside any session, running when the watchdog ends the guest, fails with the watchdog's status 75 and names the reason, instead of exiting 143 with no reason when the watchdog's TERM reached it first (#190).
+
+- A suite joining a small shared guest is no longer told it is short of memory because of the guest's size: the `FLTH_SHARED_MIN_AVAILABLE` floor is now at most a quarter of the guest's total memory, so a 2G guest warns only when it is really nearly full.
+
+- `host-tools.sh` reports a `vagrant plugin list` that fails as that failure, with its exit status and what it printed, instead of calling every plugin missing and telling the host to install plugins it already has.
+
+- **A non-UTF-8 extended attribute name on `/repo` no longer hangs a Linux run.**
+  Every upstream virtiofsd before 1.14.0, including Ubuntu 24.04's 1.10.0, panics in
+  `setxattr` on such a name, so the guest's call never returns. With 1.14.0 the
+  name sets and reads back by its bytes. On macOS, APFS refuses it with `EINVAL` at
+  once (#274).
+
+### Documentation
+
+- The README names the 2 TiB file limit of a guest root disk without `huge_file`, found on the macOS arm64 Debian 12 guest, and the supported workaround of a tmpfs mounted in the run's own namespace; `chore smoke` checks both (#219).
+
 ## v0.7.1 — 2026-11-15
 
 ### Added
