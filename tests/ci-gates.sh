@@ -22,7 +22,10 @@ require_tool ruby 'install ruby / brew install ruby' || { finish ci-gates; exit 
 
 # The checks read the workflows with Ruby's YAML (no aliases, so Ruby 2.6 and
 # 3.x read them alike) and print one "ok"/"bad" line each.
-results="$(ruby -ryaml - "$REPO/.github" <<'RUBY' 2>&1
+# Our runner may have no locale (LANG unset), where Ruby reads files as
+# US-ASCII; the test runs under that locale on every host, and reads the
+# workflows as UTF-8 whatever the locale.
+results="$(LC_ALL=C LANG=C ruby -E UTF-8:UTF-8 -ryaml - "$REPO/.github" <<'RUBY' 2>&1
 github = ARGV[0]
 GATE_LABEL = "antimatter-vps-gate"
 OUTPUT = "${{ steps.pick.outputs.runner }}"
