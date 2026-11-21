@@ -247,19 +247,24 @@ refuses something a filesystem tool does to an image file:
 | On | What fails | How it shows |
 | --- | --- | --- |
 | macOS (virtiofs), virtiofsd before 1.14.0 | any `O_DIRECT` open of a shared file — `xfs_repair`, `xfs_db`, `losetup --direct-io=on`, `dd iflag=direct` (#26) | `ENOTDIR` ("Not a directory"), whatever the image holds |
-| macOS (virtiofs), virtiofsd 1.14.0 | a file hard-linked and then removed under its first name cannot be opened under its new name for a moment (#162) | `ENOENT` on a file that is there; `ls` lists it soon after |
+| macOS (virtiofs), virtiofsd port releases before 1.14.0.1 | a file hard-linked and then removed under its first name cannot be opened under its new name for a moment, and one whose first name another file was renamed over opens that other file (#162) | `ENOENT` on a file that is there, `ls` listing it soon after; or the other file's data |
 | Linux (9p) | `mmap` of a shared file is unreliable | a tool killed by `SIGSEGV`, exit 139 (seen on CI's x86_64 guest) |
 | Linux (9p), `/repo` | setting ownership (`chown`, a tool restoring recorded uids): `security_model=none` cannot | `Operation not permitted` |
 
-The macOS row is a defect in the host's virtiofsd, not in the guest:
+The macOS rows are defects in the host's virtiofsd, not in the guest:
 before 1.14.0 it decoded an arm64 guest's open flags with x86_64 values,
 and arm64's `O_DIRECT` is x86_64's `O_DIRECTORY`, so the host opened the
 image as a directory (christhomas/virtiofsd#3). virtiofsd v1.14.0 decodes
 them with the guest's own values, and `chore vm:host:check` refuses an
 older one. In the six Apple Silicon smoke runs recorded on 2026-11-03
 with virtiofsd 1.14.0 during #84 and #86, both `O_DIRECT` checks passed
-(#89). CI here never sees the defect: CI's guest is x86_64 and shares
-over 9p.
+(#89). The hard-link row is the port's too: it reopened a file through
+the name it was first opened by (christhomas/virtiofsd#9). Port release
+1.14.0.1 finds the file by its identity instead. Its `--version` still
+prints upstream's 1.14.0, so `chore vm:host:check` reads the release from
+`virtiofsd --port-version`, which builds from 1.14.0.2 print, and refuses
+a build without it (#276). CI here never sees either defect: CI's guest is
+x86_64 and shares over 9p.
 
 Each of these reads as a verdict on the image rather than on where it
 was kept. So **a tool that works on an image works on the guest's own disk**:
@@ -497,7 +502,7 @@ relative, and must not leave the repository.
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/shared-<guest>/`) and firmware links. Must be the same for every consumer on the host, or each gets a guest of its own. |
 | `FLTH_STATE_DIR` | `${XDG_STATE_HOME:-~/.local/state}/fs-linux-test-harness` | Sockets and Vagrant's temporary directory, on a path short enough for a socket. |
 | `FLTH_SHARED_SLOTS` | `32` | How many runs' trees can be attached to the shared guest at once: the free PCIe root ports it boots with, 1–64. A run past it is refused, naming the setting. |
-| `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd`, then `/usr/lib/qemu/virtiofsd` | The virtiofsd that serves a run's tree. On Linux it must be upstream's 1.14.0 or newer; `chore vm:host:check` refuses an older one (#274). |
+| `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd`, then `/usr/lib/qemu/virtiofsd` | The virtiofsd that serves a run's tree. On Linux it must be upstream's 1.14.0 or newer; `chore vm:host:check` refuses an older one (#274). On macOS it must print a port release of 1.14.0.1 or newer for `--port-version`; `chore vm:host:check` refuses one that does not (#276). |
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | selected resource profile | Shared guest memory, virtual CPU count and disk size. Explicit values override the selected resource profile. |
 | `FLTH_SHARED_DEADLINE` | `480` | Minutes the shared guest stays up **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
 | `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. At most a quarter of the guest's total memory counts, so a small guest is not warned for its size. |
@@ -526,15 +531,18 @@ falling back.
 | Linux aarch64 | KVM | `cloud-image/debian-12` (arm64), pinned | stock `vagrant-qemu` | `FLTH_FIRMWARE_*` (Debian: AAVMF) | virtiofs, attached per run |
 | Linux x86_64 | KVM | `cloud-image/debian-12` (amd64), pinned, q35 | stock `vagrant-qemu` | none (SeaBIOS) | virtiofs, attached per run |
 
-**Apple Silicon smoke runs have been recorded.** On 2026-11-03,
-`tests/smoke.sh` ran six times during the work on #84, using
-virtiofsd 1.14.0, `vagrant-qemu-christhomas` 0.6.0 and
-`vagrant-notify-forwarder-christhomas` 0.7.5 (#86, #89). With the #86 fix,
-two of three runs passed all 95 checks; the third failed only the exec
-cost check tracked in #83 (299ms against its 250ms limit). All six runs
-passed both `O_DIRECT` checks. This records a working smoke path with
-those versions, not a promise that every Mac smoke run passes: #83 still
-fails on some runs.
+**Apple Silicon smoke runs have been recorded.** The latest, on
+2026-11-20 (#162, #164), ran `tests/smoke.sh` from `main` at e0458d2 with
+the virtiofsd port release 1.14.0.1 (its `--version` prints 1.14.0),
+`vagrant-notify-forwarder-christhomas` 0.7.8, `vagrant-qemu-christhomas`
+0.6.0, QEMU 10.2.2 and the guest kernel `6.1.0-42-cloud-arm64`. It passed
+250 of 251 checks, among them both `O_DIRECT` checks and the hard-link
+checks of #162. The one failure was the exec cost check tracked in #83
+(295.1ms per call, not 20% faster than 365.8ms with a fresh SSH
+connection). Earlier runs on 2026-11-03, with virtiofsd 1.14.0 and plugin
+0.7.5 (#84, #86, #89), failed the same check in one run of three. This
+records a working smoke path with those versions, not a promise that every
+Mac smoke run passes: #83 still fails on some runs.
 
 The Linux x86_64 row is proven by CI's smoke job on every pull request,
 and the Linux aarch64 row by `chore smoke` on an arm64 host. The
@@ -1108,7 +1116,7 @@ stays up until `down` or `destroy` clears the hold. A reboot re-arms the deadlin
 
 ```sh
 brew install --cask hashicorp/tap/hashicorp-vagrant
-brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd   # virtiofsd 1.14.0 or newer
+brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd   # a build with `virtiofsd --port-version` (1.14.0.2 or newer)
 vagrant plugin install vagrant-qemu-christhomas
 vagrant plugin install vagrant-notify-forwarder-christhomas --plugin-version 0.7.7
 # the box (christhomas/vagrant-rpi-bookworm-arm64) needs no step: the first

@@ -9,6 +9,12 @@
 #
 # And a virtiofsd older than the release that decodes an arm64 guest's
 # open flags is refused, with the command that upgrades it.
+#
+# And the virtiofsd the engine would start must be a port release with the
+# hard-link fix (christhomas/virtiofsd#9, released in 1.14.0.1). Its --version
+# prints upstream's 1.14.0 whether or not it has the fix, so the release is
+# read from --port-version; a build without that flag predates it and is
+# refused (#276).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
@@ -39,8 +45,26 @@ case "\$1 \$2" in
 esac
 exit 0
 STUB
+# virtiofsd prints upstream's version, and its port release from a file; with
+# no file it is a build from before --port-version, and answers as clap does.
+cat > "$BIN/virtiofsd" <<STUB
+#!/bin/sh
+case "\$1" in
+    --version) echo "virtiofsd 1.14.0" ;;
+    --port-version)
+        if [ -e "$SANDBOX/virtiofsd-port-version" ]; then
+            cat "$SANDBOX/virtiofsd-port-version"
+        else
+            echo "error: unexpected argument '--port-version' found" >&2
+            exit 2
+        fi ;;
+esac
+exit 0
+STUB
 chmod +x "$BIN"/*
 export PATH="$BIN:$PATH"
+unset FLTH_VIRTIOFSD
+echo 1.14.0.2 > "$SANDBOX/virtiofsd-port-version"
 BOX=christhomas/vagrant-rpi-bookworm-arm64
 echo "virtiofsd 1.14.0" > "$SANDBOX/virtiofsd-versions"
 echo 'vagrant-notify-forwarder-christhomas (0.7.7, global)' > "$SANDBOX/forwarder-plugin"
@@ -111,6 +135,39 @@ for v in "1.14.0" "1.14.0.1" "1.14.0_1" "1.15.2" "2.0.0" "1.13.8 1.14.0"; do
     out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
     check_eq "$?" 0 "a Mac whose virtiofsd is '$v' is ready"
 done
+
+# The port release with the hard-link fix is 1.14.0.1, and --version cannot
+# tell it from 1.14.0 (#276). A build that does not know --port-version is
+# from before it, 1.14.0.1 included, and is refused.
+echo "virtiofsd 1.14.0.1" > "$SANDBOX/virtiofsd-versions"
+rm -f "$SANDBOX/virtiofsd-port-version"
+out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
+check_eq "$?" 1 "a Mac whose virtiofsd has no --port-version is not ready"
+check_contains "$out" "missing: virtiofsd port release 1.14.0.1 or newer" "  naming the release it needs"
+check_contains "$out" "no --port-version" "  and that the build cannot name its release"
+check_contains "$out" "at $BIN/virtiofsd" "  naming the virtiofsd it checked"
+check_contains "$out" "brew upgrade antimatter-studios/tap/virtiofsd" "  and the command that upgrades it"
+for v in "1.14.0" "1.13.8" "1.14" "garbled" ""; do
+    echo "$v" > "$SANDBOX/virtiofsd-port-version"
+    out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
+    check_eq "$?" 1 "a Mac whose virtiofsd is port release '$v' is not ready"
+    check_contains "$out" "missing: virtiofsd port release 1.14.0.1 or newer" "  naming the release it needs"
+    check_contains "$out" "brew upgrade antimatter-studios/tap/virtiofsd" "  and the command that upgrades it"
+done
+for v in "1.14.0.1" "1.14.0.2" "1.14.1" "1.15.0.1" "2.0.0"; do
+    echo "$v" > "$SANDBOX/virtiofsd-port-version"
+    out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
+    check_eq "$?" 0 "a Mac whose virtiofsd is port release '$v' is ready"
+done
+
+# FLTH_VIRTIOFSD names the virtiofsd the engine starts, so it is the one checked.
+mkdir -p "$SANDBOX/other"
+printf '#!/bin/sh\n[ "$1" = --port-version ] && echo 1.14.0\nexit 0\n' > "$SANDBOX/other/virtiofsd"
+chmod +x "$SANDBOX/other/virtiofsd"
+echo 1.14.0.2 > "$SANDBOX/virtiofsd-port-version"
+out="$(FLTH_VIRTIOFSD="$SANDBOX/other/virtiofsd" bash "$REPO/scripts/host-tools.sh" 2>&1)"
+check_eq "$?" 1 "a Mac whose FLTH_VIRTIOFSD is an older port release is not ready"
+check_contains "$out" "(found '1.14.0' at $SANDBOX/other/virtiofsd)" "  naming it, not the one on PATH"
 
 vagrantfile_box="$(sed -n 's/^ *config.vm.box = "\(christhomas\/[^"]*\)"$/\1/p' "$REPO/vagrant/Vagrantfile")"
 check_eq "$vagrantfile_box" "$BOX" "the box checked for is the one the Vagrantfile boots on macOS"

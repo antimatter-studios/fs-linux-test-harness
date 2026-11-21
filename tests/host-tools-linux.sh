@@ -24,9 +24,11 @@ printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n' > "
 printf '#!/bin/sh\necho "Vagrant 2.4.9"\n' > "$BIN/vagrant"
 printf '#!/bin/sh\nexit 0\n' > "$BIN/qemu-system-x86_64"
 printf '#!/bin/sh\nexit 0\n' > "$BIN/qemu-img"
-# virtiofsd answers --version from a file, as `virtiofsd 1.10.0` and the like.
+# virtiofsd answers --version from a file, as `virtiofsd 1.10.0` and the like,
+# and logs every call's arguments.
 cat > "$BIN/virtiofsd" <<STUB
 #!/bin/sh
+echo "\$*" >> "$SANDBOX/virtiofsd-calls"
 [ "\$1" = --version ] && cat "$SANDBOX/virtiofsd-version"
 exit 0
 STUB
@@ -54,6 +56,11 @@ for v in "virtiofsd 1.14.0" "virtiofsd 1.14.1" "virtiofsd 1.15.0" "virtiofsd 2.0
     check_lacks "$out" "virtiofsd" "a Linux host whose virtiofsd says '$v' has nothing to fix about it"
 done
 
+# Upstream's build has no --port-version, which only the macOS port prints
+# (#276): Linux reads --version alone, and is never asked it.
+check_contains "$(cat "$SANDBOX/virtiofsd-calls")" "--version" "a Linux host's virtiofsd is asked its --version"
+check_lacks "$(cat "$SANDBOX/virtiofsd-calls")" "--port-version" "and never its --port-version"
+
 # FLTH_VIRTIOFSD names the virtiofsd the engine starts, so it is the one checked.
 mkdir -p "$SANDBOX/other"
 cat > "$SANDBOX/other/virtiofsd" <<STUB
@@ -76,7 +83,7 @@ check_lacks "$out" "virtiofsd" "and a good one there passes while the one on PAT
 
 # The order host-tools.sh checks is the engine's order of choice.
 engine_order="$(sed -n '/^engine_vagrant_virtiofsd() {/,/^}/p' "$REPO/scripts/lib/engine-vagrant.sh" | tr -s ' \\\n' ' ')"
-tools_order="$(sed -n '/^linux_virtiofsd() {/,/^}/p' "$REPO/scripts/host-tools.sh" | tr -s ' \\\n' ' ')"
+tools_order="$(sed -n '/^engine_virtiofsd() {/,/^}/p' "$REPO/scripts/host-tools.sh" | tr -s ' \\\n' ' ')"
 check_contains "$engine_order" '"${FLTH_VIRTIOFSD:-}" "$(command -v virtiofsd 2>/dev/null || true)" /usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd' "the engine's order of choice is FLTH_VIRTIOFSD, PATH, then the distribution's paths"
 check_contains "$tools_order" '"${FLTH_VIRTIOFSD:-}" "$(command -v virtiofsd 2>/dev/null || true)" /usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd' "and host-tools.sh checks the virtiofsd in that same order"
 
