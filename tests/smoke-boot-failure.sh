@@ -47,7 +47,7 @@ check_eq "$(grep -c '^up$' "$CALLS" | tr -d ' ')" 1 "it boots once, and does not
 after_up="$(sed -n '/^up$/,$p' "$CALLS" | sed 1d | grep -v '^destroy$' | paste -sd, -)"
 check_eq "$after_up" "" "nothing asks the guest anything after the boot failed"
 check_eq "$(tail -n 1 "$CALLS")" destroy "and the VM is destroyed on the way out"
-check_true_re() { if printf '%s\n' "$1" | grep -Eq "$2"; then ok "$3"; else bad "$3 (no line matching /$2/ in: $1)"; fi; }
+check_true_re() { if printf '%s\n' "$1" | grep -E "$2" >/dev/null; then ok "$3"; else bad "$3 (no line matching /$2/ in: $1)"; fi; }
 check_true_re "$out" 'smoke: [0-9]+ passed, [1-9][0-9]* failed' "the run still prints its verdict, naming the failure"
 check_contains "$out" "vm.sh up succeeds (expected '0', got '1')" "and the failed check is the boot"
 

@@ -147,11 +147,11 @@ check_macos() {
             return
         fi
         for p in vagrant-qemu-christhomas vagrant-notify-forwarder-christhomas; do
-            printf '%s\n' "$plugins" | grep -q "^$p " ||
+            printf '%s\n' "$plugins" | grep "^$p " >/dev/null ||
                 need "$p" "the macOS QEMU provider and its required companion" "vagrant plugin install $p"
         done
         v="$(printf '%s\n' "$plugins" | sed -n 's/^vagrant-notify-forwarder-christhomas (\([0-9][0-9.]*\)[,)].*/\1/p')"
-        if printf '%s\n' "$plugins" | grep -q '^vagrant-notify-forwarder-christhomas ' &&
+        if printf '%s\n' "$plugins" | grep '^vagrant-notify-forwarder-christhomas ' >/dev/null &&
             { [ -z "$v" ] || ! version_at_least "$v" "$NOTIFY_FORWARDER_MIN"; }; then
             need "vagrant-notify-forwarder-christhomas $NOTIFY_FORWARDER_MIN or newer (found '${v:-unreadable}')" \
                 "older releases leave a watcher running for every folder of every VM after it stops" \

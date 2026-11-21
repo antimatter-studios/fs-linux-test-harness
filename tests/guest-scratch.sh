@@ -118,7 +118,7 @@ for f in "$CONSUMER"/*.sh; do
 done
 check_true '[ -n "$host_cmd" ] && [ -f "$CONSUMER/$host_cmd" ]' "the consumer's host-side [test] command ($host_cmd) is found and left out" \
     "the consumer's [test] command could not be read from its fs-linux-test-harness.toml"
-check_true '[ -f "$CONSUMER/guest-suite.sh" ] && printf "%s\n" "${guest_scripts[@]}" | grep -q "/guest-suite.sh$"' \
+check_true '[ -f "$CONSUMER/guest-suite.sh" ] && printf "%s\n" "${guest_scripts[@]}" | grep "/guest-suite.sh$" >/dev/null' \
     "the guest-side scripts (${#guest_scripts[@]}) include guest-suite.sh, which builds and checks the image" \
     "guest-suite.sh is not among the scanned scripts: the guard would pass having read nothing that matters"
 

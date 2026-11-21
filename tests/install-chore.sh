@@ -296,7 +296,7 @@ nothing_installed() {
 }
 
 every_call_keeps_the_retry_budget() {
-    if [ -n "$calls" ] && ! printf '%s\n' "$calls" | grep -qv '|retries=5$'; then
+    if [ -n "$calls" ] && ! printf '%s\n' "$calls" | grep -v '|retries=5$' >/dev/null; then
         ok "$1: every curl call keeps --retry 5"
     else
         bad "$1: a curl call ran with another retry budget: $calls"
@@ -305,7 +305,7 @@ every_call_keeps_the_retry_budget() {
 
 # The token goes to api.github.com and nowhere else.
 token_only_to_the_api() {
-    if printf '%s\n' "$calls" | grep 'auth=Bearer' | grep -qv '^https://api\.github\.com/'; then
+    if printf '%s\n' "$calls" | grep 'auth=Bearer' | grep -v '^https://api\.github\.com/' >/dev/null; then
         bad "$1: the token was sent outside api.github.com: $calls"
     else
         ok "$1: the token is sent to api.github.com only"

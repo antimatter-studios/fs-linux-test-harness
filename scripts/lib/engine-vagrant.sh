@@ -646,7 +646,7 @@ engine_vm_status() {
     local answer
     answer="$(engine_vagrant_monitor 'info status' 'info block -v')" || return 1
     answer="$(printf '%s\n' "$answer" | tr -d '\r')"
-    printf '%s\n' "$answer" | grep -q '^VM status: ' || return 1
+    printf '%s\n' "$answer" | grep '^VM status: ' >/dev/null || return 1
     printf '%s\n' "$answer" | awk '/^VM status: / { print; exit }'
     printf '%s\n' "$answer" | awk '/^ *I\/O status: / && $3 != "ok" { print "I/O status: " $3; exit }'
     printf '%s\n' "$answer" | awk '
@@ -721,7 +721,7 @@ engine_vagrant_virtiofsd_args() {
     printf '%s\n' --sandbox=none --inode-file-handles=never --xattr
     if [ "$(uname -s)" = Darwin ]; then
         printf '%s\n' --thread-pool-size=1
-        if "$bin" --help 2>&1 | grep -q -- --translate-uid; then
+        if "$bin" --help 2>&1 | grep -- --translate-uid >/dev/null; then
             printf '%s\n' --translate-uid "map:1001:$(id -u):1" --translate-gid "map:1001:$(id -g):1"
         fi
     fi
@@ -760,7 +760,7 @@ engine_attach_tree() {
         taken="$taken$(engine_vagrant_device_slot "$dev") "
     done
     for n in $(seq 1 "$FLTH_VM_SLOTS"); do
-        printf '%s\n' "$devices" | grep -qx "flth_rp$n" || continue
+        printf '%s\n' "$devices" | grep -x "flth_rp$n" >/dev/null || continue
         case "$taken" in *" $n "*) continue ;; esac
         slot="$n"
         break
@@ -856,22 +856,22 @@ engine_detach_tree() {
     slot="$(engine_tree_slot "$run")"
     pid="$(sed -n 's/^pid //p' "$record" 2>/dev/null)"
     start="$(sed -n 's/^start //p' "$record" 2>/dev/null)"
-    if engine_alive "$(engine_identity)" && engine_vagrant_devices 2>/dev/null | grep -qx "fs-$run"; then
+    if engine_alive "$(engine_identity)" && engine_vagrant_devices 2>/dev/null | grep -x "fs-$run" >/dev/null; then
         if [ "$(uname -s)" = Darwin ] && [ -n "$slot" ]; then
             engine_run "echo 0 > /sys/bus/pci/slots/$slot/power" >/dev/null 2>&1 || true
             # A second at most, measured; a guest that did not power it off by three
             # is asked the slower way.
-            while engine_vagrant_devices 2>/dev/null | grep -qx "fs-$run" && [ "$tries" -lt 30 ]; do
+            while engine_vagrant_devices 2>/dev/null | grep -x "fs-$run" >/dev/null && [ "$tries" -lt 30 ]; do
                 command -p sleep 0.1
                 tries=$((tries + 1))
             done
-            if engine_vagrant_devices 2>/dev/null | grep -qx "fs-$run"; then
+            if engine_vagrant_devices 2>/dev/null | grep -x "fs-$run" >/dev/null; then
                 engine_vagrant_qmp "{\"execute\":\"device_del\",\"arguments\":{\"id\":\"fs-$run\"}}" >/dev/null 2>&1 || true
             fi
         else
             engine_vagrant_qmp "{\"execute\":\"device_del\",\"arguments\":{\"id\":\"fs-$run\"}}" >/dev/null 2>&1 || true
         fi
-        while engine_vagrant_devices 2>/dev/null | grep -qx "fs-$run"; do
+        while engine_vagrant_devices 2>/dev/null | grep -x "fs-$run" >/dev/null; do
             if [ "$tries" -ge 300 ]; then
                 echo "vm: the guest did not let go of run $run's device in 30s; its virtiofsd is left running, since stopping it now could wedge the guest." >&2
                 return 1
