@@ -148,6 +148,7 @@ private to that run and removed with it. Setup and VM-profile preparation use
 the guest's disk-backed `/var/tmp` instead. A consumer may override `TMPDIR`
 inside its own command. Both `/tmp` and `/var/tmp` in a run are already bound
 from its disk-backed run root. The base guest's `/tmp` is also disk-backed.
+The operating system's `/run` and `/dev/shm` mounts are unchanged.
 When a guest command fails, the harness prints matching kernel out-of-memory
 messages recorded during that call. The guest is shared, so those messages may
 belong to another concurrent run and do not by themselves identify the cause.
