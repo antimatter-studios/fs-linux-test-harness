@@ -20,6 +20,7 @@ echo "in-guest build jobs: ${CARGO_BUILD_JOBS-unset}"
 [ "$(findmnt -n -o FSTYPE -T "$TMPDIR")" != tmpfs ] || { echo "TMPDIR is on tmpfs" >&2; exit 1; }
 [ "$(findmnt -n -o FSTYPE -T /tmp)" != tmpfs ] || { echo "run /tmp is on tmpfs" >&2; exit 1; }
 [ "$(nsenter -t 1 -m -- findmnt -n -o FSTYPE -T /tmp)" != tmpfs ] || { echo "base guest /tmp is on tmpfs" >&2; exit 1; }
+[ "$(systemctl is-enabled tmp.mount 2>/dev/null || true)" = masked ] || { echo "base guest tmp.mount is not masked" >&2; exit 1; }
 [ "$(nsenter -t 1 -m -- stat -c %d /tmp)" = "$(nsenter -t 1 -m -- stat -c %d /)" ] || { echo "base guest /tmp is not on the root disk" >&2; exit 1; }
 scratch="$(mktemp "$TMPDIR/smoke.XXXXXX")"
 printf '%s\n' "$FLTH_RUN_ROOT/var-tmp/flth-tmp" > /share/scratch-root
