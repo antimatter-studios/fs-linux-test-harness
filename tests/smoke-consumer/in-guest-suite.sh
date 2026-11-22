@@ -18,6 +18,9 @@ echo "in-guest build jobs: ${CARGO_BUILD_JOBS-unset}"
 [ "${TMPDIR:-}" = /var/tmp/flth-tmp ] || { echo "unexpected TMPDIR: ${TMPDIR-unset}" >&2; exit 1; }
 [ "$(stat -c %d "$TMPDIR")" = "$(stat -c %d "$FLTH_RUN_ROOT/var-tmp")" ] || { echo "TMPDIR is not on the run's disk" >&2; exit 1; }
 [ "$(findmnt -n -o FSTYPE -T "$TMPDIR")" != tmpfs ] || { echo "TMPDIR is on tmpfs" >&2; exit 1; }
+[ "$(findmnt -n -o FSTYPE -T /tmp)" != tmpfs ] || { echo "run /tmp is on tmpfs" >&2; exit 1; }
+[ "$(nsenter -t 1 -m -- findmnt -n -o FSTYPE -T /tmp)" != tmpfs ] || { echo "base guest /tmp is on tmpfs" >&2; exit 1; }
+[ "$(nsenter -t 1 -m -- stat -c %d /tmp)" = "$(nsenter -t 1 -m -- stat -c %d /)" ] || { echo "base guest /tmp is not on the root disk" >&2; exit 1; }
 scratch="$(mktemp "$TMPDIR/smoke.XXXXXX")"
 printf '%s\n' "$FLTH_RUN_ROOT/var-tmp/flth-tmp" > /share/scratch-root
 echo "in-guest scratch: $TMPDIR"

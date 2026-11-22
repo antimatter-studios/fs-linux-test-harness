@@ -65,7 +65,7 @@ check_eq "$(cat "$two/.vm-share/back" 2>/dev/null)" "from the guest" "and what t
 check_eq "$(shared_vm "$one" exec 'test -e /share/back && echo seen || echo private' 2>/dev/null)" private "and not the other consumer"
 
 step "shared guest: each run has its own files and mounts"
-shared_vm "$one" exec 'echo mine > /tmp/left; mkdir -p /mnt/t; mount -t tmpfs none /mnt/t' 2>/dev/null
+shared_vm "$one" exec 'echo mine > /tmp/left; mkdir -p /var/tmp/mount-source /mnt/t; mount --bind /var/tmp/mount-source /mnt/t' 2>/dev/null
 check_eq "$(shared_vm "$one" exec 'cat /tmp/left; findmnt -n -o TARGET /mnt/t' 2>/dev/null | paste -sd, -)" "mine,/mnt/t" "a run's files and mounts last between its calls"
 check_eq "$(shared_vm "$two" exec 'test -e /tmp/left && echo seen; findmnt -n -o TARGET /mnt/t; echo end' 2>/dev/null)" end "and another run sees neither"
 check_eq "$(shared_vm "$one" exec 'findmnt -n -o FSTYPE -T /var/tmp >/dev/null; stat -c %d /var/tmp "$FLTH_RUN_ROOT/var-tmp" | uniq | wc -l' 2>/dev/null)" 1 \

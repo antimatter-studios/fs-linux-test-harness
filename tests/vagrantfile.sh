@@ -131,8 +131,10 @@ check_eq "$(field config/$P.memory)|$(field config/$P.smp)|$(field config/$P.dis
 check_contains "$(field config/vm.provision)" '"run":"always"' "  provisioners re-run on every boot"
 check_contains "$(field config/vm.provision)" '["480"]' "  the deadline minutes are passed as an argument"
 check_eq "$(field config/vagrant.plugins)" "{}" "  the box's own plugin declaration is cleared"
-check_contains "$(field config/vm.provision)" '[[["apt-ready"],{"type":"shell","run":"always","path":"guest/apt-ready.sh"}]' \
-    "  the package manager is made ready on every boot, before anything else is provisioned"
+check_contains "$(field config/vm.provision)" '[[["disk-tmp"],{"type":"shell","run":"always","path":"guest/disk-tmp.sh"}]' \
+    "  disk-backed /tmp is set up first on every boot"
+check_contains "$(field config/vm.provision)" '"path":"guest/apt-ready.sh"' \
+    "  the package manager is made ready on every boot"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" \
     "  a disposable boot writes to an overlay QEMU discards, never to the machine's disk"
 check_contains "$(field config/vm.provision)" '"path":"guest/online-discard.sh"' \

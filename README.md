@@ -146,7 +146,7 @@ Within each run, `TMPDIR` names `/var/tmp/flth-tmp` on the guest disk; it is
 private to that run and removed with it. Setup and VM-profile preparation use
 the guest's disk-backed `/var/tmp` instead. A consumer may override `TMPDIR`
 inside its own command. Both `/tmp` and `/var/tmp` in a run are already bound
-from its disk-backed run root, even if the base guest mounts `/tmp` as tmpfs.
+from its disk-backed run root. The base guest's `/tmp` is also disk-backed.
 When a guest command fails, the harness prints matching kernel out-of-memory
 messages recorded during that call. The guest is shared, so those messages may
 belong to another concurrent run and do not by themselves identify the cause.
@@ -286,7 +286,7 @@ Each of these reads as a verdict on the image rather than on where it
 was kept. So **a tool that works on an image works on the guest's own disk**:
 copy the image (or the source tree) to `/var/tmp`, run the tool there, and
 copy only the finished artefact back to `/share`. Each run also binds `/tmp`
-to disk, hiding any RAM-backed tmpfs on the base guest. A tool that only reads its
+to its own disk-backed directory. A tool that only reads its
 image with buffered I/O works on the shares, but a suite that copies does
 not have to know which of its tools those are.
 
@@ -298,19 +298,21 @@ the guest's root disk, and where the box formats that disk as ext4 without
 have `huge_file` and take a 3 TiB sparse file (`chore smoke`, 2026-11-15).
 The disk is the box's and every boot is disposable, so the harness does not
 reformat it. A suite that makes a larger image, such as a sparse format-maximum
-volume, mounts a tmpfs of its own and makes the image there, in the run's
-private mount namespace, where the mount goes when the run ends:
+volume, can use a disk-backed filesystem formatted with `huge_file`, mounted
+in the run's private mount namespace. For example:
 
 ```sh
-mkdir -p /var/tmp/big && mount -t tmpfs -o size=1g big /var/tmp/big
-truncate -s 3T /var/tmp/big/volume.img   # sparse: only written pages count
+truncate -s 1G /var/tmp/scratch.img
+mkfs.ext4 -F -b 4096 -O huge_file /var/tmp/scratch.img
+mkdir -p /var/tmp/big && mount -o loop /var/tmp/scratch.img /var/tmp/big
+truncate -s 3T /var/tmp/big/volume.img
+# After use: umount /var/tmp/big; rm -f /var/tmp/scratch.img
 ```
 
-A sparse file costs a tmpfs only the pages written to it, and those come
-from the guest's RAM, so size the mount for what the suite writes, not for
-the image's length. `chore smoke` checks both halves on every guest it
+Size the scratch filesystem for the data actually written, not the sparse
+image's apparent length. `chore smoke` checks both halves on every guest it
 boots: that the root's own feature list agrees with what a 3 TiB sparse file
-does there, and that one fits on a tmpfs mounted in a run.
+does there, and that one fits on a disk-backed filesystem mounted in a run.
 
 The smoke consumer does exactly this (`tests/smoke-consumer/guest-suite.sh`),
 and `tests/guest-scratch.sh` fails the build if any of its guest-side
