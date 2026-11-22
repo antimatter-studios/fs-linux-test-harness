@@ -143,6 +143,15 @@ engine_tree_attached() {
 }
 
 
+# The tree is the record's; the daemon's pid is daemon-pid.<run>, when a test gives one.
+engine_tree_record() {
+    case "$2" in
+        tree) cat "$STUB/attached/$1" 2>/dev/null ;;
+        pid) cat "$STUB/daemon-pid.$1" 2>/dev/null ;;
+    esac
+    return 0
+}
+
 engine_detach_tree() {
     stub_log "detach $1"
     rm -f "$STUB/attached/$1"
