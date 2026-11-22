@@ -156,7 +156,7 @@ BOUND=900
 fresh 503 503 503 503 ''
 out="$(vm up 2>&1)"
 check_eq "$?" 0 "a catalog that answers 503 and recovers is an up"
-check_eq "$(ups)" 6 "four catalog failures precede a preparation boot and the disposable test boot"
+check_eq "$(ups)" 5 "the box is asked for until it comes, past the three boot attempts"
 check_eq "$(waits)" "30 60 120 120" "the wait grows, then stays at two minutes"
 check_eq "$(forced_downs)" 0 "no VM was started, so none is forced down"
 check_contains "$out" "503" "each wait names the status"

@@ -2,37 +2,34 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
-FLTH_HARNESS="$REPO"
-. "$REPO/scripts/lib/engine-vagrant.sh"
-FLTH_MACHINE_DIR="$SANDBOX/machine"
-VAGRANT_DOTFILE_PATH="$FLTH_MACHINE_DIR/vagrant"
-mkdir -p "$VAGRANT_DOTFILE_PATH/machines/default/qemu"
-key="$VAGRANT_DOTFILE_PATH/machines/default/qemu/private_key"
-printf old > "$key"
-printf stopped > "$SANDBOX/state"
-engine_state() { cat "$SANDBOX/state"; }
-engine_up() {
-    printf '%s/%s\n' "${FLTH_TMP_BOOTSTRAP:-unset}" "$1" >> "$SANDBOX/calls"
-    printf prepared > "$key"
-    printf running > "$SANDBOX/state"
-}
-engine_run() { [ ! -f "$SANDBOX/fail-sync" ]; }
-engine_down() { printf stopped > "$SANDBOX/state"; }
-
-engine_vagrant_prepare_disk_tmp
-check_eq "$?" 0 'preparation succeeds'
-check_eq "$(cat "$SANDBOX/calls")" '1/--persist' 'preparation boots the base disk persistently'
-check_eq "$(cat "$key")" prepared 'the prepared disk keeps its matching key'
-check_eq "$([ -f "$FLTH_MACHINE_DIR/disk-tmp-ready" ] && echo ready)" ready 'successful shutdown records preparation'
-engine_vagrant_prepare_disk_tmp
-check_eq "$(wc -l < "$SANDBOX/calls" | tr -d ' ')" 1 'a prepared disk is not bootstrapped again'
-rm -f "$FLTH_MACHINE_DIR/disk-tmp-ready"
-touch "$SANDBOX/fail-sync"
-engine_vagrant_prepare_disk_tmp 2>/dev/null
-check_eq "$?" 1 'verification failure refuses preparation'
-check_eq "$([ -f "$FLTH_MACHINE_DIR/disk-tmp-ready" ] && echo ready)" '' 'failed verification never records readiness'
-check_eq "$([ -f "$FLTH_MACHINE_DIR/disk-tmp-started" ] && echo started)" started 'failed preparation remains retryable'
-rm -f "$SANDBOX/fail-sync"
-engine_vagrant_prepare_disk_tmp
-check_eq "$?" 0 'interrupted preparation can be retried'
+export SANDBOX
+mkdir -p "$SANDBOX/bin"
+cat > "$SANDBOX/bin/findmnt" <<'EOF'
+#!/usr/bin/env bash
+case "${*: -1}" in
+    /tmp) if [ -f "$SANDBOX/bound" ]; then echo ext4; else echo tmpfs; fi ;;
+    *) if [ -f "$SANDBOX/bad-disk" ]; then echo tmpfs; else echo ext4; fi ;;
+esac
+EOF
+cat > "$SANDBOX/bin/mount" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SANDBOX/mounts"
+touch "$SANDBOX/bound"
+EOF
+cat > "$SANDBOX/bin/mkdir" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cp "$SANDBOX/bin/mkdir" "$SANDBOX/bin/chmod"
+chmod +x "$SANDBOX/bin/"*
+export PATH="$SANDBOX/bin:$PATH"
+bash "$REPO/vagrant/guest/disk-tmp.sh"
+check_eq "$?" 0 'provisioning succeeds'
+check_eq "$(cat "$SANDBOX/mounts")" '--bind /var/lib/fs-linux-test-harness/boot-tmp /tmp' 'tmpfs is covered by disk-backed scratch'
+bash "$REPO/vagrant/guest/disk-tmp.sh"
+check_eq "$?" 0 'repeated provisioning succeeds'
+check_eq "$(wc -l < "$SANDBOX/mounts" | tr -d ' ')" 1 'repeated provisioning does not stack mounts'
+touch "$SANDBOX/bad-disk"
+bash "$REPO/vagrant/guest/disk-tmp.sh" 2>/dev/null
+check_eq "$?" 1 'RAM-backed scratch directory is refused'
 finish guest-tmp-bootstrap

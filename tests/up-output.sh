@@ -52,7 +52,6 @@ export FLTH_CONFIG="$SANDBOX/c/fs-linux-test-harness.toml"
 . "$REPO/scripts/lib/common.sh"
 flth_load
 engine_prepare
-engine_vagrant_prepare_disk_tmp() { :; }
 
 started="$(date +%s)"
 out="$(engine_up 2>&1)"

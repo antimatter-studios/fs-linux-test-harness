@@ -300,36 +300,8 @@ engine_box_failure() {
 }
 
 # shellcheck disable=SC2120
-engine_vagrant_prepare_disk_tmp() {
-    local marker="$FLTH_MACHINE_DIR/disk-tmp-ready" started="$FLTH_MACHINE_DIR/disk-tmp-started" state rc=0
-    state="$(engine_state)" || return 1
-    if [ "$state" = absent ]; then rm -f "$marker" "$started"; fi
-    [ ! -f "$marker" ] || return 0
-    case "$state" in
-        absent | stopped) ;;
-        *) echo "vm: disk scratch preparation requires a stopped guest, got $state" >&2; return 1 ;;
-    esac
-    if [ ! -f "$started" ]; then
-        if [ -z "${FLTH_PROFILE_ID:-}" ]; then
-            rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
-        fi
-        : > "$started" || return 1
-    fi
-    FLTH_TMP_BOOTSTRAP=1 engine_up --persist || return 1
-    engine_run 'test "$(systemctl is-enabled tmp.mount 2>/dev/null || true)" = masked && test "$(findmnt -n -o FSTYPE -T /tmp)" != tmpfs && sync' >&2 || rc=$?
-    engine_down >&2 || rc=1
-    state="$(engine_state)" || return 1
-    [ "$state" = stopped ] || { echo "vm: disk scratch preparation could not confirm guest shutdown ($state)" >&2; return 1; }
-    [ "$rc" = 0 ] || return "$rc"
-    : > "$marker" || return 1
-    rm -f "$started"
-}
-
 engine_up() {
     local tmp disposable=1 port dir kernel="" initrd="" cmdline=""
-    if [ "${FLTH_TMP_BOOTSTRAP:-}" != 1 ]; then
-        engine_vagrant_prepare_disk_tmp || return 1
-    fi
     [ "${1:-}" = --persist ] && disposable=0
     # What the last attempt said is not what this one says, if this one fails
     # before it gets to Vagrant.
@@ -352,8 +324,9 @@ engine_up() {
     export FLTH_VM_SSH_PORT="$port"
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
-    # The preparation boot persists Vagrant's authorized key on the base disk;
-    # its matching host key must survive disposable boots and preparation retries.
+    if [ -z "${FLTH_PROFILE_ID:-}" ]; then
+        rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
+    fi
     # A new guest has no device attached, whatever an earlier one left on record.
     engine_vagrant_forget_attached
     # QEMU starts the log afresh, but a boot that fails before QEMU starts
@@ -438,7 +411,6 @@ engine_destroy() {
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     engine_vagrant_retrying destroy -f >&2 || return
-    rm -f "$FLTH_MACHINE_DIR/disk-tmp-ready" "$FLTH_MACHINE_DIR/disk-tmp-started"
     # The disk that authorized this key has gone; a fresh box starts with its own.
     rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
     engine_vagrant_forget_attached
