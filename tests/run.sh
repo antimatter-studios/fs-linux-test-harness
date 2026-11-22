@@ -9,6 +9,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO" || exit 1
 . "$REPO/tests/lib.sh"
+. "$REPO/scripts/lib/common.sh"
 require_guest_bash || exit 1
 failed=0
 
@@ -60,12 +61,11 @@ if [ -z "$suites" ]; then
 fi
 # Several files at once, each printed whole and in order (#215): most of a file's time
 # is waiting, and one after another the suite took 12 to 14 of the macOS job's 15
-# minutes. FLTH_TEST_JOBS sets how many; by default the host's CPUs, at most four.
-jobs="${FLTH_TEST_JOBS:-$( (getconf _NPROCESSORS_ONLN || sysctl -n hw.ncpu) 2>/dev/null || echo 1)}"
-case "$jobs" in '' | *[!0-9]*) jobs=1 ;; esac
-[ "${FLTH_TEST_JOBS:-}" ] || [ "$jobs" -le 4 ] || jobs=4
+# minutes. The selected resource profile or FLTH_TEST_JOBS caps concurrency.
+FLTH_TEST_JOBS="$(flth_test_jobs_resolve)" || exit 1
+export FLTH_TEST_JOBS
 # shellcheck disable=SC2086  # the file list splits into words
-run_suites "$jobs" $suites || failed=1
+run_suites "$FLTH_TEST_JOBS" $suites || failed=1
 
 echo
 if [ "$failed" = 0 ]; then

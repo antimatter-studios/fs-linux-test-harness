@@ -255,8 +255,7 @@ check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=1" "a plain up
 : > "$STUBDIR/log"
 engine_up --persist 2>/dev/null
 
-# THE SHARED MACHINE'S DISK NEVER KEEPS VAGRANT'S KEY (#153), so a later boot must not
-# offer it.
+# The shared disk does not retain the Vagrant key across disposable boots.
 key="$VAGRANT_DOTFILE_PATH/machines/default/qemu/private_key"
 mkdir -p "$(dirname "$key")"
 : > "$key"

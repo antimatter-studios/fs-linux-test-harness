@@ -324,13 +324,6 @@ engine_up() {
     export FLTH_VM_SSH_PORT="$port"
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
-    # THE SHARED GUEST'S DISK NEVER KEEPS VAGRANT'S KEY. Vagrant replaces the box's
-    # key with one of its own on a machine's first boot and connects with it from then
-    # on. The shared machine has no boot whose writes are kept, so the key went with
-    # the overlay and every later boot failed with `Authentication failure` until its
-    # timeout (measured on an Apple Silicon host, #153). Forgetting the machine's copy
-    # makes each boot a first boot to Vagrant. A profile's preparation DOES keep
-    # that guest key, so its matching host key survives every later boot too.
     if [ -z "${FLTH_PROFILE_ID:-}" ]; then
         rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
     fi

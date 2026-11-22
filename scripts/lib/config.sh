@@ -27,6 +27,7 @@
 #   [vm]      memory            string, default "2G"
 #   [vm]      cpus              integer, default 4
 #   [vm]      build_jobs        integer, resource-profile default; environment override
+#   [vm]      test_jobs         integer, resource-profile default; environment override
 #   [vm]      disk              string, default "32G"
 #   [vm]      ssh_port          integer, default 50122
 #   [vm]      deadline_minutes  integer, default 480
@@ -82,6 +83,7 @@ flth_config_key_type() {
         vm.memory)           echo string ;;
         vm.cpus)             echo integer ;;
         vm.build_jobs)       echo integer ;;
+        vm.test_jobs)        echo integer ;;
         vm.disk)             echo string ;;
         vm.ssh_port)         echo integer ;;
         vm.deadline_minutes) echo integer ;;
@@ -116,6 +118,7 @@ flth_config_load() {
     CFG_vm_memory="2G"
     CFG_vm_cpus="4"
     CFG_vm_build_jobs="${FLTH_BUILD_JOBS_DEFAULT:-1}"
+    CFG_vm_test_jobs="${FLTH_TEST_JOBS_DEFAULT:-1}"
     CFG_vm_disk="32G"
     CFG_vm_ssh_port="50122"
     CFG_vm_deadline_minutes="480"
@@ -213,6 +216,7 @@ flth_config_load() {
     # FLTH_BUILD_JOBS is the harness's own name. The variable it is exported as in
     # the guest is still read from the host below it, as before resource profiles (#264).
     CFG_vm_build_jobs="${FLTH_BUILD_JOBS:-${CARGO_BUILD_JOBS:-$CFG_vm_build_jobs}}"
+    CFG_vm_test_jobs="${FLTH_TEST_JOBS:-$CFG_vm_test_jobs}"
     flth_config_validate "$file"
 }
 
@@ -232,6 +236,8 @@ flth_config_validate() {
         { flth_config_error "$file: [vm] disk must look like 32G, got '$CFG_vm_disk'"; return 1; }
     [[ "$CFG_vm_build_jobs" =~ ^[1-9][0-9]{0,5}$ ]] ||
         { flth_config_error "$file: [vm] build_jobs or its environment override must be a positive integer of at most six digits, got '$CFG_vm_build_jobs'"; return 1; }
+    [[ "$CFG_vm_test_jobs" =~ ^[1-9][0-9]{0,5}$ ]] ||
+        { flth_config_error "$file: [vm] test_jobs or its environment override must be a positive integer of at most six digits, got '$CFG_vm_test_jobs'"; return 1; }
     { [ "$CFG_vm_cpus" -ge 1 ] && [ "$CFG_vm_cpus" -le 64 ]; } ||
         { flth_config_error "$file: [vm] cpus must be between 1 and 64, got $CFG_vm_cpus"; return 1; }
     { [ "$CFG_vm_ssh_port" -ge 1024 ] && [ "$CFG_vm_ssh_port" -le 65535 ]; } ||

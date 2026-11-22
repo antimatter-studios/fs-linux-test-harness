@@ -24,7 +24,7 @@
 #   direct I/O    a file on either share opens with O_DIRECT, as an image
 #                 tool opens it (#26)
 #   file size     the root disk's 2 TiB file limit is what its features say,
-#                 and a run's own tmpfs takes a larger sparse file (#219)
+#                 and a disk-backed filesystem takes a larger sparse file (#219)
 #   hard link     a file hard-linked on either share opens under its new
 #                 name at once after its first name is removed (#162)
 #   xattr name    an extended attribute whose name is not UTF-8 sets and reads
@@ -432,23 +432,23 @@ step "file size: the guest's own disk and the documented way past it (#219)"
 # stops at 2 TiB (seen on the macOS arm64 Debian 12 guest; CI's x86_64 guests have
 # huge_file): a sparse format-maximum image fails with
 # EFBIG on /var/tmp, which a run binds from the root disk. The README names the
-# limit ("Where a tool works on an image") and its workaround, a tmpfs mounted
-# in the run's own namespace, which holds a sparse file of any size the kernel
-# allows. The root's own feature list is the oracle: the check holds the guest
+# limit ("Where a tool works on an image") and its disk-backed workaround.
+# The root's own feature list is the oracle: the check holds the guest
 # to whichever answer that list gives, so a box that gains huge_file shows here.
 out="$("$VM" run 'f=/var/tmp/.smoke-big; rm -f $f
 if truncate -s 3T $f 2>/dev/null; then echo root=fits; else echo root=efbig; fi; rm -f $f
 dev="$(df --output=source / | tail -n 1)"
 if ! features="$(tune2fs -l "$dev" 2>/dev/null | sed -n "s/^Filesystem features://p")"; then echo features=unknown
 elif printf "%s\n" "$features" | grep -w huge_file >/dev/null; then echo features=huge; else echo features=nohuge; fi
-d="$(mktemp -d /var/tmp/.smoke-ram.XXXXXX)"
-mount -t tmpfs -o size=64m flth-smoke "$d" && truncate -s 3T "$d/big" && echo ram=fits; umount "$d" 2>/dev/null; rmdir "$d"' 2>"$CONTENDER/big-file.err")"
+d="$(mktemp -d /var/tmp/.smoke-disk.XXXXXX)"
+truncate -s 64M "$d/fs.img" && mkfs.ext4 -q -F -b 4096 -O huge_file "$d/fs.img" && mkdir "$d/mnt" && mount -o loop "$d/fs.img" "$d/mnt" && truncate -s 3T "$d/mnt/big" && [ "$(stat -c %s "$d/mnt/big")" = 3298534883328 ] && echo disk=fits
+umount "$d/mnt" 2>/dev/null; rm -rf "$d"' 2>"$CONTENDER/big-file.err")"
 case "$out" in
     *features=nohuge*) check_contains "$out" root=efbig "without huge_file, a 3 TiB sparse file on /var/tmp is refused, as the README says" ;;
     *features=huge*) check_contains "$out" root=fits "with huge_file, a 3 TiB sparse file on /var/tmp fits (this guest's root has no 2 TiB limit)" ;;
     *) bad "the guest root's ext4 features could not be read: $out $(tail -n 3 "$CONTENDER/big-file.err" | tr '\n' ' ')" ;;
 esac
-check_contains "$out" ram=fits "a 3 TiB sparse file fits on a tmpfs mounted in the run's own namespace"
+check_contains "$out" disk=fits "a 3 TiB sparse file fits on a disk-backed huge_file filesystem"
 step "share: a hard-linked file opens at once after its first name goes (#162)"
 # An export that publishes with a hard link and then removes its staging name
 # reads the file straight after. On a Mac (virtiofsd 1.14.0) the new name was
@@ -598,6 +598,8 @@ check_eq "$rc" 0 "vm.sh guest-test exits 0 for a passing in-guest suite"
 check_contains "$(cat "$CONTENDER/guest-test.log")" "in-guest suite: $repo_guest as root" \
     "the command ran in the guest, from the repository mount"
 check_contains "$(cat "$CONTENDER/guest-test.log")" 'in-guest build jobs: 1' 'the real guest-test inherits one build job'
+check_contains "$(cat "$CONTENDER/guest-test.log")" 'in-guest scratch: /var/tmp/flth-tmp' 'the real guest-test uses disk-backed scratch'
+check_eq "$("$VM" exec 'test -e "$(cat /share/scratch-root)" && echo left || echo gone' 2>/dev/null)" gone 'the completed run removes its temporary directory'
 check_eq "$(cat "$("$VM" share)/results/verdict" 2>/dev/null)" pass "and its results are on the share"
 check_eq "$(state)" running "the guest stays up for the next run"
 

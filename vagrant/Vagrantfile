@@ -152,7 +152,7 @@ boot_cmdline = ENV["FLTH_VM_BOOT_CMDLINE"].to_s
 unless boot_cmdline.empty?
   raise "FLTH_VM_BOOT_CMDLINE needs a kernel and initrd" if boot_kernel.empty? || boot_initrd.empty?
   raise "FLTH_VM_BOOT_CMDLINE must be one printable line" unless boot_cmdline =~ /\A[ -~]+\z/
-  kernel_args += ["-append", boot_cmdline]
+  kernel_args += ["-append", "#{boot_cmdline} systemd.mask=tmp.mount"]
 end
 
 # A DISPLAY DEVICE ON x86_64 (#70). The provider passes `-vga none`, and
@@ -307,6 +307,8 @@ Vagrant.configure("2") do |config|
   # a keyboard and holds the dpkg lock for ever; this disables it and
   # automatic updates, then waits out anything else and fails, naming the holder, if it will not
   # let go. First, so it precedes everything that follows a boot.
+  config.vm.provision "disk-tmp", type: "shell", run: "always",
+                      path: "guest/disk-tmp.sh"
   config.vm.provision "apt-ready", type: "shell", run: "always",
                       path: "guest/apt-ready.sh"
 

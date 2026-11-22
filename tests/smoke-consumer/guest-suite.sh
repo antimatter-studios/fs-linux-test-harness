@@ -10,8 +10,8 @@
 # is copied in, the image is built and checked under /var/tmp, and only
 # the finished artefacts are copied back. The share is a host directory
 # behind a daemon, not a disk: on the macOS engine an O_DIRECT open of a
-# shared file fails with ENOTDIR, and over 9p mmap and chown fail. /var/tmp,
-# not /tmp: a tmpfs /tmp is sized from the guest's RAM.
+# shared file fails with ENOTDIR, and over 9p mmap and chown fail. The guest's
+# /tmp and /var/tmp are disk-backed.
 # tests/guest-scratch.sh refuses an image tool pointed at the share.
 set -euo pipefail
 

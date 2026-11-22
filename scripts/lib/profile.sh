@@ -75,6 +75,9 @@ profile_install() {
     engine_run "set -euo pipefail
 export FLTH_BUILD_JOBS=$CFG_vm_build_jobs
 export CARGO_BUILD_JOBS=$CFG_vm_build_jobs
+export FLTH_TEST_JOBS=$CFG_vm_test_jobs
+export RUST_TEST_THREADS=$CFG_vm_test_jobs
+export TMPDIR=/var/tmp
 payload='$FLTH_PROFILE_PAYLOAD'
 if [ -n \"\$payload\" ]; then
     tmp=\"\$(mktemp)\"

@@ -135,6 +135,28 @@ resource profile. Set `[vm] build_jobs` for a consumer-specific default, or
 per call, so consumers sharing a guest keep their own build limits. Commands
 on the host are unchanged.
 
+`FLTH_TEST_JOBS` controls how many tests run at once, both for the harness's own
+test suites and for consumer tests in the guest, where it is mapped to
+`RUST_TEST_THREADS`. The resource profile supplies the default; `[vm] test_jobs`
+changes a consumer's default and the host's `FLTH_TEST_JOBS` overrides it.
+Guest limits apply per command, not across consumers sharing the guest.
+On self-hosted runners, select `FLTH_RESOURCE_PROFILE=low` and allow generous
+job timeouts for serial builds and tests. Prefer limiting concurrency to
+increasing guest memory or CPU allocation just to make a suite pass.
+Within each run, `TMPDIR` names `/var/tmp/flth-tmp` on the guest disk; it is
+private to that run and removed with it. Setup and VM-profile preparation use
+the guest's disk-backed `/var/tmp` instead. A consumer may override `TMPDIR`
+inside its own command. Both `/tmp` and `/var/tmp` in a run are already bound
+from its disk-backed run root. Direct profile kernel boots mask `tmp.mount` on
+the kernel command line. Box boots use their own bootloader or provider command
+line, so an always-run provisioner binds a disk-backed directory over `/tmp`
+if necessary. On those boots `/tmp` may be tmpfs before provisioning finishes;
+cached boxes are not modified. The operating system's `/run` and `/dev/shm`
+mounts are unchanged; suites should use `TMPDIR`, not those RAM-backed mounts.
+When a guest command fails, the harness prints matching kernel out-of-memory
+messages recorded during that call. The guest is shared, so those messages may
+belong to another concurrent run and do not by themselves identify the cause.
+
 **4. Use it.**
 
 ```sh
@@ -269,8 +291,8 @@ x86_64 and shares over 9p.
 Each of these reads as a verdict on the image rather than on where it
 was kept. So **a tool that works on an image works on the guest's own disk**:
 copy the image (or the source tree) to `/var/tmp`, run the tool there, and
-copy only the finished artefact back to `/share`. `/var/tmp`, not `/tmp`:
-a tmpfs `/tmp` is sized from the guest's RAM. A tool that only reads its
+copy only the finished artefact back to `/share`. Each run also binds `/tmp`
+to its own disk-backed directory. A tool that only reads its
 image with buffered I/O works on the shares, but a suite that copies does
 not have to know which of its tools those are.
 
@@ -282,19 +304,21 @@ the guest's root disk, and where the box formats that disk as ext4 without
 have `huge_file` and take a 3 TiB sparse file (`chore smoke`, 2026-11-15).
 The disk is the box's and every boot is disposable, so the harness does not
 reformat it. A suite that makes a larger image, such as a sparse format-maximum
-volume, mounts a tmpfs of its own and makes the image there, in the run's
-private mount namespace, where the mount goes when the run ends:
+volume, can use a disk-backed filesystem formatted with `huge_file`, mounted
+in the run's private mount namespace. For example:
 
 ```sh
-mkdir -p /var/tmp/big && mount -t tmpfs -o size=1g big /var/tmp/big
-truncate -s 3T /var/tmp/big/volume.img   # sparse: only written pages count
+truncate -s 1G /var/tmp/scratch.img
+mkfs.ext4 -F -b 4096 -O huge_file /var/tmp/scratch.img
+mkdir -p /var/tmp/big && mount -o loop /var/tmp/scratch.img /var/tmp/big
+truncate -s 3T /var/tmp/big/volume.img
+# After use: umount /var/tmp/big; rm -f /var/tmp/scratch.img
 ```
 
-A sparse file costs a tmpfs only the pages written to it, and those come
-from the guest's RAM, so size the mount for what the suite writes, not for
-the image's length. `chore smoke` checks both halves on every guest it
+Size the scratch filesystem for the data actually written, not the sparse
+image's apparent length. `chore smoke` checks both halves on every guest it
 boots: that the root's own feature list agrees with what a 3 TiB sparse file
-does there, and that one fits on a tmpfs mounted in a run.
+does there, and that one fits on a disk-backed filesystem mounted in a run.
 
 The smoke consumer does exactly this (`tests/smoke-consumer/guest-suite.sh`),
 and `tests/guest-scratch.sh` fails the build if any of its guest-side
@@ -449,6 +473,7 @@ chose.
 | `[cache] size` | string | none | **Declares a cache that outlives a run**, e.g. `16G`. A directory of the shared guest's, mounted at `/cache` in every run of this consumer and kept across its runs for as long as the guest is up. It goes with the boot (#186), and the size is not enforced. For in-guest build state a run can rebuild but should not have to: point a toolchain's home or build directory under `/cache`. No `[cache]` section, no `/cache`. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
 | `[vm] build_jobs` | integer | resource profile | Guest build concurrency, exported as `FLTH_BUILD_JOBS` and mapped to `CARGO_BUILD_JOBS` for setup, VM-profile preparation, `run`, `exec` and `guest-test`. Positive, at most six digits. `FLTH_BUILD_JOBS`, then a host `CARGO_BUILD_JOBS`, overrides this config value. |
+| `[vm] test_jobs` | integer | resource profile | Consumer test limit; host `FLTH_TEST_JOBS` overrides it. Positive, at most six digits. |
 | *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
 | `[vm] memory`, `[vm] cpus`, `[vm] disk`, `[vm] ssh_port`, `[vm] deadline_minutes` | | | **Read and validated, and not used.** They described the VM of its own a consumer had before the shared guest was the only one. The shared guest's size and deadline are the host's: `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` and `FLTH_SHARED_DEADLINE` (see [Environment](#environment)). They may be removed from a consumer's config. |
 | `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. Each release is a shared guest of its own (`machines/shared-<guest>/`). A consumer needing both runs a second config with its own `[project] name` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
@@ -497,6 +522,7 @@ relative, and must not leave the repository.
 | `FLTH_CONFIG` | search upward | Path of the consumer's config. |
 | `FLTH_RESOURCE_PROFILE` | selected from host | Resource preset: `high`, `medium` or `low`. Host detection selects `high` on macOS, `medium` on a Raspberry Pi, and `low` on GitHub Actions or other hosts. |
 | `FLTH_BUILD_JOBS` | selected resource profile | Positive guest build limit, at most six digits. Overrides `[vm] build_jobs` and is exported into guest commands. |
+| `FLTH_TEST_JOBS` | selected resource profile | Test limit described above; positive, at most six digits. |
 | `CARGO_BUILD_JOBS` | none | Read on the host when `FLTH_BUILD_JOBS` is unset, and overrides `[vm] build_jobs` the same way. |
 | `FLTH_TEST_MEMINFO` | `/proc/meminfo` on Linux | Explicit Linux host-memory fixture for stub-engine tests. It must contain a `MemAvailable:` field in KiB; missing or unreadable input refuses the boot. Leave unset for real host admission. |
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/shared-<guest>/`) and firmware links. Must be the same for every consumer on the host, or each gets a guest of its own. |
@@ -903,16 +929,16 @@ use the same definitions. Without a profile, the existing pinned guest and
 The harness chooses a resource profile from the host running it: `high` on
 macOS, `medium` on a Raspberry Pi, and `low` on GitHub Actions or an unrecognized
 host. Set `FLTH_RESOURCE_PROFILE=high`, `medium` or `low` to choose explicitly.
-The selected profile supplies build jobs and the shared guest's memory and
-CPUs; `FLTH_BUILD_JOBS`, `FLTH_SHARED_MEMORY` and `FLTH_SHARED_CPUS` override
+The selected profile supplies build and test jobs and the shared guest's memory and
+CPUs; `FLTH_BUILD_JOBS`, `FLTH_TEST_JOBS`, `FLTH_SHARED_MEMORY` and `FLTH_SHARED_CPUS` override
 those defaults. Guest memory and CPUs take effect when the shared guest next
-boots; build jobs apply to each call.
+boots; build and test jobs apply to each call.
 
-| Profile | Guest memory | Guest CPUs | Build jobs |
-| --- | ---: | ---: | ---: |
-| `high` | 8G | 8 | 8 |
-| `medium` | 4G | 2 | 2 |
-| `low` | 2G | 2 | 1 |
+| Profile | Guest memory | Guest CPUs | Build jobs | Test jobs |
+| --- | ---: | ---: | ---: | ---: |
+| `high` | 8G | 8 | 8 | 8 |
+| `medium` | 4G | 2 | 2 | 2 |
+| `low` | 2G | 2 | 1 | 1 |
 
 A profile does not limit how many runs' trees the guest holds:
 `FLTH_SHARED_SLOTS` is 32 on every profile. A worktree's standing run keeps

@@ -71,7 +71,7 @@ new_sandbox() {
     # What a guest or a person's shell leaves set, which sends a test somewhere else.
     unset FLTH_GUEST FLTH_SHARED_ROOT FLTH_SHARED_MEMORY FLTH_SHARED_CPUS FLTH_SHARED_DISK FLTH_SHARED_DEADLINE
     unset FLTH_PROFILE FLTH_PROFILE_DIR FLTH_VM_PROFILE FLTH_VM_PROFILE_DIR
-    unset FLTH_RESOURCE_PROFILE FLTH_BUILD_JOBS CARGO_BUILD_JOBS FLTH_SHARED_SLOTS
+    unset FLTH_RESOURCE_PROFILE FLTH_BUILD_JOBS CARGO_BUILD_JOBS RUST_TEST_THREADS FLTH_SHARED_SLOTS
     export FLTH_RESOURCE_PROFILE=high
     # A test that means to have a watchdog asks for one (tests/guest-watchdog.sh).
     export FLTH_WATCHDOG=off

@@ -99,16 +99,19 @@ flth_resource_profile_load() {
     case "$FLTH_RESOURCE_PROFILE_NAME" in
         high)
             FLTH_BUILD_JOBS_DEFAULT=8
+            FLTH_TEST_JOBS_DEFAULT=8
             FLTH_SHARED_MEMORY_DEFAULT=8G
             FLTH_SHARED_CPUS_DEFAULT=8
             ;;
         medium)
             FLTH_BUILD_JOBS_DEFAULT=2
+            FLTH_TEST_JOBS_DEFAULT=2
             FLTH_SHARED_MEMORY_DEFAULT=4G
             FLTH_SHARED_CPUS_DEFAULT=2
             ;;
         low)
             FLTH_BUILD_JOBS_DEFAULT=1
+            FLTH_TEST_JOBS_DEFAULT=1
             FLTH_SHARED_MEMORY_DEFAULT=2G
             FLTH_SHARED_CPUS_DEFAULT=2
             ;;
@@ -118,6 +121,16 @@ flth_resource_profile_load() {
             ;;
     esac
     FLTH_SHARED_DISK_DEFAULT=64G
+}
+
+flth_test_jobs_resolve() {
+    flth_resource_profile_load || return 1
+    local jobs="${FLTH_TEST_JOBS:-$FLTH_TEST_JOBS_DEFAULT}"
+    [[ "$jobs" =~ ^[1-9][0-9]{0,5}$ ]] || {
+        flth_config_error "FLTH_TEST_JOBS must be a positive integer of at most six digits, got '$jobs'"
+        return 1
+    }
+    printf '%s\n' "$jobs"
 }
 
 # THE SHARED GUEST (#153, #220, #222). Suites with the same run environment use

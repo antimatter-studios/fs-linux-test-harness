@@ -1460,6 +1460,8 @@ guest_call() {
 {
 export FLTH_BUILD_JOBS=$CFG_vm_build_jobs
 export CARGO_BUILD_JOBS=$CFG_vm_build_jobs
+export FLTH_TEST_JOBS=$CFG_vm_test_jobs
+export RUST_TEST_THREADS=$CFG_vm_test_jobs
 flth_rearm() {
     local now last=0
     [ -f $FLTH_GUEST_HOLD_MARKER ] && return 0
@@ -1506,6 +1508,7 @@ flth_stop() {
 }
 flth_rearm
 trap flth_rearm EXIT
+flth_started="\$(date '+%Y-%m-%d %H:%M:%S')"
 perl -e '\$SIG{INT} = \$SIG{QUIT} = "DEFAULT"; setpgrp(0, 0) or die "vm: the guest command has no process group of its own: \$!\n"; exec { \$ARGV[0] } @ARGV or exit 127' \\
 "\$BASH" -c '${1//$single/$escaped}' < /dev/null &
 flth_command=\$!
@@ -1519,6 +1522,12 @@ flth_watcher=\$!
 wait "\$flth_command"
 flth_status=\$?
 { kill -TERM "\$flth_watcher"; wait "\$flth_watcher"; } 2> /dev/null
+if [ "\$flth_status" -ne 0 ]; then
+    flth_oom="\$(dmesg --since "\$flth_started" 2>/dev/null | grep -iE 'out of memory|oom-kill|killed process' || true)"
+    if [ -n "\$flth_oom" ]; then
+        printf '%s\n%s\n' 'vm: shared guest kernel OOM messages during this call (another run may be responsible):' "\$flth_oom" >&2
+    fi
+fi
 exit "\$flth_status"
 }
 EOF
@@ -1594,6 +1603,7 @@ project.name=$CFG_project_name
 vm.memory=$CFG_vm_memory
 vm.cpus=$CFG_vm_cpus
 vm.build_jobs=$CFG_vm_build_jobs
+vm.test_jobs=$CFG_vm_test_jobs
 vm.disk=$CFG_vm_disk
 vm.ssh_port=$CFG_vm_ssh_port
 vm.deadline_minutes=$CFG_vm_deadline_minutes
