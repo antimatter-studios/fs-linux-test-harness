@@ -308,7 +308,7 @@ Vagrant.configure("2") do |config|
   # automatic updates, then waits out anything else and fails, naming the holder, if it will not
   # let go. First, so it precedes everything that follows a boot.
   config.vm.provision "disk-tmp", type: "shell", run: "always",
-                      path: "guest/disk-tmp.sh"
+                      path: "guest/disk-tmp.sh", args: [disposable ? "1" : "0"]
   config.vm.provision "apt-ready", type: "shell", run: "always",
                       path: "guest/apt-ready.sh"
 

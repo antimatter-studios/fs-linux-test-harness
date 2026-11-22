@@ -131,7 +131,7 @@ check_eq "$(field config/$P.memory)|$(field config/$P.smp)|$(field config/$P.dis
 check_contains "$(field config/vm.provision)" '"run":"always"' "  provisioners re-run on every boot"
 check_contains "$(field config/vm.provision)" '["480"]' "  the deadline minutes are passed as an argument"
 check_eq "$(field config/vagrant.plugins)" "{}" "  the box's own plugin declaration is cleared"
-check_contains "$(field config/vm.provision)" '[[["disk-tmp"],{"type":"shell","run":"always","path":"guest/disk-tmp.sh"}]' \
+check_contains "$(field config/vm.provision)" '[[["disk-tmp"],{"type":"shell","run":"always","path":"guest/disk-tmp.sh","args":["1"]}]' \
     "  disk-backed /tmp is set up first on every boot"
 check_contains "$(field config/vm.provision)" '"path":"guest/apt-ready.sh"' \
     "  the package manager is made ready on every boot"

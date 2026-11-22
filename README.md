@@ -147,7 +147,9 @@ Within each run, `TMPDIR` names `/var/tmp/flth-tmp` on the guest disk; it is
 private to that run and removed with it. Setup and VM-profile preparation use
 the guest's disk-backed `/var/tmp` instead. A consumer may override `TMPDIR`
 inside its own command. Both `/tmp` and `/var/tmp` in a run are already bound
-from its disk-backed run root. The base guest's `/tmp` is also disk-backed.
+from its disk-backed run root. Before a machine's first test boot, the harness
+prepares its base disk with `tmp.mount` masked; subsequent boots have a plain,
+disk-backed `/tmp`. Existing cached machines are prepared the same way.
 The operating system's `/run` and `/dev/shm` mounts are unchanged.
 When a guest command fails, the harness prints matching kernel out-of-memory
 messages recorded during that call. The guest is shared, so those messages may
