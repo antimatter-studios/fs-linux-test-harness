@@ -123,6 +123,16 @@ flth_resource_profile_load() {
     FLTH_SHARED_DISK_DEFAULT=64G
 }
 
+flth_test_jobs_resolve() {
+    flth_resource_profile_load || return 1
+    local jobs="${FLTH_TEST_JOBS:-$FLTH_TEST_JOBS_DEFAULT}"
+    [[ "$jobs" =~ ^[1-9][0-9]{0,5}$ ]] || {
+        flth_config_error "FLTH_TEST_JOBS must be a positive integer of at most six digits, got '$jobs'"
+        return 1
+    }
+    printf '%s\n' "$jobs"
+}
+
 # THE SHARED GUEST (#153, #220, #222). Suites with the same run environment use
 # one guest. The machine is therefore nobody's: it is named for its profile (or
 # its default guest release), and what a

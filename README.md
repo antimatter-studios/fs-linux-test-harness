@@ -135,10 +135,11 @@ resource profile. Set `[vm] build_jobs` for a consumer-specific default, or
 per call, so consumers sharing a guest keep their own build limits. Commands
 on the host are unchanged.
 
-Guest commands also export `FLTH_TEST_JOBS` and map it to `RUST_TEST_THREADS`.
-The resource profile supplies the default; `[vm] test_jobs` changes a consumer's
-default and the host's `FLTH_TEST_JOBS` overrides it for an invocation. These
-limits apply per command, not across consumers sharing the guest.
+`FLTH_TEST_JOBS` controls how many tests run at once, both for the harness's own
+test suites and for consumer tests in the guest, where it is mapped to
+`RUST_TEST_THREADS`. The resource profile supplies the default; `[vm] test_jobs`
+changes a consumer's default and the host's `FLTH_TEST_JOBS` overrides it.
+Guest limits apply per command, not across consumers sharing the guest.
 On self-hosted runners, select `FLTH_RESOURCE_PROFILE=low` and allow generous
 job timeouts for serial builds and tests. Prefer limiting concurrency to
 increasing guest memory or CPU allocation just to make a suite pass.
@@ -467,7 +468,7 @@ chose.
 | `[cache] size` | string | none | **Declares a cache that outlives a run**, e.g. `16G`. A directory of the shared guest's, mounted at `/cache` in every run of this consumer and kept across its runs for as long as the guest is up. It goes with the boot (#186), and the size is not enforced. For in-guest build state a run can rebuild but should not have to: point a toolchain's home or build directory under `/cache`. No `[cache]` section, no `/cache`. |
 | `[share] dir` | string | `.vm-share` | Host side of the shared directory, relative to the repository (gitignore it). Always `/share` in the guest. |
 | `[vm] build_jobs` | integer | resource profile | Guest build concurrency, exported as `FLTH_BUILD_JOBS` and mapped to `CARGO_BUILD_JOBS` for setup, VM-profile preparation, `run`, `exec` and `guest-test`. Positive, at most six digits. `FLTH_BUILD_JOBS`, then a host `CARGO_BUILD_JOBS`, overrides this config value. |
-| `[vm] test_jobs` | integer | resource profile | Guest test concurrency, exported as `FLTH_TEST_JOBS` and `RUST_TEST_THREADS`. Positive, at most six digits. Host `FLTH_TEST_JOBS` overrides this config value. |
+| `[vm] test_jobs` | integer | resource profile | Consumer test limit; host `FLTH_TEST_JOBS` overrides it. Positive, at most six digits. |
 | *(no key)* | | | **The consumer repository itself is mounted at `/repo` in the guest, read-write, on every boot.** It is what makes `[test] guest_command` possible, and it means a file a test wrote under the checkout is already visible in the guest — nothing to copy. |
 | `[vm] memory`, `[vm] cpus`, `[vm] disk`, `[vm] ssh_port`, `[vm] deadline_minutes` | | | **Read and validated, and not used.** They described the VM of its own a consumer had before the shared guest was the only one. The shared guest's size and deadline are the host's: `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` and `FLTH_SHARED_DEADLINE` (see [Environment](#environment)). They may be removed from a consumer's config. |
 | `[vm] guest` | string | `"debian-12"` | Which pinned guest boots: `"debian-12"` (kernel 6.1) or `"debian-13"` (kernel 6.12, xfsprogs 6.13). The harness pins each release's box and version; a consumer names the release, never a box. Each release is a shared guest of its own (`machines/shared-<guest>/`). A consumer needing both runs a second config with its own `[project] name` through `FLTH_CONFIG`. `"debian-13"` is Linux hosts only: the macOS guest is Debian 12. |
@@ -516,7 +517,7 @@ relative, and must not leave the repository.
 | `FLTH_CONFIG` | search upward | Path of the consumer's config. |
 | `FLTH_RESOURCE_PROFILE` | selected from host | Resource preset: `high`, `medium` or `low`. Host detection selects `high` on macOS, `medium` on a Raspberry Pi, and `low` on GitHub Actions or other hosts. |
 | `FLTH_BUILD_JOBS` | selected resource profile | Positive guest build limit, at most six digits. Overrides `[vm] build_jobs` and is exported into guest commands. |
-| `FLTH_TEST_JOBS` | selected resource profile | Positive guest test limit, at most six digits. Overrides `[vm] test_jobs` and is exported into guest commands as `RUST_TEST_THREADS`. When running this harness's own `chore check`, it also controls concurrent host test scripts. |
+| `FLTH_TEST_JOBS` | selected resource profile | Test limit described above; positive, at most six digits. |
 | `CARGO_BUILD_JOBS` | none | Read on the host when `FLTH_BUILD_JOBS` is unset, and overrides `[vm] build_jobs` the same way. |
 | `FLTH_TEST_MEMINFO` | `/proc/meminfo` on Linux | Explicit Linux host-memory fixture for stub-engine tests. It must contain a `MemAvailable:` field in KiB; missing or unreadable input refuses the boot. Leave unset for real host admission. |
 | `FLTH_CACHE_DIR` | `${XDG_CACHE_HOME:-~/.cache}/fs-linux-test-harness` | Machines (`machines/shared-<guest>/`) and firmware links. Must be the same for every consumer on the host, or each gets a guest of its own. |

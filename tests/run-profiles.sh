@@ -163,7 +163,7 @@ check_eq "$(grep -c '^up --persist$' "$FLTH_TEST_STUB/calls" | tr -d ' ')" 1 "pr
 check_eq "$(grep -c '^up$' "$FLTH_TEST_STUB/calls" | tr -d ' ')" 1 "consumer execution has one disposable boot"
 check_eq "$(cat "$FLTH_TEST_STUB/disk/profile-setup" 2>/dev/null)" prepared "the prepared environment is kept on disk"
 check_eq "$(cat "$FLTH_TEST_STUB/disk/profile-build-jobs" 2>/dev/null)" 1 "profile setup receives the single-job build default"
-check_eq "$(cat "$FLTH_TEST_STUB/disk/profile-test-jobs" 2>/dev/null)" 1/1 "profile setup receives the single-job test default"
+check_eq "$(cat "$FLTH_TEST_STUB/disk/profile-test-jobs" 2>/dev/null)" "${FLTH_TEST_JOBS:-1}/${FLTH_TEST_JOBS:-1}" "profile setup receives the test limit"
 check_eq "$([ -f "$FLTH_TEST_STUB/disk/consumer-write" ] && echo leaked)" '' "the consumer cannot provision the profile disk"
 check_contains "$(cat "$FLTH_TEST_STUB/module-calls")" "--set-version $RELEASE --show-depends loop" "preparation resolves modules for the selected release"
 check_contains "$(cat "$FLTH_TEST_STUB/module-calls")" $'\nloop' "the running guest loads the required module"

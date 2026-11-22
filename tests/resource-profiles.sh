@@ -9,12 +9,19 @@ make_consumer "$CONSUMER" resource-profiles
 vm() { (cd "$CONSUMER" && "$VM" "$@"); }
 . "$REPO/scripts/lib/common.sh"
 
+for profile in low medium high; do
+    case "$profile" in low) expected=1 ;; medium) expected=2 ;; high) expected=8 ;; esac
+    check_eq "$(FLTH_RESOURCE_PROFILE="$profile" FLTH_TEST_JOBS='' flth_test_jobs_resolve)" "$expected" "runner uses $profile test jobs"
+done
+check_eq "$(FLTH_RESOURCE_PROFILE=low FLTH_TEST_JOBS=3 flth_test_jobs_resolve)" 3 'runner honors explicit test jobs'
+check_eq "$(FLTH_TEST_JOBS=3; new_sandbox; printf %s "${FLTH_TEST_JOBS-unset}")" 3 'sandbox preserves test jobs'
+
 check_eq "$(flth_detect_resource_profile Darwin false)" high 'macOS automatically selects high'
 check_eq "$(flth_detect_resource_profile Linux false 'Raspberry Pi 5 Model B')" medium 'Raspberry Pi automatically selects medium'
 check_eq "$(flth_detect_resource_profile Darwin true)" low 'GitHub Actions selects low before host OS detection'
 check_eq "$(flth_detect_resource_profile Linux false 'Generic Linux host')" low 'unrecognized hosts safely select low'
 
-out="$(FLTH_RESOURCE_PROFILE=high vm config)"
+out="$(FLTH_TEST_JOBS='' FLTH_RESOURCE_PROFILE=high vm config)"
 check_contains "$out" 'resource.profile=high' 'config reports the selected high resource profile'
 check_contains "$out" 'vm.memory=8G' 'high sets shared guest memory'
 check_contains "$out" 'vm.cpus=8' 'high sets shared guest CPUs'
@@ -22,14 +29,14 @@ check_contains "$out" 'vm.build_jobs=8' 'high sets build parallelism'
 check_contains "$out" 'vm.test_jobs=8' 'high sets test parallelism'
 check_contains "$out" 'slots=32' 'high leaves attached runs at 32 (#264)'
 
-out="$(FLTH_RESOURCE_PROFILE=medium vm config)"
+out="$(FLTH_TEST_JOBS='' FLTH_RESOURCE_PROFILE=medium vm config)"
 check_contains "$out" 'vm.memory=4G' 'medium sets shared guest memory'
 check_contains "$out" 'vm.cpus=2' 'medium sets shared guest CPUs'
 check_contains "$out" 'vm.build_jobs=2' 'medium sets build parallelism'
 check_contains "$out" 'vm.test_jobs=2' 'medium sets test parallelism'
 check_contains "$out" 'slots=32' 'medium leaves attached runs at 32 (#264)'
 
-out="$(FLTH_RESOURCE_PROFILE=low vm config)"
+out="$(FLTH_TEST_JOBS='' FLTH_RESOURCE_PROFILE=low vm config)"
 check_contains "$out" 'vm.memory=2G' 'low sets shared guest memory'
 check_contains "$out" 'vm.cpus=2' 'low sets shared guest CPUs'
 check_contains "$out" 'vm.build_jobs=1' 'low sets build parallelism'
