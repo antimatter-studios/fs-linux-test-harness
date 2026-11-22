@@ -598,6 +598,8 @@ check_eq "$rc" 0 "vm.sh guest-test exits 0 for a passing in-guest suite"
 check_contains "$(cat "$CONTENDER/guest-test.log")" "in-guest suite: $repo_guest as root" \
     "the command ran in the guest, from the repository mount"
 check_contains "$(cat "$CONTENDER/guest-test.log")" 'in-guest build jobs: 1' 'the real guest-test inherits one build job'
+check_contains "$(cat "$CONTENDER/guest-test.log")" 'in-guest scratch: /var/tmp/flth-tmp' 'the real guest-test uses disk-backed scratch'
+check_eq "$("$VM" exec 'test -e "$(cat /share/scratch-root)" && echo left || echo gone' 2>/dev/null)" gone 'the completed run removes its temporary directory'
 check_eq "$(cat "$("$VM" share)/results/verdict" 2>/dev/null)" pass "and its results are on the share"
 check_eq "$(state)" running "the guest stays up for the next run"
 

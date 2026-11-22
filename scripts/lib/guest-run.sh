@@ -121,6 +121,7 @@ setup_inner() {
     local repo="$1" share="$2" cache="$3"
     shift 3
     bind_tree "$repo" "$share" "$cache"
+    export TMPDIR=/var/tmp
     exec "$@"
 }
 
@@ -131,8 +132,8 @@ begin() {
     flock 9
     if [ ! -e "$STATE/ready.$id" ]; then
         var_cache="$(take_var_cache "$id" "$consumer")"
-        mkdir -p "$root/tmp" "$root/var-tmp" "$var_cache" "$root/mnt"
-        chmod 1777 "$root/tmp" "$root/var-tmp"
+        mkdir -p "$root/tmp" "$root/var-tmp/flth-tmp" "$var_cache" "$root/mnt"
+        chmod 1777 "$root/tmp" "$root/var-tmp" "$root/var-tmp/flth-tmp"
         if [ "$cache" != - ]; then
             mkdir -p "$cache" /cache
         fi
@@ -147,6 +148,7 @@ enter() {
     local id="$1" repo="$2" share="$3" cache="$4" consumer="$5" script="$6"
     [ -e "$STATE/ready.$id" ] || begin "$id" "$repo" "$share" "$cache" "$consumer"
     export FLTH_RUN_ROOT="$ROOTS/$id"
+    export TMPDIR=/var/tmp/flth-tmp
     exec nsenter --mount="$STATE/ns/$id" --wd="$PWD" -- bash -c "$script"
 }
 

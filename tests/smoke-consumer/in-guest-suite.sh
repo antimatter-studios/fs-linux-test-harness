@@ -15,6 +15,13 @@ case "$mode" in pass | corrupt) ;; *) echo "usage: in-guest-suite.sh [pass|corru
 
 echo "in-guest suite: $PWD as $(id -un) on $(uname -sm)"
 echo "in-guest build jobs: ${CARGO_BUILD_JOBS-unset}"
+[ "${TMPDIR:-}" = /var/tmp/flth-tmp ] || { echo "unexpected TMPDIR: ${TMPDIR-unset}" >&2; exit 1; }
+[ "$(stat -c %d "$TMPDIR")" = "$(stat -c %d "$FLTH_RUN_ROOT/var-tmp")" ] || { echo "TMPDIR is not on the run's disk" >&2; exit 1; }
+[ "$(findmnt -n -o FSTYPE -T "$TMPDIR")" != tmpfs ] || { echo "TMPDIR is on tmpfs" >&2; exit 1; }
+scratch="$(mktemp "$TMPDIR/smoke.XXXXXX")"
+printf '%s\n' "$FLTH_RUN_ROOT/var-tmp/flth-tmp" > /share/scratch-root
+echo "in-guest scratch: $TMPDIR"
+rm -f "$scratch"
 [ -f ./guest-suite.sh ] ||
     { echo "in-guest suite: the consumer repository is not mounted here" >&2; exit 1; }
 

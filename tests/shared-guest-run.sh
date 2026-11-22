@@ -69,6 +69,8 @@ differs "$first" "$(one run-id)" "each new run's id is drawn afresh"
 root_a="$(FLTH_RUN_ID="$RUN_A" one exec 'echo "$FLTH_RUN_ROOT"')"
 check_eq "$?" 0 "a call runs in its run"
 check_eq "$root_a" "$ROOTS/$RUN_A" "with its root on the guest's disk under a random name"
+check_eq "$(FLTH_RUN_ID="$RUN_A" one exec 'printf "%s" "$TMPDIR"')" /var/tmp/flth-tmp "a run exports its disk-backed temporary directory"
+check_eq "$([ -d "$root_a/var-tmp/flth-tmp" ] && echo exists)" exists "the temporary directory belongs to the run root"
 root_b="$(FLTH_RUN_ID="$RUN_B" two exec 'echo "$FLTH_RUN_ROOT"')"
 check_eq "$root_b" "$ROOTS/$RUN_B" "and another suite's root is another directory"
 FLTH_RUN_ID="$RUN_A" one exec 'exit 7' 2>/dev/null

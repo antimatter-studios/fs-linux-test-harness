@@ -99,16 +99,19 @@ flth_resource_profile_load() {
     case "$FLTH_RESOURCE_PROFILE_NAME" in
         high)
             FLTH_BUILD_JOBS_DEFAULT=8
+            FLTH_TEST_JOBS_DEFAULT=8
             FLTH_SHARED_MEMORY_DEFAULT=8G
             FLTH_SHARED_CPUS_DEFAULT=8
             ;;
         medium)
             FLTH_BUILD_JOBS_DEFAULT=2
+            FLTH_TEST_JOBS_DEFAULT=2
             FLTH_SHARED_MEMORY_DEFAULT=4G
             FLTH_SHARED_CPUS_DEFAULT=2
             ;;
         low)
             FLTH_BUILD_JOBS_DEFAULT=1
+            FLTH_TEST_JOBS_DEFAULT=1
             FLTH_SHARED_MEMORY_DEFAULT=2G
             FLTH_SHARED_CPUS_DEFAULT=2
             ;;
