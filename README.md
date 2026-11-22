@@ -147,11 +147,13 @@ Within each run, `TMPDIR` names `/var/tmp/flth-tmp` on the guest disk; it is
 private to that run and removed with it. Setup and VM-profile preparation use
 the guest's disk-backed `/var/tmp` instead. A consumer may override `TMPDIR`
 inside its own command. Both `/tmp` and `/var/tmp` in a run are already bound
-from its disk-backed run root. Direct profile kernel boots mask `tmp.mount` on
-the kernel command line. Box boots use their own bootloader or provider command
-line, so an always-run provisioner binds a disk-backed directory over `/tmp`
-if necessary. On those boots `/tmp` may be tmpfs before provisioning finishes;
-cached boxes are not modified. The operating system's `/run` and `/dev/shm`
+from its disk-backed run root. Before the first test boot, the harness starts
+the machine's base disk without an overlay, masks `tmp.mount`, and provides
+disk-backed `/tmp` for the rest of that preparation boot. After verification
+and a clean shutdown, disposable guests boot with `/tmp` on disk before any
+provisioning; they refuse to continue if it is RAM-backed. This also applies
+to machines made from a cached box. Vagrant's shared box store is unchanged.
+The operating system's `/run` and `/dev/shm`
 mounts are unchanged; suites should use `TMPDIR`, not those RAM-backed mounts.
 When a guest command fails, the harness prints matching kernel out-of-memory
 messages recorded during that call. The guest is shared, so those messages may
@@ -620,8 +622,8 @@ harness checkout is never written to. Every consumer on the host uses it
 (see [One guest for every consumer](#one-guest-for-every-consumer)). Boxes
 are shared in Vagrant's own box store.
 
-**Every run starts from the same disk.** The machine's disk is the box's
-and carries nobody's setup. Every boot is **disposable**: QEMU opens the
+**Every run starts from the same disk.** The machine's prepared base disk
+carries nobody's setup. Every test boot is **disposable**: QEMU opens the
 disk read-only (`snapshot=on`) and sends every write to a temporary overlay
 under `FLTH_STATE_DIR/tmp`, unlinked as soon as it is open, so it is gone
 when the VM stops however it stops. A mount, a loop device, a half-finished

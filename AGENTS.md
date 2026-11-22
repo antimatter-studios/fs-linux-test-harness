@@ -425,14 +425,14 @@ prints `PASS  <name> (N checks)` and sets the exit status.
   its device is removed, the device goes before its daemon is stopped, and a daemon
   that died anyway has its device removed before anything else runs in that run.
   Keep that order in any new path that ends a run.
-- **A run's writes are gone when its boot stops.** Every boot is disposable
+- **A run's writes are gone when its boot stops.** Every test boot is disposable
   (QEMU `snapshot=on`), and each consumer's setup runs again on the next boot it
   joins. A test that wants the guest to remember something between boots is
   asking for the state bleed this exists to prevent; `tests/disposable.sh` holds
   the orchestration to it, `tests/smoke.sh` proves it on a real disk. A
   consumer's declared cache (`[cache] size`, mounted at `/cache`) is a directory
-  of the guest's and lasts as long as the guest. Only a run profile's preparation
-  boot keeps its writes (`engine_up --persist`), and only a profile's boot files
+  of the guest's and lasts as long as the guest. Base-disk scratch preparation
+  and run-profile preparation keep their writes; only a profile's boot files
   are passed to QEMU.
 - **Status 255 from a call into the guest is ssh's or the script's.** `vm.sh`
   keeps it and reports what it found on stderr (`report_lost_guest`, #105). A

@@ -80,6 +80,7 @@ export FLTH_CONFIG="$SANDBOX/c/fs-linux-test-harness.toml"
 flth_load
 engine_prepare
 ID="$(engine_identity)"
+engine_vagrant_prepare_disk_tmp() { :; }
 
 check_eq "$VAGRANT_DOTFILE_PATH" "$FLTH_CACHE_DIR/machines/shared-debian-12/vagrant" "machine state goes to the shared guest's machine directory"
 check_eq "$VAGRANT_CWD" "$REPO/vagrant" "the Vagrantfile is the harness's own"
@@ -255,12 +256,11 @@ check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=1" "a plain up
 : > "$STUBDIR/log"
 engine_up --persist 2>/dev/null
 
-# The shared disk does not retain the Vagrant key across disposable boots.
 key="$VAGRANT_DOTFILE_PATH/machines/default/qemu/private_key"
 mkdir -p "$(dirname "$key")"
-: > "$key"
+printf shared-private-key > "$key"
 engine_up --persist 2>/dev/null
-check_eq "$([ -f "$key" ] && echo kept)" "" "a boot forgets Vagrant's key"
+check_eq "$(cat "$key" 2>/dev/null)" shared-private-key "a prepared shared disk keeps its matching SSH key"
 check_contains "$(grep '^vagrant up' "$STUBDIR/log")" "disposable=0" "up --persist boots a machine whose writes reach its disk"
 check_eq "${FLTH_VM_DISPOSABLE:-unset}" 1 "and only that boot: the next Vagrant call is back to disposable"
 

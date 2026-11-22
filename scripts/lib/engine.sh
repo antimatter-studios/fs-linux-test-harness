@@ -28,7 +28,7 @@
 #                              writes to the machine's disk is thrown
 #                              away when it stops, however it stops.
 #                              With --persist the writes are kept; that
-#                              is for a run profile's preparation only.
+#                              is for a run profile's preparation.
 #   engine_box_failure         after a failed engine_up: exit 0 and print
 #                              where the box comes from and what it
 #                              answered, when no VM started because the

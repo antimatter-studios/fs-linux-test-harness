@@ -301,6 +301,64 @@ engine_box_failure() {
 
 # shellcheck disable=SC2120
 engine_up() {
+    engine_vagrant_prepare_disk_tmp || return
+    engine_vagrant_boot "${1:-}"
+}
+
+engine_vagrant_prepare_disk_tmp() {
+    local ready="$FLTH_MACHINE_DIR/disk-tmp-ready" started="$FLTH_MACHINE_DIR/disk-tmp-started" state
+    state="$(engine_state)" || return
+    case "$state" in
+        absent) rm -f "$ready" "$started" || return ;;
+        stopped) [ ! -f "$ready" ] || return 0 ;;
+        *) echo "vm: disk scratch preparation requires a stopped guest (state: $state)" >&2; return 1 ;;
+    esac
+
+    if [ ! -f "$started" ]; then
+        if [ -z "${FLTH_PROFILE_ID:-}" ]; then
+            rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key || return
+        fi
+        : > "$started" || return
+    fi
+
+    echo "[vm] preparing disk-backed /tmp on the guest base disk" >&2
+    engine_vagrant_boot --persist || return
+    if ! engine_run 'set -e
+test "$(systemctl is-enabled tmp.mount 2>/dev/null || true)" = masked
+case "$(findmnt -n -o FSTYPE -T /tmp)" in tmpfs|ramfs|"") exit 1 ;; esac
+sync
+systemd-run --quiet --on-active=1s /usr/bin/systemctl poweroff' >&2; then
+        engine_down "" >&2 || true
+        echo "vm: disk scratch preparation could not verify /tmp and request power-off" >&2
+        return 1
+    fi
+    engine_vagrant_confirm_poweroff || return
+    engine_down "" >&2 || return
+    state="$(engine_state)" || return
+    if [ "$state" != stopped ]; then
+        echo "vm: disk scratch preparation could not confirm shutdown (state: $state)" >&2
+        return 1
+    fi
+    mv -f "$started" "$ready"
+}
+
+engine_vagrant_confirm_poweroff() {
+    local deadline=$((SECONDS + 120)) identity
+    identity="$(engine_identity)"
+    while engine_alive "$identity"; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "vm: disk scratch preparation guest did not power off in 120 seconds" >&2
+            return 1
+        fi
+        sleep 1 || return
+    done
+    if ! grep -Fq 'reboot: Power down' "$(engine_console_log)"; then
+        echo "vm: disk scratch preparation guest has no clean power-off in its console log" >&2
+        return 1
+    fi
+}
+
+engine_vagrant_boot() {
     local tmp disposable=1 port dir kernel="" initrd="" cmdline=""
     [ "${1:-}" = --persist ] && disposable=0
     # What the last attempt said is not what this one says, if this one fails
@@ -324,9 +382,6 @@ engine_up() {
     export FLTH_VM_SSH_PORT="$port"
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
-    if [ -z "${FLTH_PROFILE_ID:-}" ]; then
-        rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
-    fi
     # A new guest has no device attached, whatever an earlier one left on record.
     engine_vagrant_forget_attached
     # QEMU starts the log afresh, but a boot that fails before QEMU starts
@@ -373,6 +428,7 @@ engine_stop_host_daemons() {
 }
 
 engine_down() {
+    local halt_rc=0
     if [ "${1:-}" = "--force" ]; then
         # A forced down is for a guest already given up on, and QEMU itself may
         # not quit: one whose run's virtiofsd has stopped answering waits on that
@@ -380,14 +436,15 @@ engine_down() {
         # sits out its own five-minute wait before killing it (#289). So QEMU is
         # killed first; the halt that follows only tidies the provider's state.
         engine_vagrant_kill_qemu
-        engine_vagrant halt -f >&2
+        engine_vagrant halt -f >&2 || halt_rc=$?
     else
-        engine_vagrant halt >&2
+        engine_vagrant halt >&2 || halt_rc=$?
     fi
     engine_vagrant_stop_forwarders
     engine_ssh_close
     # Only once QEMU has gone: a virtiofsd must outlive every guest that can use it.
     engine_alive "$(engine_identity)" || engine_vagrant_forget_attached
+    return "$halt_rc"
 }
 
 # KILL to this machine's QEMU, found as engine_alive finds it, and up to five
@@ -411,6 +468,7 @@ engine_destroy() {
     engine_ssh_close
     rm -f "$FLTH_MACHINE_DIR/ssh-config"
     engine_vagrant_retrying destroy -f >&2 || return
+    rm -f "$FLTH_MACHINE_DIR/disk-tmp-ready" "$FLTH_MACHINE_DIR/disk-tmp-started" || return
     # The disk that authorized this key has gone; a fresh box starts with its own.
     rm -f "$VAGRANT_DOTFILE_PATH"/machines/*/*/private_key
     engine_vagrant_forget_attached
