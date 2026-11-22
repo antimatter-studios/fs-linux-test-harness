@@ -53,7 +53,9 @@
 #   watchdog      a process stuck in uninterruptible sleep ends the guest within
 #                 the watchdog's limit, and the call it held says why; a guest
 #                 that stops answering ends within the silent limit, and each of
-#                 two sessions on it says why (#190)
+#                 two sessions on it says why (#190); a call on /repo whose
+#                 virtiofsd stops answering fails, naming the tree and the
+#                 daemon (#289)
 #   kernel        a consumer whose setup installs a kernel is refused, naming
 #                 both kernels: the shared guest does not restart for it (#157)
 #   test          a passing suite passes and the guest stays up; a CORRUPTED
@@ -996,6 +998,87 @@ silent_vm down
 check_eq "$?" 0 "down clears up after a guest the watchdog ended"
 silent_vm destroy
 check_eq "$?" 0 "the guest that stopped answering is destroyed"
+
+step "watchdog: a call on /repo whose virtiofsd stops answering fails, naming the tree and the daemon (#289)"
+# The oracles are the guest's own kernel and a real virtiofsd. SIGSTOP leaves the
+# daemon alive and answering nothing, as a request thread that panicked or hung does
+# (#274, #281). A session's call that makes file after file in /repo then waits on a
+# reply that never comes, and the guest answers ssh throughout, so neither the silent
+# nor the stuck limit sees it. The watchdog must end the guest within its tree limit,
+# and the call must say which tree and which daemon. Each session's ssh keeps alive for
+# ten minutes, so it is the watchdog that ends the call.
+tree_vm() { FLTH_WATCHDOG_INTERVAL=5 FLTH_WATCHDOG_WARN_SECS=10 FLTH_WATCHDOG_TREE_SECS=30 "$VM" "$@"; }
+tree_dir="$CONTENDER/tree"
+mkdir -p "$tree_dir"
+# Boot: the watchdog takes its tree limit from the `up` that starts it.
+tree_vm destroy >/dev/null 2>&1 || true
+tree_vm up
+rc=$?
+check_eq "$rc" 0 "a guest boots with a watchdog whose tree limit is 30s"
+boot_or_stop "$rc"
+tree_machine="$(tree_vm config | sed -n 's/^machine=//p')"
+tree_root="$(tree_vm config | sed -n 's/^root=//p')"
+rm -rf "$tree_root/tmp/flth-tree"
+FLTH_TEST_SSH_ALIVE_INTERVAL=30 FLTH_TEST_SSH_ALIVE_COUNT=20 \
+    perl -e 'alarm shift; exec @ARGV or exit 127' 900 "$VM" session bash -c '"$1" run "$2"' flth-tree "$VM" \
+    "mkdir -p $repo_guest/tmp/flth-tree; i=0; while :; do touch $repo_guest/tmp/flth-tree/\$i; i=\$((i + 1)); sleep 0.2; done" \
+    > "$tree_dir/out" 2> "$tree_dir/err" &
+tree_session=$!
+# The session's run: its tree attached, its daemon on record, and files arriving.
+tree_run=""
+tree_vfs=""
+tree_waited=0
+while [ "$tree_waited" -lt 120 ]; do
+    for tree_record in "$tree_machine"/attached/*; do
+        case "$tree_record" in *-worktree | *.log | *.pid) continue ;; esac
+        [ -f "$tree_record" ] || continue
+        tree_run="${tree_record##*/}"
+        tree_vfs="$(sed -n 's/^pid //p' "$tree_record" 2>/dev/null)"
+    done
+    [ -n "$tree_vfs" ] && [ "$(find "$tree_root/tmp/flth-tree" -type f 2>/dev/null | wc -l | tr -d ' ')" -ge 3 ] && break
+    sleep 1
+    tree_waited=$((tree_waited + 1))
+done
+check_true '[ -n "$tree_vfs" ] && kill -0 "$tree_vfs" 2>/dev/null' "the session's call makes files on /repo through its run's virtiofsd ($tree_vfs)" \
+    "the session's call never made files on /repo ($(tail -n 3 "$tree_dir/err" 2>/dev/null))"
+t0=$(date +%s)
+[ -z "$tree_vfs" ] || kill -STOP "$tree_vfs"
+# Bounded on the host: a watchdog that never ends the guest fails this step in five
+# minutes, and the guest is then forced down the way the watchdog would have done it.
+tree_waited=0
+while [ "$tree_waited" -lt 300 ] && kill -0 "$tree_session" 2>/dev/null; do
+    sleep 1
+    tree_waited=$((tree_waited + 1))
+done
+if [ "$tree_waited" -ge 300 ]; then
+    bounded 120 "$VM" watchdog-end "smoke: the watchdog did not end the guest whose virtiofsd stopped answering in 300s" >/dev/null 2>&1
+    kill -TERM "$tree_session" 2>/dev/null
+fi
+took=$(( $(date +%s) - t0 ))
+wait "$tree_session"
+check_eq "$?" 75 "the call fails with the watchdog's own status"
+check_contains "$(cat "$tree_dir/err")" "the watchdog ended this guest: the virtiofsd (pid $tree_vfs) serving $tree_root to run $tree_run has not answered process " \
+    "naming the run's tree and its virtiofsd, and that it stopped answering"
+check_contains "$(cat "$tree_dir/err")" "This is not a failure of the suite" "and saying it is not the suite's failure"
+check_true '[ "$took" -le 240 ]' "and the guest ends within its limit: ${took}s for a 30s limit" \
+    "the guest took ${took}s to end, for a 30s limit"
+check_contains "$(cat "$tree_machine/watchdog.log" 2>/dev/null)" "warning: the virtiofsd (pid $tree_vfs)" \
+    "the watchdog warned of the wait before it ended the guest"
+check_contains "$(tree_vm status 2>&1)" "the watchdog ended it: the virtiofsd " "status says the watchdog ended it, and why"
+check_eq "$(state)" not-running "the guest is gone, so the next run boots another"
+# The daemon was told to stop with the guest; it takes the signal once it runs again.
+if [ -n "$tree_vfs" ]; then
+    kill -CONT "$tree_vfs" 2>/dev/null
+    tree_waited=0
+    while kill -0 "$tree_vfs" 2>/dev/null && [ "$tree_waited" -lt 10 ]; do sleep 1; tree_waited=$((tree_waited + 1)); done
+    check_true '! kill -0 "$tree_vfs" 2>/dev/null' "and the run's virtiofsd went with the guest" "the run's virtiofsd ($tree_vfs) outlived the guest"
+    kill -KILL "$tree_vfs" 2>/dev/null
+fi
+tree_vm down
+check_eq "$?" 0 "down clears up after a guest the watchdog ended"
+tree_vm destroy
+check_eq "$?" 0 "the guest whose virtiofsd stopped answering is destroyed"
+rm -rf "$tree_root/tmp/flth-tree"
 
 step "kernel: a setup that installs a kernel is refused on the shared guest (#157)"
 # The shared guest does not restart for one consumer's setup, so its tests would run

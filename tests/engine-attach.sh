@@ -49,6 +49,9 @@ engine_attach_tree run-one "$SANDBOX/tree-one" 2>"$SANDBOX/err"
 check_eq "$?" 0 "a tree is attached ($(cat "$SANDBOX/err"))"
 check_eq "$(attached run-one)" 0 "and is on record with its daemon alive"
 check_eq "$(engine_tree_slot run-one)" 1 "on the first free slot"
+check_eq "$(engine_tree_record run-one tree)" "$SANDBOX/tree-one" "the record names the tree it serves"
+check_eq "$(engine_tree_record run-one pid)" "$(pid_of run-one)" "and its virtiofsd's pid"
+check_eq "$(engine_tree_record run-none tree)" "" "a run with no record has neither"
 check_contains "$(cat "$QMP_LOG")" '"execute":"chardev-add","arguments":{"id":"c-run-one","backend":{"type":"socket","data":{"addr":{"type":"unix","data":{"path":"'"$(engine_vagrant_vfs_socket run-one)"'"}},"server":false}}}' \
     "QEMU connects a chardev to the run's own daemon socket"
 check_contains "$(cat "$QMP_LOG")" '"driver":"vhost-user-fs-pci","id":"fs-run-one","chardev":"c-run-one","tag":"run-one","bus":"flth_rp1"' \

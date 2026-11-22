@@ -18,6 +18,10 @@
 #   FLTH_WATCHDOG_STUCK_SECS, ends the guest, whoever is using it: a stuck kernel
 #   affects them all. A held guest belongs to the person holding it, so there it only
 #   says what it would have done.
+# - So does a run's virtiofsd that has gone, or has not answered a request for
+#   FLTH_WATCHDOG_TREE_SECS, while a process in that run waits on it (#289). The guest
+#   answers and the process may not be in uninterruptible sleep, so neither limit
+#   above sees it, and the call waited for as long as whatever ran it allowed.
 #
 # STUCK IS NOT THE SAME AS SLEEPING. A process doing heavy I/O is in uninterruptible
 # sleep at nearly every look, for hours. So a process counts as stuck only while
@@ -37,12 +41,14 @@ INTERVAL="${FLTH_WATCHDOG_INTERVAL:-60}"
 WARN_SECS="${FLTH_WATCHDOG_WARN_SECS:-300}"
 STUCK_SECS="${FLTH_WATCHDOG_STUCK_SECS:-1800}"
 SILENT_SECS="${FLTH_WATCHDOG_SILENT_SECS:-600}"
+TREE_SECS="${FLTH_WATCHDOG_TREE_SECS:-300}"
 LOW_PERCENT="${FLTH_WATCHDOG_LOW_PERCENT:-5}"
 MISSED_NEEDED=3
 
 LOG="$FLTH_MACHINE_DIR/watchdog.log"
 LAST="$FLTH_MACHINE_DIR/watchdog.last"
 SEEN="$FLTH_MACHINE_DIR/watchdog.seen"
+WAITS="$FLTH_MACHINE_DIR/watchdog.waits"
 
 say() {
     local line
@@ -153,20 +159,93 @@ look_at_taint() {
     [ -z "$letters" ] || say "warning: the kernel is tainted, $value: ${letters#, }"
 }
 
-# EVERY RUN'S virtiofsd, each look (#222). One that has gone leaves a mount the guest
-# must not touch: a request to it never completes, and removing the device after one
-# wedges hot-plug for the whole guest. So its device is removed at once, before
-# anything else runs in that run, and the suites on it are told and stopped.
-look_at_trees() {
+# EVERY RUN'S virtiofsd, each look (#222, #289).
+#
+# A REQUEST A virtiofsd NEVER ANSWERS IS NEVER COMPLETED. The guest's kernel waits on
+# it for ever: a signal to the process cannot take it back once the daemon has it,
+# and removing the device then waits on it too, which wedges hot-plug for the whole
+# guest. So a run with a process waiting on a reply its daemon will not send can only
+# be ended with the guest. The daemon will not send it when it has gone, or when the
+# same wait has made no progress for TREE_SECS: a request takes milliseconds, and a
+# process making call after call is counted as running between them.
+#
+# WHAT IS OUTSTANDING ON THE RUN'S OWN CONNECTION, when the guest can say (a `t`), is
+# what decides: a thread waiting on a FUSE reply may be waiting on a FUSE filesystem
+# the suite runs itself. When the guest cannot say, a waiting thread in the run counts.
+#
+# A DAEMON IS TAKEN FOR GONE ONLY IF IT HAD GONE BEFORE THE REPORT WAS TAKEN, so what
+# the report says is outstanding includes everything sent to it after it went. One
+# that went since is looked at again next time.
+#
+# A daemon that has gone with nothing outstanding leaves a mount the guest must not
+# touch. Its device is removed at once, before anything else runs in that run, and the
+# suites on it are told and stopped. The guest stays up for every other run.
+trees_gone() {
     local run attached
     while IFS= read -r run; do
         [ -n "$run" ] || continue
         attached=0
         engine_tree_attached "$run" || attached=$?
-        [ "$attached" = 3 ] || continue
-        say "warning: the virtiofsd serving run $run, held by $(suite_of "$run"), has gone: removing its device"
-        "$SELF_DIR/vm.sh" tree-lost "$run" >> "$LOG" 2>&1 || true
+        [ "$attached" != 3 ] || printf '%s\n' "$run"
     done < <(engine_attached_runs)
+}
+
+look_at_trees() {
+    local report="$1" now="$2" gone_before="$3" next waiting kind pid start token run name key since age attached
+    local outstanding pending
+    next="$WAITS.next"
+    waiting="$WAITS.runs"
+    : > "$next"
+    : > "$waiting"
+    while read -r kind pid start token run name; do
+        [ "$kind" = f ] || continue
+        [ "$run" != - ] || continue
+        key="$pid:$start"
+        since="$(awk -v key="$key" -v token="$token" '$1 == key && $2 == token { print $3; exit }' "$WAITS" 2>/dev/null)"
+        [ -n "$since" ] || since="$now"
+        printf '%s %s %s\n' "$key" "$token" "$since" >> "$next"
+        printf '%s %s %s %s\n' "$run" "$((now - since))" "$pid" "$name" >> "$waiting"
+    done <<< "$report"
+    mv "$next" "$WAITS"
+    while IFS= read -r run; do
+        [ -n "$run" ] || continue
+        attached=0
+        engine_tree_attached "$run" || attached=$?
+        # The run's longest wait: <age> <pid> <name>.
+        read -r age pid name < <(awk -v run="$run" '$1 == run { sub(/^[^ ]+ /, ""); print }' "$waiting" |
+            sort -rn | head -n 1)
+        outstanding="$(printf '%s\n' "$report" | awk -v run="$run" '$1 == "t" && $2 == run { print $3; exit }')"
+        case "$outstanding" in
+            '' | *[!0-9]*) pending="${age:+yes}" ;;
+            0) pending="" ;;
+            *) pending=yes ;;
+        esac
+        case "$attached" in
+            3)
+                printf '%s\n' "$gone_before" | grep -Fx -- "$run" >/dev/null || continue
+                if [ -n "$pending" ]; then
+                    if [ -n "${age:-}" ]; then
+                        end_guest "$(flth_tree_daemon "$run") has gone while process $pid ($name), held by $(suite_of "$run"), waited on it: only a reboot clears a request it will never answer"
+                    else
+                        end_guest "$(flth_tree_daemon "$run"), held by $(suite_of "$run"), has gone with $outstanding requests outstanding: only a reboot clears a request it will never answer"
+                    fi
+                    continue
+                fi
+                say "warning: $(flth_tree_daemon "$run"), held by $(suite_of "$run"), has gone: removing its device"
+                "$SELF_DIR/vm.sh" tree-lost "$run" >> "$LOG" 2>&1 || true
+                ;;
+            0)
+                [ -n "${age:-}" ] || continue
+                [ -n "$pending" ] || continue
+                if [ "$age" -ge "$TREE_SECS" ]; then
+                    end_guest "$(flth_tree_daemon "$run") has not answered process $pid ($name), held by $(suite_of "$run"), for ${age}s: only a reboot clears a request it never answered"
+                elif [ "$age" -ge "$WARN_SECS" ]; then
+                    say "warning: $(flth_tree_daemon "$run") has not answered process $pid ($name), held by $(suite_of "$run"), for ${age}s"
+                fi
+                ;;
+        esac
+    done < <(engine_attached_runs)
+    rm -f "$waiting"
 }
 
 low() {
@@ -177,7 +256,7 @@ low() {
     fi
 }
 
-rm -f "$SEEN"
+rm -f "$SEEN" "$WAITS"
 : > "$LOG"
 : > "$LAST"
 last_answer="$(date +%s)"
@@ -192,6 +271,7 @@ while :; do
     now="$(date +%s)"
     warned_before="$(wc -l < "$LOG")"
     look_at_console
+    gone_before="$(trees_gone)"
     if ! report="$(engine_guest_report)"; then
         missed=$((missed + 1))
         silent=$((now - last_answer))
@@ -204,7 +284,7 @@ while :; do
     last_answer="$now"
     missed=0
     look_at_stuck "$report" "$now"
-    look_at_trees
+    look_at_trees "$report" "$now" "$gone_before"
     while read -r kind available total _; do
         case "$kind" in
             mem) low memory "$available" "$total" ;;

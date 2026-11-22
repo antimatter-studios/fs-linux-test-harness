@@ -360,14 +360,16 @@ vm_watchdog_end() {
     done
 }
 
-# THE WATCHDOG FOUND A RUN'S virtiofsd GONE (#222): its device goes before anything
-# else runs there, then the run ends, and the suites on that run are told why and
-# stopped, as for a guest the watchdog ends. Other runs are not touched.
+# THE WATCHDOG FOUND A RUN'S virtiofsd GONE (#222), with nothing in the guest waiting
+# on it: its device goes before anything else runs there, then the run ends, and the
+# suites on that run are told why and stopped, as for a guest the watchdog ends. Other
+# runs are not touched. A daemon that went with a request outstanding ends the guest
+# instead (vm-watchdog.sh, #289).
 vm_tree_lost() {
     local run="$1" attached=0 marker pid start told reason
     engine_tree_attached "$run" || attached=$?
     [ "$attached" = 3 ] || return 0
-    reason="the virtiofsd serving run $run's tree has gone"
+    reason="$(flth_tree_daemon "$run") has gone"
     told="$(watchdog_told)"
     mkdir -p "$told"
     engine_detach_tree "$run" || true

@@ -381,6 +381,12 @@ engine_stop_host_daemons() {
 
 engine_down() {
     if [ "${1:-}" = "--force" ]; then
+        # A forced down is for a guest already given up on, and QEMU itself may
+        # not quit: one whose run's virtiofsd has stopped answering waits on that
+        # daemon as it stops the device, and the Linux provider's halt -f then
+        # sits out its own five-minute wait before killing it (#289). So QEMU is
+        # killed first; the halt that follows only tidies the provider's state.
+        engine_vagrant_kill_qemu
         engine_vagrant halt -f >&2
     else
         engine_vagrant halt >&2
@@ -389,6 +395,22 @@ engine_down() {
     engine_ssh_close
     # Only once QEMU has gone: a virtiofsd must outlive every guest that can use it.
     engine_alive "$(engine_identity)" || engine_vagrant_forget_attached
+}
+
+# KILL to this machine's QEMU, found as engine_alive finds it, and up to five
+# seconds for it to go. A machine with no QEMU is left as it is.
+engine_vagrant_kill_qemu() {
+    local identity pid tries=0
+    identity="$(engine_identity)"
+    pid="$(ps -eo pid=,args= 2>/dev/null | awk -v want="$identity/" '
+        { n = split($2, parts, "/") }
+        parts[n] ~ /^qemu-system-/ && index($0, want) > 0 { print $1; exit }')"
+    [ -n "$pid" ] || return 0
+    kill -KILL "$pid" 2>/dev/null || return 0
+    while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 50 ]; do
+        command -p sleep 0.1
+        tries=$((tries + 1))
+    done
 }
 
 engine_destroy() {
@@ -838,6 +860,10 @@ engine_attached_runs() {
         printf '%s\n' "${record##*/}"
     done
 }
+
+# engine_tree_record <run> <tree|pid>: the tree a run's device serves, or its
+# virtiofsd's pid, from the record; nothing when there is none.
+engine_tree_record() { sed -n "s/^$2 //p" "$(engine_vagrant_attached_dir)/$1" 2>/dev/null; }
 
 # The slot of a run's device, for the guest's side of a detach.
 engine_tree_slot() { sed -n 's/^slot //p' "$(engine_vagrant_attached_dir)/$1" 2>/dev/null; }

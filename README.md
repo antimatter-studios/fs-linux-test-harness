@@ -511,6 +511,7 @@ relative, and must not leave the repository.
 | `FLTH_WATCHDOG_WARN_SECS` | `300` | Seconds a process goes in uninterruptible sleep with no progress before it is warned of. |
 | `FLTH_WATCHDOG_STUCK_SECS` | `1800` | The same, before the watchdog ends the guest. |
 | `FLTH_WATCHDOG_SILENT_SECS` | `600` | Seconds a guest goes without answering before the watchdog ends it. |
+| `FLTH_WATCHDOG_TREE_SECS` | `300` | Seconds a call in a run waits, with no progress, on a FUSE reply its run's virtiofsd does not send, while that connection has requests outstanding, before the watchdog ends the guest (#289). |
 | `FLTH_WATCHDOG_LOW_PERCENT` | `5` | Memory or disk left, as a percentage, below which it warns. |
 | `FLTH_SSH_PERSIST` | `3600` | Seconds the shared SSH connection to the guest stays open when idle. |
 | `FLTH_GUEST` | set by the harness | `1` in every command the harness runs in the guest. Read it, never set it: it is how a program tells that it is already inside the test VM. |
@@ -1103,7 +1104,13 @@ In order of precision:
    ends with **status 75** and a message naming the reason, so an interrupted run is
    not read as a failure of what it was testing. A process doing heavy I/O is in the
    same sleep for hours, so progress is measured by its time on the CPU and its bytes
-   read and written, not by the state alone. The limits are settings.
+   read and written, not by the state alone. A run whose virtiofsd has gone, or has
+   left a call waiting on a reply for `FLTH_WATCHDOG_TREE_SECS`, while that run's
+   connection has requests outstanding, ends the guest too, and the message names
+   the run's tree and its virtiofsd: the guest's kernel never completes a request
+   the daemon does not answer, and removing the device under one wedges hot-plug for
+   every run (#289). A daemon that has gone with nothing outstanding only ends its
+   own run, after its device is removed. The limits are settings.
 
 `hold` (and `chore vm:up`) cancels 3 for a person working in the guest: the guest
 stays up until `down` or `destroy` clears the hold. A reboot re-arms the deadline.

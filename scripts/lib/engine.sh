@@ -52,6 +52,9 @@
 #                              served by a virtiofsd of its own (#222)
 #   engine_tree_attached <run> 0 attached, 1 not, 3 attached with its
 #                              virtiofsd gone
+#   engine_tree_record <run> <tree|pid>
+#                              the host tree a run's device serves, or its
+#                              virtiofsd's pid; nothing when not on record
 #   engine_detach_tree <run>   remove the device, then stop its daemon; the
 #                              guest has let go of the mount already
 #   engine_attached_runs       the runs with a device, one a line

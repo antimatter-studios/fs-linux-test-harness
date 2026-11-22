@@ -22,6 +22,15 @@ FLTH_HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 FLTH_CACHE_DIR="${FLTH_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/fs-linux-test-harness}"
 FLTH_STATE_DIR="${FLTH_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fs-linux-test-harness}"
 
+# A run's virtiofsd as a person is told of it (#289): its pid when the engine knows it,
+# and the host tree it serves. Asked before its device goes, which forgets both.
+flth_tree_daemon() {
+    local pid tree
+    pid="$(engine_tree_record "$1" pid || true)"
+    tree="$(engine_tree_record "$1" tree || true)"
+    printf 'the virtiofsd%s serving %s to run %s\n' "${pid:+ (pid $pid)}" "${tree:-its tree}" "$1"
+}
+
 flth_die() {
     echo "fs-linux-test-harness: $*" >&2
     exit 1
