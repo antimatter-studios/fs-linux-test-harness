@@ -35,6 +35,11 @@ cat > "$BIN/ssh" <<'STUB'
 #!/bin/sh
 while IFS= read -r line; do
     case "$line" in
+        'systemd-run '*poweroff)
+            printf 'reboot: Power down\n' > "$FLTH_VM_CONSOLE_LOG"
+            kill -KILL "$(cat "$STUB/qemu.pid")" 2>/dev/null
+            rm -f "$STUB/qemu.pid"
+            ;;
         'echo 0 > /sys/bus/pci/slots/'*/power)
             slot="${line#echo 0 > /sys/bus/pci/slots/}"
             perl "$(dirname "$VM")/lib/qmp.pl" "$FLTH_VM_QMP" \
