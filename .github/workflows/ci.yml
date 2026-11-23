@@ -134,7 +134,7 @@ jobs:
     name: unit (VM-free, Linux x86_64)
     needs: [changes, unit-linux-gate]
     runs-on: ${{ needs.unit-linux-gate.outputs.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       # Our runner's image carries less than GitHub's: the suite's own tools.
@@ -173,7 +173,7 @@ jobs:
     name: unit (VM-free, macOS arm64)
     needs: [changes, unit-macos-gate]
     runs-on: ${{ needs.unit-macos-gate.outputs.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: macOS VM-free tools

@@ -52,6 +52,11 @@ while IFS= read -r line; do
     [ "$line" != 'exit "$flth_status"' ] || break
 done
 case "$script" in
+    *'systemd-run '*poweroff*)
+        printf 'reboot: Power down\n' > "$FLTH_VM_CONSOLE_LOG"
+        kill -KILL "$(cat "$STUB/qemu.pid")" 2>/dev/null
+        rm -f "$STUB/qemu.pid"
+        ;;
     *share-probe*)
         if [ -e "$STUB/shares" ]; then echo shares-mounted; else echo shares-missing; fi
         ;;

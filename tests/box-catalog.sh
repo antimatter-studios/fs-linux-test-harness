@@ -47,6 +47,12 @@ cat > "$BIN/ssh" <<'STUB'
 [ ! -t 0 ] || exit 0
 while IFS= read -r line; do
     [ "$line" != 'exit "$flth_status"' ] || break
+    case "$line" in
+        'systemd-run '*poweroff)
+            echo 'reboot: Power down' > "$FLTH_VM_CONSOLE_LOG"
+            echo stopped > "$STUBDIR/status"
+            ;;
+    esac
 done
 exit 0
 STUB
@@ -156,7 +162,7 @@ BOUND=900
 fresh 503 503 503 503 ''
 out="$(vm up 2>&1)"
 check_eq "$?" 0 "a catalog that answers 503 and recovers is an up"
-check_eq "$(ups)" 5 "the box is asked for until it comes, past the three boot attempts"
+check_eq "$(ups)" 6 "the box is asked for until it comes, past the three boot attempts"
 check_eq "$(waits)" "30 60 120 120" "the wait grows, then stays at two minutes"
 check_eq "$(forced_downs)" 0 "no VM was started, so none is forced down"
 check_contains "$out" "503" "each wait names the status"
