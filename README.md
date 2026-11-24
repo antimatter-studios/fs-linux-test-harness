@@ -532,6 +532,8 @@ relative, and must not leave the repository.
 | `FLTH_SHARED_SLOTS` | `32` | How many runs' trees can be attached to the shared guest at once: the free PCIe root ports it boots with, 1–64. A run past it is refused, naming the setting. |
 | `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd`, then `/usr/lib/qemu/virtiofsd` | The virtiofsd that serves a run's tree. On Linux it must be upstream's 1.14.0 or newer; `chore vm:host:check` refuses an older one (#274). On macOS it must print a port release of 1.14.0.1 or newer for `--port-version`; `chore vm:host:check` refuses one that does not (#276). |
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | selected resource profile | Shared guest memory, virtual CPU count and disk size. Explicit values override the selected resource profile. |
+| `FLTH_HOST_MEMORY_LIMIT_MIB` | unset | Per-guest QEMU admission limit, a positive integer in MiB (at most six digits). Refuses estimates above the limit before boot. |
+| `FLTH_TCG_TB_SIZE_MIB` | `128` | Translation cache cap in MiB (1–1024) for standalone TCG launches that use `scripts/qemu-tcg-accel.sh`. No effect on shared KVM/HVF guests. |
 | `FLTH_SHARED_DEADLINE` | `480` | Minutes the shared guest stays up **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
 | `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. At most a quarter of the guest's total memory counts, so a small guest is not warned for its size. |
 | `FLTH_WATCHDOG` | on | `off` starts no [watchdog](#what-stops-a-vm) with a guest. |
@@ -1005,13 +1007,35 @@ Setup stays with the boot: after the guest stops each consumer's setup runs agai
 when it joins. A run profile's preparation is the persistent base beneath
 these disposable boots.
 
-**The host's memory is checked before every boot attempt.** A guest asks for
-gigabytes, and a full machine does not fail cleanly: it kills background work
-with no message connecting the two. So a boot needs the guest's memory plus
-**2048 MiB left for the host** in what the host has available: Linux's
+**The host's memory is checked before every boot attempt.** The per-guest QEMU
+estimate is **guest RAM + TCG translation cache + 384 MiB overhead**. The cache
+term is zero on KVM and HVF, the only accelerators the shared guest uses. The
+overhead is an allowance for QEMU itself, not a measured maximum. A boot needs
+the estimate plus **2048 MiB left for the host** in what the host has available: Linux's
 `MemAvailable`, or macOS's free, inactive and speculative pages at the page size
 `vm_stat` reports. A boot the host has no room for is refused, naming the numbers;
 a measurement that could not be made refuses too.
+
+`FLTH_HOST_MEMORY_LIMIT_MIB` optionally rejects an estimate above a fixed
+limit, independently of free host memory. Admission prints a `qemu-memory`
+line with each term and the limit. This is a preflight limit, not an RSS
+ceiling or a cgroup limit; budget separately for disk cache, helper processes,
+the runner and other jobs. It does not resize an already-running VM.
+
+A standalone TCG runner can use the same preflight before launching QEMU:
+
+```sh
+memory=2048
+accel="$("$HARNESS/scripts/qemu-tcg-accel.sh" "$memory")" || exit 1
+qemu-system-aarch64 -m "$memory" -accel "$accel" ...
+```
+
+Pass the same `-m` value and use the returned `-accel` value without overriding
+its `tb-size`. The helper prints the accelerator argument on stdout and the
+memory evidence on stderr; it prints no argument when admission fails. The
+128 MiB default leaves room above the measured Alpine boot/workload, while
+limiting the code cache well below its 1024 MiB QEMU default on the measured
+Apple Silicon host. Linux suite performance and overhead may differ.
 
 A consumer's VM-free stub tests can set `FLTH_TEST_MEMINFO` to a Linux
 memory report containing `MemAvailable: 67108864 kB`, for example. The

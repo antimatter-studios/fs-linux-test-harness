@@ -45,6 +45,8 @@ set -euo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 # shellcheck source=lib/common.sh
 . "$(dirname "$SELF")/lib/common.sh"
+# shellcheck source=scripts/lib/qemu-memory.sh
+. "$(dirname "$SELF")/lib/qemu-memory.sh"
 
 HOST_TOOLS="$FLTH_HARNESS/scripts/host-tools.sh"
 BOOT_ATTEMPTS=3
@@ -811,19 +813,12 @@ confirmed_stopped() {
     return 1
 }
 
-# THE HOST HAS ROOM FOR THE GUEST, or the boot is refused. The guest's memory and
+# THE HOST HAS ROOM FOR THE GUEST, or the boot is refused. The QEMU estimate and
 # HOST_MEMORY_RESERVE_MIB for the host must both fit in what the host has
 # available: MemAvailable on Linux, free, inactive and speculative pages on macOS.
 # A measurement that could not be made refuses too, since a guess is how a full
 # machine starts.
 HOST_MEMORY_RESERVE_MIB=2048
-
-guest_memory_mib() {
-    case "$CFG_vm_memory" in
-        *G) echo "$(( ${CFG_vm_memory%G} * 1024 ))" ;;
-        *M) echo "${CFG_vm_memory%M}" ;;
-    esac
-}
 
 host_memory_mib() {
     case "$(uname -s)" in
@@ -841,17 +836,18 @@ host_memory_mib() {
 }
 
 host_memory_check() {
-    local available requested
-    requested="$(guest_memory_mib)"
+    local available
+    flth_qemu_memory_check native "$CFG_vm_memory" || return
     available="$(host_memory_mib)" || available=""
     case "$available" in
         '' | *[!0-9]*)
             echo "vm: the host's free memory could not be measured, so the shared guest is not booted." >&2
             return 1 ;;
     esac
-    if [ "$available" -lt "$((requested + HOST_MEMORY_RESERVE_MIB))" ]; then
+    if [ "$available" -lt "$((FLTH_QEMU_TOTAL_MIB + HOST_MEMORY_RESERVE_MIB))" ]; then
         echo "vm: not enough host memory for the shared guest: $available MiB available, and it needs" >&2
-        echo "    $requested MiB for the guest and $HOST_MEMORY_RESERVE_MIB MiB left for the host. FLTH_SHARED_MEMORY asks for less." >&2
+        echo "    $FLTH_QEMU_GUEST_MIB MiB for the guest and $HOST_MEMORY_RESERVE_MIB MiB left for the host, plus $FLTH_QEMU_OVERHEAD_MIB MiB of QEMU overhead." >&2
+        echo "    FLTH_SHARED_MEMORY asks for less." >&2
         return 1
     fi
 }
