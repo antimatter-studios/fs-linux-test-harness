@@ -157,7 +157,7 @@ bin="$SANDBOX/bin"
 mkdir -p "$bin"
 cat > "$bin/curl" <<'STUB'
 #!/usr/bin/env bash
-out="" url="" accept="" auth="" retries=0
+out="" url="" accept="" auth="" retries=0 write_out=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -o) out="$2"; shift 2 ;;
@@ -168,7 +168,8 @@ while [ "$#" -gt 0 ]; do
             esac
             shift 2 ;;
         --retry) retries="$2"; shift 2 ;;
-        --retry-delay | -w | --write-out) shift 2 ;;
+        --retry-delay) shift 2 ;;
+        -w | --write-out) write_out="$2"; shift 2 ;;
         -*) shift ;;
         *) url="$1"; shift ;;
     esac
@@ -177,6 +178,11 @@ printf '%s|accept=%s|auth=%s|retries=%s\n' "$url" "$accept" "$auth" "$retries" >
 fail() {
     local i
     for i in $(seq 0 "$retries"); do echo "curl: (22) The requested URL returned error: $1" >&2; done
+    if [ -n "$write_out" ]; then
+        host=api.github.com
+        case "$url" in https://github.com/antimatter-studios/chore/releases/download/*) host=release-assets.githubusercontent.com ;; esac
+        printf '%s from %s\n' "$1" "$host" >&2
+    fi
     exit 22
 }
 # FLTH_TEST_FAILING_CALLS=N: the first N calls answer 504 whatever they ask
