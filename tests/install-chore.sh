@@ -372,6 +372,8 @@ install outage download
 check_eq "$status" 0 "outage: the install succeeds when every release download attempt answers 504"
 installed_is_the_release outage
 check_contains "$out" "returned error: 504" "outage: the 504s are still shown"
+check_contains "$out" "504 from release-assets.githubusercontent.com" \
+    "outage: the diagnostic names the host that returned the 504"
 check_contains "$out" "$tarball: OK" "outage: the tarball fetched through the API passes its pinned SHA-256"
 check_contains "$calls" "$api/releases/assets/203|accept=application/octet-stream|auth=Bearer $token" \
     "outage: the tarball comes from its own asset id, as raw bytes, with the job's token"
