@@ -12,9 +12,8 @@
 # engine error.
 #
 # The guest architecture is the host's: arm64 guests on Apple Silicon
-# and arm64 Linux, x86_64 guests on x86_64 Linux. Hardware acceleration
-# is REQUIRED — a VM silently emulated in software is a test run that
-# takes an hour and times out somewhere unhelpful.
+# and arm64 Linux, x86_64 guests on x86_64 Linux. TCG is an explicit opt-in
+# on Linux x86_64 and Apple Silicon.
 set -uo pipefail
 
 QUIET=0
@@ -200,10 +199,12 @@ check_linux() {
                 "$vfs_install"
         fi
     fi
-    if [ ! -e "$kvm" ]; then
-        need "$kvm" "hardware acceleration; software emulation is refused" "enable KVM for this host (kvm module / nested virtualisation)"
-    elif [ ! -r "$kvm" ] || [ ! -w "$kvm" ]; then
-        need "read-write access to $kvm" "hardware acceleration; software emulation is refused" "add $(id -un) to the kvm group, then log in again"
+    if [ "${FLTH_ACCELERATOR:-}" != tcg ]; then
+        if [ ! -e "$kvm" ]; then
+            need "$kvm" "hardware acceleration for the default Linux guest" "enable KVM for this host (kvm module / nested virtualisation)"
+        elif [ ! -r "$kvm" ] || [ ! -w "$kvm" ]; then
+            need "read-write access to $kvm" "hardware acceleration for the default Linux guest" "add $(id -un) to the kvm group, then log in again"
+        fi
     fi
     if [ "$qemu" = qemu-system-aarch64 ]; then
         local f
@@ -216,7 +217,13 @@ check_linux() {
     # one from `vagrant plugin install`; `vagrant plugin list` cannot.
 }
 
-case "$(uname -s)" in
+host="$(uname -s)"
+case "${FLTH_ACCELERATOR:-}:$host:$(uname -m)" in
+    :* | tcg:Linux:x86_64 | tcg:Darwin:arm64) ;;
+    *) echo "host tools: set FLTH_ACCELERATOR=tcg on Linux x86_64 or Apple Silicon, or leave it unset for the host's default." >&2; exit 1 ;;
+esac
+
+case "$host" in
     Darwin) check_macos ;;
     Linux) check_linux ;;
     *) need "macOS or Linux (found $(uname -s))" "the only hosts this harness drives" "(not installable)" ;;

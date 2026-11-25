@@ -840,7 +840,7 @@ host_memory_mib() {
 
 host_memory_check() {
     local available
-    flth_qemu_memory_check native "$CFG_vm_memory" || return
+    flth_qemu_memory_check "${FLTH_ACCELERATOR:-native}" "$CFG_vm_memory" || return
     available="$(host_memory_mib)" || available=""
     case "$available" in
         '' | *[!0-9]*)

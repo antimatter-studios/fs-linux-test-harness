@@ -169,6 +169,19 @@ check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  a 
 check_eq "$(field config/vm.box)|$(field config/vm.box_version)" "cloud-image/debian-12|20260909.2596.0" \
     "  Debian 12, pinned, unless the config names another guest"
 
+evaluate linux-gnu x86_64 0 vagrant-qemu
+check_contains "$(field error)" "KVM is required" "the default x86_64 guest requires KVM"
+FLTH_ACCELERATOR=tcg FLTH_TCG_TB_SIZE_MIB=64 evaluate linux-gnu x86_64 0 vagrant-qemu
+check_eq "$(field ok)" true "x86_64 TCG evaluates without KVM"
+check_eq "$(field config/vm.box)|$(field config/vm.box_version)|$(field config/vm.box_architecture)" \
+    "cloud-image/debian-12|20260909.2596.0|amd64" "  TCG uses the same pinned amd64 box"
+check_eq "$(field config/$P.machine)|$(field config/$P.cpu)" "q35|max" "  TCG keeps q35 and uses an emulated CPU"
+check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi,tb-size=64"' "  the configured translation cache reaches QEMU"
+check_contains "$(field config/$P.extra_qemu_args)" "pcie-root-port" "  TCG reserves the same hot-plug ports"
+check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  TCG uses a disposable overlay"
+FLTH_ACCELERATOR=tcg evaluate linux-gnu aarch64 1 vagrant-qemu
+check_contains "$(field error)" "on Linux x86_64 or Apple Silicon" "TCG is refused on a Linux aarch64 host"
+
 # --- [vm] guest ---------------------------------------------------------------
 FLTH_VM_GUEST=debian-13 evaluate linux-gnu x86_64 1 vagrant-qemu
 check_eq "$(field config/vm.box)|$(field config/vm.box_version)" "cloud-image/debian-13|20260914.2601.0" \
@@ -214,6 +227,10 @@ check_contains "$(field config/vm.provision)" '"guest/apt-ready.sh"' "  the box'
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  a disposable boot's writes are discarded"
 evaluate darwin23 arm64 0 vagrant-qemu
 check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS with only the stock plugin is refused"
+FLTH_ACCELERATOR=tcg evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_eq "$(field config/$P.machine)|$(field config/$P.cpu)" "virt,highmem=on|max" "Apple Silicon TCG keeps the ARM virt machine"
+check_eq "$(field config/vm.box)" "christhomas/vagrant-rpi-bookworm-arm64" "  TCG uses the same box as HVF"
+check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi,tb-size=128"' "  the TCG argument reaches the Mac provider"
 
 # --- the serial console (#61) -----------------------------------------------
 # The provider sends the guest's serial console, where its kernel writes,

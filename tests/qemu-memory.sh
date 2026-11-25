@@ -53,4 +53,9 @@ check_eq "$(grep -c '^up$' "$FLTH_TEST_STUB/calls")" 1 "only the admitted native
 vm down > "$SANDBOX/down" 2>&1
 check_eq "$?" 0 "the admitted native guest stops"
 
+output="$(FLTH_ACCELERATOR=tcg FLTH_SHARED_MEMORY=2G FLTH_HOST_MEMORY_LIMIT_MIB=2432 vm up 2>&1)"
+check_eq "$?" 1 "TCG guest refuses a budget that only covers native boot"
+check_contains "$output" 'ram_mib=2048 tb_mib=128 overhead_mib=384 total_mib=2560 limit_mib=2432' "TCG guest includes the translation cache"
+check_contains "$(FLTH_ACCELERATOR=tcg vm config)" 'machines/shared-debian-12-tcg' "TCG selects its own shared guest state"
+
 finish qemu-memory

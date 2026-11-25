@@ -80,6 +80,9 @@ exit 0
 STUB
 out="$(FLTH_VIRTIOFSD="$SANDBOX/other/virtiofsd" host_tools)"
 check_lacks "$out" "virtiofsd" "and a good one there passes while the one on PATH is old"
+out="$(FLTH_ACCELERATOR=tcg FLTH_VIRTIOFSD="$SANDBOX/other/virtiofsd" host_tools)"
+check_eq "$?" 0 "TCG accepts a Linux x86_64 host without requiring /dev/kvm"
+check_lacks "$out" "/dev/kvm" "TCG does not report a KVM requirement"
 
 # The order host-tools.sh checks is the engine's order of choice.
 engine_order="$(sed -n '/^engine_vagrant_virtiofsd() {/,/^}/p' "$REPO/scripts/lib/engine-vagrant.sh" | tr -s ' \\\n' ' ')"

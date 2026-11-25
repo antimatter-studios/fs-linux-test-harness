@@ -152,6 +152,10 @@ flth_shared_load() {
     CFG_cache_size=""
     FLTH_MACHINE_NAME="shared-$CFG_vm_guest"
     [ -z "$FLTH_PROFILE_ID" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-p${FLTH_PROFILE_ID:0:20}"
+    # An explicit TCG run must never join an already running KVM guest.
+    if [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
+        FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-tcg"
+    fi
     CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
     CFG_vm_cpus="${FLTH_SHARED_CPUS:-$FLTH_SHARED_CPUS_DEFAULT}"
     CFG_vm_disk="${FLTH_SHARED_DISK:-$FLTH_SHARED_DISK_DEFAULT}"
