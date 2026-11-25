@@ -35,6 +35,10 @@
 #   [setup]   script            string, required
 #   [test]    command           string, optional
 #   [test]    guest_command     string, optional
+#   [build]   dockerfile        string, required in a [build] section
+#   [build]   context           string, optional
+#   [build]   command           string, required in a [build] section
+#   [build]   siblings          string, optional
 #   [cache]   size              string, required in a [cache] section;
 #                               no section, no cache
 #
@@ -93,6 +97,10 @@ flth_config_key_type() {
         setup.script)        echo string ;;
         test.command)        echo string ;;
         test.guest_command)  echo string ;;
+        build.dockerfile)    echo string ;;
+        build.context)       echo string ;;
+        build.command)       echo string ;;
+        build.siblings)      echo string ;;
         cache.size)          echo string ;;
     esac
 }
@@ -135,6 +143,16 @@ flth_config_load() {
     CFG_test_guest_command=""
     # Empty: no cache. A consumer keeps one only by declaring it.
     CFG_cache_size=""
+    # Empty: no build step. A consumer whose guest runs what a container on
+    # the host built declares one ([build], lib/build.sh).
+    # shellcheck disable=SC2034  # read by lib/build.sh
+    CFG_build_dockerfile=""
+    # shellcheck disable=SC2034  # read by lib/build.sh
+    CFG_build_context=""
+    # shellcheck disable=SC2034  # read by lib/build.sh
+    CFG_build_command=""
+    # shellcheck disable=SC2034  # read by lib/build.sh
+    CFG_build_siblings=""
 
     while IFS= read -r line || [ -n "$line" ]; do
         lineno=$((lineno + 1))
@@ -148,7 +166,7 @@ flth_config_load() {
         if [[ "$line" =~ $re_section ]]; then
             section="${BASH_REMATCH[1]}"
             case "$section" in
-                project | vm | share | setup | test | cache) ;;
+                project | vm | share | setup | test | cache | build) ;;
                 *) flth_config_error "$file:$lineno: unknown section [$section]"; return 1 ;;
             esac
             case "$seen_sections" in
@@ -213,6 +231,16 @@ flth_config_load() {
                 { flth_config_error "$file: [cache] size must look like 16G, got '$CFG_cache_size'"; return 1; }
             ;;
     esac
+    # A [build] section is a promise that the guest runs what it built, so a
+    # section that names no image or no command is refused, not skipped.
+    case "$seen_sections" in
+        *" build "*)
+            [ -n "$CFG_build_dockerfile" ] ||
+                { flth_config_error "$file: [build] dockerfile is required in a [build] section"; return 1; }
+            [ -n "$CFG_build_command" ] ||
+                { flth_config_error "$file: [build] command is required in a [build] section"; return 1; }
+            ;;
+    esac
     # FLTH_BUILD_JOBS is the harness's own name. The variable it is exported as in
     # the guest is still read from the host below it, as before resource profiles (#264).
     CFG_vm_build_jobs="${FLTH_BUILD_JOBS:-${CARGO_BUILD_JOBS:-$CFG_vm_build_jobs}}"
@@ -257,6 +285,26 @@ flth_config_validate() {
     flth_config_relative_path "$file" "[setup] script" "$CFG_setup_script" || return 1
     [ -f "$FLTH_ROOT/$CFG_setup_script" ] ||
         { flth_config_error "$file: [setup] script names $CFG_setup_script, which is not a file"; return 1; }
+
+    if [ -n "$CFG_build_dockerfile" ]; then
+        flth_config_relative_path "$file" "[build] dockerfile" "$CFG_build_dockerfile" || return 1
+        [ -f "$FLTH_ROOT/$CFG_build_dockerfile" ] ||
+            { flth_config_error "$file: [build] dockerfile names $CFG_build_dockerfile, which is not a file"; return 1; }
+    fi
+    if [ -n "$CFG_build_context" ]; then
+        flth_config_relative_path "$file" "[build] context" "$CFG_build_context" || return 1
+        [ -f "$FLTH_ROOT/$CFG_build_context" ] ||
+            { flth_config_error "$file: [build] context names $CFG_build_context, which is not a file"; return 1; }
+    fi
+    # Directory names beside this repository, each mounted read-only next to it.
+    local sibling
+    for sibling in $CFG_build_siblings; do
+        case "$sibling" in
+            . | .. | *[!A-Za-z0-9._-]*)
+                flth_config_error "$file: [build] siblings must be directory names beside the repository, got '$sibling'"
+                return 1 ;;
+        esac
+    done
 
     return 0
 }

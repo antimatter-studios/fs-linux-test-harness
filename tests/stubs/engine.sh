@@ -175,6 +175,7 @@ stub_guest_paths() {
     printf '%s\n' "$1" |
         sed -e "s|/var/lib/fs-linux-test-harness|$STUB/guest-lib|g" \
             -e "s|FLTH_SHARE=\([^ ]*\)/share'|FLTH_SHARE=\1$FLTH_SHARE_HOST'|g" \
+            -e "s|/share/build|$FLTH_SHARE_HOST/build|g" \
             -e "s|/run/fs-linux-test-harness-held|$STUB/guest-held|g" \
             -e "s|/run/fs-linux-test-harness-rearmed|$STUB/guest-rearmed|g" \
             -e "s|/run/fs-linux-test-harness-runs|$STUB/guest-runs|g" \

@@ -90,10 +90,17 @@ tasks:
     # The run ends with the command; the guest stays up for the next one.
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" test $CLI_ARGS']
 
+  build:
+    desc: 'Run the [build] command in a container on the host and leave its output where the guest finds it: chore vm:build [-- args]'
+    # The first link of the chain guest-test runs: a container compiles, the
+    # guest tests what it compiled. Needs Docker, and no guest.
+    cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" build $CLI_ARGS']
+
   guest-test:
-    desc: 'Boot the shared guest if needed and run the [test] guest_command INSIDE it, from the mounted repository: chore vm:guest-test [-- args]'
-    # For a host that cannot run the suite natively. The consumer's
-    # [setup] script installs whatever the guest needs to run it.
+    desc: 'Build in a container if [build] says so, boot the shared guest if needed and run the [test] guest_command INSIDE it: chore vm:guest-test [-- args]'
+    # For a host that cannot run the suite natively. A consumer with a
+    # [build] section compiles on the host first (vm:build); the [setup]
+    # script installs what the guest needs to run what was built.
     cmds: ['"{{.TASKFILE_DIR}}/scripts/vm.sh" guest-test $CLI_ARGS']
 
   session:

@@ -10,7 +10,8 @@
 #   vm.sh provision        boot if needed, re-run the setup script unconditionally
 #   vm.sh reload           restart the shared guest in place, if nobody else is using it
 #   vm.sh test [args...]   boot if needed, run the consumer's [test] command as a run of its own
-#   vm.sh guest-test [args...]  boot if needed, run the [test] guest_command INSIDE the guest
+#   vm.sh build [args...]  run the [build] command in a container on the host; the guest runs its output
+#   vm.sh guest-test [args...]  build if [build] says so, boot if needed, run the [test] guest_command INSIDE the guest
 #   vm.sh session <cmd...> run a command on the host inside a session: the VM comes down when it ends
 #   vm.sh down             stop the shared guest and confirm it stopped, if nobody is using it
 #   vm.sh status           exit 0 when the VM is running, 1 otherwise
@@ -47,6 +48,8 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE
 . "$(dirname "$SELF")/lib/common.sh"
 # shellcheck source=scripts/lib/qemu-memory.sh
 . "$(dirname "$SELF")/lib/qemu-memory.sh"
+# shellcheck source=scripts/lib/build.sh
+. "$(dirname "$SELF")/lib/build.sh"
 
 HOST_TOOLS="$FLTH_HARNESS/scripts/host-tools.sh"
 BOOT_ATTEMPTS=3
@@ -63,7 +66,7 @@ LOST_GUEST_TRIES=5
 LOST_GUEST_RETRY_WAIT=3
 
 usage() {
-    sed -n '3,20p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '3,21p' "$SELF" | sed 's/^# \{0,1\}//'
 }
 
 # Say what the host is missing before trying to boot. Without this the
@@ -1569,11 +1572,19 @@ vm_exec() {
 # leave behind goes in the shared directory, which both sides see.
 #
 # A run of its own, under vm-session.sh's rules, exactly like `test`.
+#
+# A consumer with a [build] section builds first, in a container on the host
+# (lib/build.sh), and the guest is booted only for a build that succeeded. The
+# guest command finds what it built at FLTH_BUILD_DIR.
 vm_guest_test() {
     [ -n "$CFG_test_guest_command" ] ||
         flth_die "$FLTH_CONFIG has no [test] guest_command"
-    local script arg
-    script="cd $(quote_for_guest "$FLTH_REPO_GUEST") && $CFG_test_guest_command"
+    local script arg build_env=""
+    if build_configured; then
+        (vm_build) || exit
+        build_env="export FLTH_BUILD_DIR=$(quote_for_guest "$FLTH_SHARE_GUEST/build") && "
+    fi
+    script="cd $(quote_for_guest "$FLTH_REPO_GUEST") && $build_env$CFG_test_guest_command"
     for arg in "$@"; do
         script="$script $(quote_for_guest "$arg")"
     done
@@ -1616,6 +1627,10 @@ repo.guest=$FLTH_REPO_GUEST
 setup.script=$CFG_setup_script
 test.command=$CFG_test_command
 test.guest_command=$CFG_test_guest_command
+build.dockerfile=${CFG_build_dockerfile:-none}
+build.context=${CFG_build_context:-none}
+build.command=${CFG_build_command:-none}
+build.siblings=${CFG_build_siblings:-none}
 cache.size=${FLTH_SHARED_CACHE:-none}
 cache.guest=$([ -n "$FLTH_SHARED_CACHE" ] && echo "$FLTH_CACHE_GUEST" || echo none)
 machine=$FLTH_MACHINE_DIR
@@ -1640,7 +1655,7 @@ case "$command" in
         shift
         exec "$(dirname "$SELF")/vm-session.sh" "$@"
         ;;
-    up | up-boot | run | watchdog-end | watchdog-told | tree-lost | exec | put | share | provision | reload | test | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | run-id | guest-tree) ;;
+    up | up-boot | run | watchdog-end | watchdog-told | tree-lost | exec | put | share | provision | reload | test | build | guest-test | down | status | hold | reap | destroy | config | session-begin | session-end | run-id | guest-tree) ;;
     *)
         echo "vm: unknown command '$command'" >&2
         usage >&2
@@ -1650,6 +1665,11 @@ esac
 shift
 
 flth_load || exit 1
+# The build needs Docker and nothing of the engine's: it runs before a guest exists.
+if [ "$command" = build ]; then
+    vm_build "$@"
+    exit 0
+fi
 if [ "$command" = up-boot ] && [ "${3:-}" != "$FLTH_MACHINE_NAME" ]; then
     flth_die "run profile or base guest changed while taking the boot lock; retry with the selected profile."
 fi
