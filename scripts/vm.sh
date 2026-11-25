@@ -46,9 +46,7 @@ set -euo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 # shellcheck source=lib/common.sh
 . "$(dirname "$SELF")/lib/common.sh"
-# shellcheck source=scripts/lib/qemu-memory.sh
-. "$(dirname "$SELF")/lib/qemu-memory.sh"
-# shellcheck source=scripts/lib/build.sh
+# shellcheck source=lib/build.sh
 . "$(dirname "$SELF")/lib/build.sh"
 
 HOST_TOOLS="$FLTH_HARNESS/scripts/host-tools.sh"
@@ -840,7 +838,7 @@ host_memory_mib() {
 
 host_memory_check() {
     local available
-    flth_qemu_memory_check "${FLTH_ACCELERATOR:-native}" "$CFG_vm_memory" || return
+    flth_qemu_memory_check "${FLTH_ACCELERATOR:-native}" "$CFG_vm_memory" "$FLTH_QEMU_TB_LIMIT_MIB" || return
     available="$(host_memory_mib)" || available=""
     case "$available" in
         '' | *[!0-9]*)
@@ -850,7 +848,7 @@ host_memory_check() {
     if [ "$available" -lt "$((FLTH_QEMU_TOTAL_MIB + HOST_MEMORY_RESERVE_MIB))" ]; then
         echo "vm: not enough host memory for the shared guest: $available MiB available, and it needs" >&2
         echo "    $FLTH_QEMU_GUEST_MIB MiB for the guest and $HOST_MEMORY_RESERVE_MIB MiB left for the host, plus $FLTH_QEMU_OVERHEAD_MIB MiB of QEMU overhead." >&2
-        echo "    FLTH_SHARED_MEMORY asks for less." >&2
+        echo "    FLTH_GUEST_MEM or FLTH_SHARED_MEMORY can request less guest RAM." >&2
         return 1
     fi
 }
@@ -996,7 +994,7 @@ shared_tell_room() {
     [ "$floor" -le $((total / 4)) ] || floor=$((total / 4))
     [ "$available" -lt "$floor" ] || return 0
     echo "vm: the shared guest has $available MiB of $total MiB available, in use by: $(shared_suites)." >&2
-    echo "    A suite that needs more may be killed for memory. FLTH_SHARED_MEMORY sizes the guest at its next boot." >&2
+    echo "    A suite that needs more may be killed for memory. FLTH_GUEST_MEM or FLTH_SHARED_MEMORY sizes the guest at its next boot." >&2
 }
 
 # A KERNEL THAT HAS OOPSED KEEPS ANSWERING (#196), so a suite on it goes on and reports
@@ -1608,6 +1606,7 @@ config=$FLTH_CONFIG
 root=$FLTH_ROOT
 project.name=$CFG_project_name
 vm.memory=$CFG_vm_memory
+vm.tcg_cache_limit_mib=$FLTH_QEMU_TB_LIMIT_MIB
 vm.cpus=$CFG_vm_cpus
 vm.build_jobs=$CFG_vm_build_jobs
 vm.test_jobs=$CFG_vm_test_jobs

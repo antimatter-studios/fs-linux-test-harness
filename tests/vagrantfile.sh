@@ -171,12 +171,14 @@ check_eq "$(field config/vm.box)|$(field config/vm.box_version)" "cloud-image/de
 
 evaluate linux-gnu x86_64 0 vagrant-qemu
 check_contains "$(field error)" "KVM is required" "the default x86_64 guest requires KVM"
-FLTH_ACCELERATOR=tcg FLTH_TCG_TB_SIZE_MIB=64 evaluate linux-gnu x86_64 0 vagrant-qemu
+FLTH_ACCELERATOR=tcg FLTH_VM_TB_MIB=512 FLTH_VM_MEMORY=256M evaluate linux-gnu x86_64 0 vagrant-qemu
 check_eq "$(field ok)" true "x86_64 TCG evaluates without KVM"
 check_eq "$(field config/vm.box)|$(field config/vm.box_version)|$(field config/vm.box_architecture)" \
     "cloud-image/debian-12|20260909.2596.0|amd64" "  TCG uses the same pinned amd64 box"
 check_eq "$(field config/$P.machine)|$(field config/$P.cpu)" "q35|max" "  TCG keeps q35 and uses an emulated CPU"
-check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi,tb-size=64"' "  the configured translation cache reaches QEMU"
+check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi,tb-size=512"' "  the configured translation cache reaches QEMU"
+check_eq "$(field config/$P.memory)" 256M "  Vagrant receives the resolved guest memory"
+check_contains "$(field config/$P.extra_qemu_args)" 'size=256M,share=on' "  the virtiofs memory backend uses the same guest memory"
 check_contains "$(field config/$P.extra_qemu_args)" "pcie-root-port" "  TCG reserves the same hot-plug ports"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  TCG uses a disposable overlay"
 FLTH_ACCELERATOR=tcg evaluate linux-gnu aarch64 1 vagrant-qemu
@@ -230,7 +232,7 @@ check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS wit
 FLTH_ACCELERATOR=tcg evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
 check_eq "$(field config/$P.machine)|$(field config/$P.cpu)" "virt,highmem=on|max" "Apple Silicon TCG keeps the ARM virt machine"
 check_eq "$(field config/vm.box)" "christhomas/vagrant-rpi-bookworm-arm64" "  TCG uses the same box as HVF"
-check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi,tb-size=128"' "  the TCG argument reaches the Mac provider"
+check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi"' "  with no cap, QEMU sizes the translation cache"
 
 # --- the serial console (#61) -----------------------------------------------
 # The provider sends the guest's serial console, where its kernel writes,

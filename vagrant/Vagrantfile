@@ -80,11 +80,14 @@ unless accelerator.empty? || tcg
 end
 accel_args = []
 if tcg
-  tb_size = ENV.fetch("FLTH_TCG_TB_SIZE_MIB", "128")
-  unless tb_size.match?(/\A[1-9][0-9]{0,3}\z/) && tb_size.to_i <= 1024
-    raise "FLTH_TCG_TB_SIZE_MIB must be an integer from 1 to 1024, got #{tb_size.inspect}"
+  tb_size = ENV.fetch("FLTH_VM_TB_MIB", "0")
+  accel_args = ["-accel", "tcg,thread=multi"]
+  if tb_size != "0"
+    unless tb_size.match?(/\A[1-9][0-9]{0,9}\z/) && (128..4_294_967_295).cover?(tb_size.to_i)
+      raise "FLTH_VM_MEM must be a valid TCG cache size in MiB, got #{tb_size.inspect}"
+    end
+    accel_args[1] += ",tb-size=#{tb_size}"
   end
-  accel_args = ["-accel", "tcg,thread=multi,tb-size=#{tb_size}"]
 end
 
 vm_name   = flth_env("FLTH_VM_NAME", /\A[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\z/, "a hostname label")

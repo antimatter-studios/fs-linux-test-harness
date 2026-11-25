@@ -14,6 +14,8 @@ FLTH_HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 . "$FLTH_HARNESS/scripts/lib/engine.sh"
 # shellcheck source=scripts/lib/profile.sh
 . "$FLTH_HARNESS/scripts/lib/profile.sh"
+# shellcheck source=scripts/lib/qemu-memory.sh
+. "$FLTH_HARNESS/scripts/lib/qemu-memory.sh"
 
 # Machines, their disks and the firmware links are CACHE: regenerable,
 # large, and nothing a repository should carry. Sockets and Vagrant's
@@ -157,6 +159,7 @@ flth_shared_load() {
         FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-tcg"
     fi
     CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
+    flth_resolve_vm_memory || return
     CFG_vm_cpus="${FLTH_SHARED_CPUS:-$FLTH_SHARED_CPUS_DEFAULT}"
     CFG_vm_disk="${FLTH_SHARED_DISK:-$FLTH_SHARED_DISK_DEFAULT}"
     CFG_vm_ssh_port="$FLTH_SHARED_SSH_PORT"

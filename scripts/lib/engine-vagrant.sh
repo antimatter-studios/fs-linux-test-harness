@@ -31,6 +31,7 @@ engine_prepare() {
     export VAGRANT_DOTFILE_PATH="$FLTH_MACHINE_DIR/vagrant"
     export FLTH_VM_NAME="$FLTH_MACHINE_NAME"
     export FLTH_VM_MEMORY="$CFG_vm_memory"
+    export FLTH_VM_TB_MIB="${FLTH_QEMU_TB_LIMIT_MIB:-0}"
     export FLTH_VM_CPUS="$CFG_vm_cpus"
     export FLTH_VM_DISK="$CFG_vm_disk"
     export FLTH_VM_SSH_PORT="$CFG_vm_ssh_port"

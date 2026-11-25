@@ -539,7 +539,9 @@ relative, and must not leave the repository.
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | selected resource profile | Shared guest memory, virtual CPU count and disk size. Explicit values override the selected resource profile. |
 | `FLTH_HOST_MEMORY_LIMIT_MIB` | unset | Per-guest QEMU admission limit, a positive integer in MiB (at most six digits). Refuses estimates above the limit before boot. |
 | `FLTH_ACCELERATOR` | KVM on Linux, HVF on Apple Silicon | Set to `tcg` on x86_64 Linux or Apple Silicon to use QEMU software emulation. Export it for all VM commands, including `down` and `destroy`. |
-| `FLTH_TCG_TB_SIZE_MIB` | `128` | Translation cache cap in MiB (1–1024) for TCG guests and standalone launches using `scripts/qemu-tcg-accel.sh`. |
+| `FLTH_VM_MEM` | QEMU automatic sizing | TCG translation cache cap in MiB. Unset, empty, or `0` leaves sizing to QEMU. A configured cap must be at least `128`. |
+| `FLTH_GUEST_MEM` | `FLTH_SHARED_MEMORY` or the resource profile | Guest RAM in whole MiB. With a configured `FLTH_VM_MEM` cap, an explicit size must be at most half the cap. If unset, the fallback is capped at half. Both settings take effect at boot. |
+| `FLTH_TCG_TB_SIZE_MIB` | `128` | Translation cache cap in MiB (1–1024) for standalone launches using `scripts/qemu-tcg-accel.sh`. |
 | `FLTH_SHARED_DEADLINE` | `480` | Minutes the shared guest stays up **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
 | `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. At most a quarter of the guest's total memory counts, so a small guest is not warned for its size. |
 | `FLTH_WATCHDOG` | on | `off` starts no [watchdog](#what-stops-a-vm) with a guest. |
@@ -1015,7 +1017,8 @@ these disposable boots.
 
 **The host's memory is checked before every boot attempt.** The per-guest QEMU
 estimate is **guest RAM + TCG translation cache + 384 MiB overhead**. The cache
-term is zero on KVM and HVF. The
+term is zero on KVM and HVF. When TCG sizes its own cache, admission budgets
+1 GiB for it. The
 overhead is an allowance for QEMU itself, not a measured maximum. A boot needs
 the estimate plus **2048 MiB left for the host** in what the host has available: Linux's
 `MemAvailable`, or macOS's free, inactive and speculative pages at the page size

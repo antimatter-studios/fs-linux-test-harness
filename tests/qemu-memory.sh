@@ -55,7 +55,35 @@ check_eq "$?" 0 "the admitted native guest stops"
 
 output="$(FLTH_ACCELERATOR=tcg FLTH_SHARED_MEMORY=2G FLTH_HOST_MEMORY_LIMIT_MIB=2432 vm up 2>&1)"
 check_eq "$?" 1 "TCG guest refuses a budget that only covers native boot"
-check_contains "$output" 'ram_mib=2048 tb_mib=128 overhead_mib=384 total_mib=2560 limit_mib=2432' "TCG guest includes the translation cache"
+check_contains "$output" 'ram_mib=2048 tb_mib=1024 overhead_mib=384 total_mib=3456 limit_mib=2432' "TCG admission budgets for QEMU's automatic cache"
 check_contains "$(FLTH_ACCELERATOR=tcg vm config)" 'machines/shared-debian-12-tcg' "TCG selects its own shared guest state"
+
+output="$(FLTH_ACCELERATOR=tcg FLTH_VM_MEM=512 FLTH_GUEST_MEM=256 FLTH_HOST_MEMORY_LIMIT_MIB=1151 vm up 2>&1)"
+check_eq "$?" 1 "TCG guest refuses a budget below the two selected sizes plus overhead"
+check_contains "$output" 'ram_mib=256 tb_mib=512 overhead_mib=384 total_mib=1152 limit_mib=1151' "both new sizes reach preflight"
+
+check_contains "$(FLTH_VM_MEM=129 vm config)" 'vm.memory=64M' "an unset guest size is capped at half the configured cache, rounded down"
+check_contains "$(FLTH_VM_MEM=8192 FLTH_RESOURCE_PROFILE=low vm config)" 'vm.memory=2G' "a profile size already below half is kept"
+check_contains "$(FLTH_VM_MEM=1024 FLTH_SHARED_MEMORY=256M vm config)" 'vm.memory=256M' "the legacy size still works as a fallback"
+check_contains "$(FLTH_VM_MEM=128 FLTH_GUEST_MEM=64 FLTH_SHARED_MEMORY=2G vm config)" 'vm.memory=64M' "the explicit guest size overrides the legacy size and can equal half the limit"
+out="$(FLTH_VM_MEM=128 FLTH_GUEST_MEM=65 vm config 2>&1)"
+check_eq "$?" 1 "an explicit guest size over half is rejected"
+check_contains "$out" 'FLTH_GUEST_MEM=65 exceeds half of FLTH_VM_MEM=128 (64 MiB)' "the rejection names both settings and the maximum"
+for cap in '' 0; do
+    out="$(FLTH_VM_MEM="$cap" FLTH_GUEST_MEM=4096 vm config)"
+    check_contains "$out" 'vm.memory=4096M' "cache limit '$cap' leaves guest RAM unrestricted by the ratio"
+    check_contains "$out" 'vm.tcg_cache_limit_mib=0' "cache limit '$cap' selects automatic sizing"
+done
+check_contains "$(FLTH_GUEST_MEM=4096 vm config)" 'vm.memory=4096M' "an unset cap leaves guest RAM unrestricted by the ratio"
+for cap in 127 128M -1 4294967296; do
+    out="$(FLTH_VM_MEM="$cap" vm config 2>&1)"
+    check_eq "$?" 1 "invalid cache limit '$cap' is rejected"
+    check_contains "$out" 'FLTH_VM_MEM' "the rejection names the cache setting"
+done
+for guest in '' 0 2G -1; do
+    out="$(FLTH_GUEST_MEM="$guest" vm config 2>&1)"
+    check_eq "$?" 1 "invalid explicit guest size '$guest' is rejected"
+    check_contains "$out" 'FLTH_GUEST_MEM' "the rejection names the guest setting"
+done
 
 finish qemu-memory
