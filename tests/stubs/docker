@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# A stand-in Docker for tests/build.sh. It logs every call to $FLTH_TEST_DOCKER/calls,
+# keeps "images" as files under $FLTH_TEST_DOCKER/images, and runs a container's
+# command HERE: in the host directory mounted at the workdir, with the output
+# mount's host directory as FLTH_BUILD_OUTPUT. Files in $FLTH_TEST_DOCKER change
+# its answers: `down` (no daemon), `build_fails`, `arch` (what a built image is).
+set -uo pipefail
+D="${FLTH_TEST_DOCKER:?}"
+mkdir -p "$D/images"
+printf '%s\n' "$*" >> "$D/calls"
+image_file() { printf '%s/images/%s\n' "$D" "$(printf '%s' "$1" | tr '/:' '__')"; }
+
+case "${1:-}" in
+    info)
+        [ ! -f "$D/down" ] ;;
+    image)
+        [ "${2:-}" = inspect ] || exit 2
+        shift 2
+        if [ "${1:-}" = --format ]; then
+            shift 2
+            [ -f "$(image_file "$1")" ] || exit 1
+            cat "$(image_file "$1")"
+        else
+            [ -f "$(image_file "$1")" ]
+        fi ;;
+    build)
+        shift
+        platform="" tag="" context=""
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --platform) platform="${2#linux/}"; shift 2 ;;
+                --tag) tag="$2"; shift 2 ;;
+                --label) shift 2 ;;
+                *) context="$1"; shift ;;
+            esac
+        done
+        [ ! -f "$D/build_fails" ] || { echo "stub docker: build failed" >&2; exit 1; }
+        (cd "$context" && find . -type f | LC_ALL=C sort) > "$D/last-context"
+        cat "$D/arch" 2>/dev/null > "$(image_file "$tag")" || true
+        [ -s "$(image_file "$tag")" ] || printf '%s\n' "$platform" > "$(image_file "$tag")" ;;
+    run)
+        shift
+        workdir="" output="" image=""
+        declare -a envs=()
+        : > "$D/mounts"
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --rm) shift ;;
+                --pull=never) shift ;;
+                --platform) shift 2 ;;
+                --mount)
+                    src="$(printf '%s' "$2" | sed -n 's/.*src=\([^,]*\),dst=.*/\1/p')"
+                    dst="$(printf '%s' "$2" | sed -n 's/.*dst=\([^,]*\).*/\1/p')"
+                    printf '%s %s\n' "$dst" "$src" >> "$D/mounts"
+                    [ "$dst" != /output ] || output="$src"
+                    shift 2 ;;
+                --workdir) workdir="$2"; shift 2 ;;
+                --env) envs+=("$2"); shift 2 ;;
+                *) image="$1"; shift; break ;;
+            esac
+        done
+        [ -f "$(image_file "$image")" ] || { echo "stub docker: no image $image" >&2; exit 125; }
+        host_workdir="$(awk -v d="$workdir" '$1 == d { print $2 }' "$D/mounts" | tail -1)"
+        cd "$host_workdir" || exit 125
+        env "${envs[@]}" "FLTH_BUILD_OUTPUT=$output" "$@" ;;
+    *)
+        exit 2 ;;
+esac
