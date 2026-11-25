@@ -32,11 +32,11 @@ flth_resolve_vm_memory() {
     fi
     [ "$FLTH_QEMU_TB_LIMIT_MIB" != 0 ] || return 0
 
-    ceiling=$((FLTH_QEMU_TB_LIMIT_MIB / 2))
+    ceiling=$((FLTH_QEMU_TB_LIMIT_MIB * 3 / 4))
     guest_mib="$(flth_qemu_ram_mib "$CFG_vm_memory")" || return
     [ "$guest_mib" -gt "$ceiling" ] || return 0
     if [ "${FLTH_GUEST_MEM+x}" = x ]; then
-        printf 'vm: FLTH_GUEST_MEM=%s exceeds half of FLTH_VM_MEM=%s (%s MiB)\n' "$guest_mib" "$FLTH_QEMU_TB_LIMIT_MIB" "$ceiling" >&2
+        printf 'vm: FLTH_GUEST_MEM=%s exceeds 75%% of FLTH_VM_MEM=%s (%s MiB)\n' "$guest_mib" "$FLTH_QEMU_TB_LIMIT_MIB" "$ceiling" >&2
         return 1
     fi
     CFG_vm_memory="${ceiling}M"
