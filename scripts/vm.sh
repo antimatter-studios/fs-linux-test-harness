@@ -819,12 +819,29 @@ confirmed_stopped() {
 # available: MemAvailable on Linux, free, inactive and speculative pages on macOS.
 # A measurement that could not be made refuses too, since a guess is how a full
 # machine starts.
-HOST_MEMORY_RESERVE_MIB=2048
+# FLTH_HOST_MEMORY_RESERVE_MIB changes it: a CI runner pod that runs nothing
+# else beside the guest needs less kept back than a workstation does.
+HOST_MEMORY_RESERVE_MIB="${FLTH_HOST_MEMORY_RESERVE_MIB:-2048}"
 
 host_memory_mib() {
     case "$(uname -s)" in
         Linux)
-            awk '/^MemAvailable:/ {print int($2 / 1024); found=1} END {if (!found) exit 1}' "${FLTH_TEST_MEMINFO:-/proc/meminfo}" ;;
+            # The machine's available memory, or less when this process runs in
+            # a cgroup with a memory limit (a container, a CI runner pod): the
+            # limit minus what the group already uses.
+            local machine cgroup max current
+            machine="$(awk '/^MemAvailable:/ {print int($2 / 1024); found=1} END {if (!found) exit 1}' "${FLTH_TEST_MEMINFO:-/proc/meminfo}")" || return 1
+            cgroup="${FLTH_TEST_CGROUP:-}"
+            [ -n "$cgroup" ] || [ -n "${FLTH_TEST_MEMINFO:-}" ] || cgroup=/sys/fs/cgroup
+            if [ -n "$cgroup" ]; then
+                max="$(cat "$cgroup/memory.max" 2>/dev/null || true)"
+                current="$(cat "$cgroup/memory.current" 2>/dev/null || true)"
+                if [[ "$max" =~ ^[0-9]+$ && "$current" =~ ^[0-9]+$ ]] && [ "$max" -gt "$current" ] &&
+                    [ $(((max - current) / 1048576)) -lt "$machine" ]; then
+                    machine=$(((max - current) / 1048576))
+                fi
+            fi
+            printf '%s\n' "$machine" ;;
         Darwin)
             local stats
             stats="$(vm_stat)" || return 1
@@ -838,6 +855,10 @@ host_memory_mib() {
 
 host_memory_check() {
     local available
+    [[ "$HOST_MEMORY_RESERVE_MIB" =~ ^[0-9]{1,6}$ ]] || {
+        echo "vm: FLTH_HOST_MEMORY_RESERVE_MIB must be a whole number of MiB, got $HOST_MEMORY_RESERVE_MIB" >&2
+        return 1
+    }
     flth_qemu_memory_check "${FLTH_ACCELERATOR:-native}" "$CFG_vm_memory" "$FLTH_QEMU_TB_LIMIT_MIB" || return
     available="$(host_memory_mib)" || available=""
     case "$available" in
@@ -847,8 +868,9 @@ host_memory_check() {
     esac
     if [ "$available" -lt "$((FLTH_QEMU_TOTAL_MIB + HOST_MEMORY_RESERVE_MIB))" ]; then
         echo "vm: not enough host memory for the shared guest: $available MiB available, and it needs" >&2
-        echo "    $FLTH_QEMU_GUEST_MIB MiB for the guest and $HOST_MEMORY_RESERVE_MIB MiB left for the host, plus $FLTH_QEMU_OVERHEAD_MIB MiB of QEMU overhead." >&2
-        echo "    FLTH_GUEST_MEM or FLTH_SHARED_MEMORY can request less guest RAM." >&2
+        echo "    $FLTH_QEMU_GUEST_MIB MiB for the guest, $FLTH_QEMU_TB_MIB MiB of TCG cache and $FLTH_QEMU_OVERHEAD_MIB MiB of QEMU overhead," >&2
+        echo "    and $HOST_MEMORY_RESERVE_MIB MiB left for the host (FLTH_HOST_MEMORY_RESERVE_MIB)." >&2
+        echo "    FLTH_GUEST_MEM, FLTH_VM_MEM or FLTH_SHARED_MEMORY can request less." >&2
         return 1
     fi
 }
