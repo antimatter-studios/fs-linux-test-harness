@@ -57,6 +57,12 @@ output="$(FLTH_ACCELERATOR=tcg FLTH_SHARED_MEMORY=2G FLTH_HOST_MEMORY_LIMIT_MIB=
 check_eq "$?" 1 "TCG guest refuses a budget that only covers native boot"
 check_contains "$output" 'ram_mib=2048 tb_mib=1024 overhead_mib=384 total_mib=3456 limit_mib=2432' "TCG admission budgets for QEMU's automatic cache"
 check_contains "$(FLTH_ACCELERATOR=tcg vm config)" 'machines/shared-debian-12-tcg' "TCG selects its own shared guest state"
+# The guest's architecture is exported to every script vm.sh starts, so naming
+# the host's own must not name another machine.
+host_arch="$(uname -m)"
+case "$host_arch" in arm64) host_arch=aarch64 ;; esac
+check_eq "$(FLTH_GUEST_ARCH="$host_arch" vm config)" "$(vm config)" "a guest of the host's own architecture, named or not, is the same machine"
+check_eq "$(FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH="$host_arch" vm config)" "$(FLTH_ACCELERATOR=tcg vm config)" "  and so under TCG"
 
 output="$(FLTH_ACCELERATOR=tcg FLTH_VM_MEM=512 FLTH_GUEST_MEM=256 FLTH_HOST_MEMORY_LIMIT_MIB=1151 vm up 2>&1)"
 check_eq "$?" 1 "TCG guest refuses a budget below the two selected sizes plus overhead"

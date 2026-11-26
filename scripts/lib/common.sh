@@ -178,10 +178,15 @@ flth_shared_load() {
     if [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
         FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-tcg"
     fi
-    # A guest of another architecture is another machine.
-    local guest_arch
+    # A guest of another architecture is another machine. One of the host's own
+    # is the same machine, whether FLTH_GUEST_ARCH names it or is unset: it is
+    # exported below, so every script this one starts sees it set, and a name
+    # that changed with it would be another machine's halfway through a boot.
+    local guest_arch host_arch
     guest_arch="$(flth_guest_arch)" || return
-    [ "${FLTH_GUEST_ARCH:-}" = "" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-$guest_arch"
+    host_arch="$(uname -m)"
+    case "$host_arch" in arm64) host_arch=aarch64 ;; esac
+    [ "$guest_arch" = "$host_arch" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-$guest_arch"
     export FLTH_GUEST_ARCH="$guest_arch"
     CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
     flth_resolve_vm_memory || return
