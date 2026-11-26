@@ -297,8 +297,8 @@ jobs:
     env:
       FLTH_ACCELERATOR: tcg
       FLTH_GUEST_ARCH: ${{ matrix.arch }}
-      FLTH_VM_MEM: "2048"
-      FLTH_GUEST_MEM: "1536"
+      FLTH_VM_MEM: "256"
+      FLTH_GUEST_MEM: "192"
       FLTH_SHARED_CPUS: "2"
       FLTH_VM_GUEST: debian-12
       FLTH_CONFIG: ${{ github.workspace }}/tests/smoke-consumer/fs-linux-test-harness.toml
