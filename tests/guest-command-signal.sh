@@ -114,7 +114,7 @@ clean_up() {
     done < "$LEFT"
     kill -KILL "$(cat "$QEMU_PID" 2>/dev/null)" 2>/dev/null || true
 }
-trap 'clean_up; rm -rf "$SANDBOX"' EXIT
+at_exit clean_up
 
 alive() {
     local state
@@ -179,7 +179,9 @@ else
     bad "a call that ended without starting the command fails the wait at once (it took $((SECONDS - waited))s)"
 fi
 
-# The guest command, one per kind. Each records the shell's PID and its child's.
+# The guest command, one per kind. Each records the shell's PID and its child's,
+# and ends by itself after 300 seconds, so one that nothing stopped does not run
+# on (#302).
 guest_command() {
     # guest_command <kind> <dir>
     case "$1" in
@@ -187,7 +189,7 @@ guest_command() {
             printf 'echo $$ > %s/shell; /bin/sleep 300 & echo $! > %s/child; wait' "$2" "$2"
             ;;
         stubborn)
-            printf 'trap "echo TERM > %s/term" TERM; echo $$ > %s/shell; /bin/sleep 300 & echo $! > %s/child; while :; do wait; done' "$2" "$2" "$2"
+            printf 'trap "echo TERM > %s/term" TERM; echo $$ > %s/shell; /bin/sleep 300 & echo $! > %s/child; while [ $SECONDS -lt 300 ]; do wait; /bin/sleep 0.1; done' "$2" "$2" "$2"
             ;;
         moved)
             # A child in a process group of its own, as `timeout` makes for itself.

@@ -88,7 +88,7 @@ stop_monitor() {
     MONITOR_PID=""
     rm -f "$SOCKET"
 }
-trap 'stop_monitor; rm -rf "$SANDBOX"' EXIT
+at_exit stop_monitor
 
 qemu_line() {
     printf '/opt/bin/qemu-system-aarch64 -machine virt -drive if=virtio,id=disk0,format=qcow2,file=%s/linked-box.img,snapshot=on,discard=unmap -chardev socket,id=mon0,%s,server=on,wait=off -mon chardev=mon0,mode=readline\n' \

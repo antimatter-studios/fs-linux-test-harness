@@ -8,8 +8,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 new_sandbox
 ROOT="$(mktemp -d "${FLTH_TEST_SOCKET_ROOT:-/tmp}/flthq.XXXXXX")" || exit 1
-# shellcheck disable=SC2064  # expand now: the paths are fixed
-trap "rm -rf '$SANDBOX' '$ROOT'" EXIT
+at_exit 'rm -rf "$ROOT"'
 
 # By the name a stand-in runs under, not by matching text anywhere on the line:
 # this awk's own command line holds both the name and the path, and it is in the

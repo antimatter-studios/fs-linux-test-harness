@@ -55,10 +55,87 @@ require_chore() {
     require_tool chore "install a release (.github/actions/install-chore does it for CI's unit job), or have the guest's setup install it"
 }
 
+# NOTHING A TEST STARTED IS LEFT WHEN IT EXITS (#302), whether it passes, fails or
+# is interrupted. Stand-in suites run in process groups of their own, which no
+# signal to the test reaches, and left behind they ran for days.
+#
+# Prints what `kill` takes: the pid of each leftover, and -<group> for each process
+# group a leftover is in that is not the test's own. A leftover is a descendant of
+# the test, a process whose command line holds the sandbox's name, a child of
+# either, or a member of one of those groups. The test and its ancestors are
+# spared, and so are their groups as a whole. `command -p`: a test's stand-in ps
+# or awk answers here with nothing true.
+flth_test_leftovers() {
+    command -p ps -A -ww -o pid=,ppid=,pgid=,args= 2>/dev/null |
+        FLTH_REAP_SELF="$$" FLTH_REAP_MARK="${FLTH_SANDBOX_MARK:-}" command -p awk '
+        {
+            parent[$1] = $2
+            group[$1] = $3
+            line = $0
+            sub(/^ *[0-9]+ +[0-9]+ +[0-9]+ +/, "", line)
+            # An empty name is in every line: nothing is marked without one.
+            if (ENVIRON["FLTH_REAP_MARK"] != "" && index(line, ENVIRON["FLTH_REAP_MARK"])) marked[$1] = 1
+        }
+        END {
+            self = ENVIRON["FLTH_REAP_SELF"]
+            for (p = self; (p in parent) && !(p in spared); p = parent[p]) {
+                spared[p] = 1
+                own[group[p]] = 1
+            }
+            do {
+                grew = 0
+                for (p in parent) {
+                    if ((p in left) || (p in spared) || p + 0 <= 1) continue
+                    if ((p in marked) || parent[p] == self || (parent[p] in left) || (group[p] in groups)) {
+                        left[p] = 1
+                        grew = 1
+                        if (group[p] + 0 > 1 && !(group[p] in own)) groups[group[p]] = 1
+                    }
+                }
+            } while (grew)
+            for (p in left) print p
+            for (g in groups) print "-" g
+        }'
+}
+
+# KILL, since the test is over and some stand-ins ignore TERM. Twice, for what was
+# forked while the first list was being made.
+flth_reap() {
+    local target
+    set +m
+    for _ in 1 2; do
+        for target in $(flth_test_leftovers); do
+            kill -KILL -- "$target" 2>/dev/null
+        done
+    done
+}
+
+# at_exit <command> — run it as the test exits, before its processes are stopped
+# and its sandbox is removed. A test with something of its own to clean up adds it
+# here: an EXIT trap of its own would replace the one that does both.
+at_exit() {
+    FLTH_AT_EXIT="$FLTH_AT_EXIT$1
+"
+}
+
+# shellcheck disable=SC2329  # the trap new_sandbox sets calls it
+flth_test_exit() {
+    # A second signal must not cut the cleanup short.
+    trap '' HUP INT TERM
+    eval "$FLTH_AT_EXIT"
+    flth_reap
+    rm -rf "$FLTH_SANDBOX_DIR"
+}
+
 new_sandbox() {
     SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/flth.XXXXXX")" || exit 1
-    # shellcheck disable=SC2064  # expand now: the path is fixed
-    trap "rm -rf '$SANDBOX'" EXIT
+    FLTH_SANDBOX_DIR="$SANDBOX"
+    FLTH_SANDBOX_MARK="${SANDBOX##*/}"
+    FLTH_AT_EXIT=""
+    trap flth_test_exit EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     # A stand-in outside every process group asks whether this test is still alive,
     # which no way of ending the test can leave answering yes.
     export FLTH_TEST_PID=$$

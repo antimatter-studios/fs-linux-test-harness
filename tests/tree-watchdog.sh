@@ -57,14 +57,15 @@ fresh() {
 }
 
 # Stands in for a suite whose call waits on its tree: a session whose one call into
-# the guest does not return until the session is stopped.
+# the guest does not return until the session is stopped. It ends by itself after
+# 300 seconds and more, so one that nothing stopped does not run on (#302).
 start_suite() {
     # start_suite <name>: sets SUITE_PID and SUITE_RUN
     local name="$1" monitor=0
     case "$-" in *m*) monitor=1 ;; esac
     set -m
     (cd "$C" && exec "$VM" session bash -c \
-        '"$1" run "touch $2; while :; do /bin/sleep 0.1; done"' flth-test "$VM" "$SANDBOX/$name.started") \
+        '"$1" run "touch $2; for _ in {1..3000}; do /bin/sleep 0.1; done"' flth-test "$VM" "$SANDBOX/$name.started") \
         > "$SANDBOX/$name.out" 2>&1 &
     SUITE_PID=$!
     [ "$monitor" = 1 ] || set +m

@@ -39,9 +39,8 @@ suites=""
 cleanup() {
     local pid
     for pid in $suites; do kill -KILL "$pid" 2>/dev/null; done
-    rm -rf "$SANDBOX"
 }
-trap cleanup EXIT
+at_exit cleanup
 
 downs() { stub_calls | grep -c '^down' | tr -d ' '; }
 
