@@ -27,6 +27,10 @@
 #     FLTH_APT_SOURCES at the next of FLTH_APT_MIRRORS, fetches the package
 #     index from it, and tries again there. Security updates keep their own
 #     host. A stall on every attempt names each mirror it tried, in order;
+#   - waits between attempts when no other mirror is left to try (#304): an
+#     index with no candidate for a package, and no mirror list to move to, is
+#     fetched again after FLTH_APT_RETRY_WAIT seconds times the attempt before
+#     it, rather than at once, and the failure names the sources it fetched;
 #   - takes an index that did not all download for one that is not done (#218).
 #     apt-get update exits 0 having ignored index files it could not fetch, and an
 #     install from those lists finds none of the packages it was asked for, on
@@ -41,6 +45,10 @@
 #   FLTH_APT_MIRRORS   the Ubuntu mirrors to move to, in order (default:
 #                      http://archive.ubuntu.com/ubuntu/ and
 #                      http://mirrors.edge.kernel.org/ubuntu/)
+#   FLTH_APT_RETRY_WAIT
+#                      the seconds one step of the wait before a retry with no
+#                      other mirror to try (default 30); the wait before
+#                      attempt n is n-1 steps (#304)
 #
 #   flth_apt <what> <apt-get args...>
 #       flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
@@ -145,7 +153,7 @@ flth_apt_index_incomplete() { grep -qE 'Some index files failed to download|^(W|
 
 flth_apt() {
     local what="$1" limit="${FLTH_APT_TIMEOUT:-240}" attempts="${FLTH_APT_ATTEMPTS:-3}"
-    local attempt=1 start rc log mirror name="" next tried="" named="" refresh="" missing="" incomplete="" refresh_done=""
+    local attempt=1 start rc log mirror name="" next tried="" named="" refresh="" missing="" incomplete="" refresh_done="" wait from
     shift
     log="$(mktemp)" || return 1
     mirror="$(flth_apt_mirror)"
@@ -217,9 +225,13 @@ flth_apt() {
                 flth_apt_switch_mirror "$mirror" "$next"
                 mirror="$next"
                 [ "$1" = update ] || refresh=1
-            elif [ -n "$incomplete" ] && [ "$1" != update ]; then
-                # No other mirror: the same one's index, fetched again.
-                refresh=1
+            elif [ -n "$incomplete" ]; then
+                # No other mirror to try: the same index is fetched again, after
+                # a wait that grows with each attempt (#304).
+                wait=$((${FLTH_APT_RETRY_WAIT:-30} * (attempt - 1)))
+                echo "apt: $what: the index has no other mirror to try; waiting $wait s before attempt $attempt of $attempts"
+                sleep "$wait"
+                [ "$1" = update ] || refresh=1
             fi
         fi
     done
@@ -232,7 +244,8 @@ flth_apt() {
             return 1
             ;;
         *)
-            echo "ci-setup-linux: apt-get $1 for $what failed (exit $rc) in $attempts attempts" >&2
+            from="${named:-$(flth_apt_sources | tr '\n' ' ')}"
+            echo "ci-setup-linux: apt-get $1 for $what failed (exit $rc) in $attempts attempts${from:+; the index came from ${from% }}" >&2
             return "$rc"
             ;;
     esac
