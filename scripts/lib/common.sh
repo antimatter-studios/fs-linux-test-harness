@@ -200,7 +200,8 @@ flth_shared_load() {
     guest_arch="$(flth_guest_arch)" || return
     host_arch="$(uname -m)"
     case "$host_arch" in arm64) host_arch=aarch64 ;; esac
-    [ "$guest_arch" = "$host_arch" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-$guest_arch"
+    # The name is the guest's hostname too, which takes no underscore: x86-64.
+    [ "$guest_arch" = "$host_arch" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-${guest_arch//_/-}"
     export FLTH_GUEST_ARCH="$guest_arch"
     CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
     flth_resolve_vm_memory || return

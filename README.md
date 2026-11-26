@@ -576,7 +576,8 @@ then the host no longer chooses the guest: `FLTH_GUEST_ARCH` does, the host's
 architecture by default. Every host boots the same Debian cloud box, provisioned,
 attached and tested the same way; only the emulated CPU differs. The provider
 plugins stay the host's. Each TCG guest has a machine directory of its own, ending
-in `-tcg`, and in `-tcg-<arch>` for the architecture that is not the host's.
+in `-tcg`, and in `-tcg-aarch64` or `-tcg-x86-64` for the architecture that is
+not the host's (the name is the guest's hostname, which takes no underscore).
 
 | `FLTH_GUEST_ARCH` | Box | Machine | CPU | Firmware |
 | --- | --- | --- | --- | --- |

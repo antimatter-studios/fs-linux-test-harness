@@ -63,6 +63,17 @@ host_arch="$(uname -m)"
 case "$host_arch" in arm64) host_arch=aarch64 ;; esac
 check_eq "$(FLTH_GUEST_ARCH="$host_arch" vm config)" "$(vm config)" "a guest of the host's own architecture, named or not, is the same machine"
 check_eq "$(FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH="$host_arch" vm config)" "$(FLTH_ACCELERATOR=tcg vm config)" "  and so under TCG"
+# The machine's name is the guest's hostname (FLTH_VM_NAME, which the
+# Vagrantfile checks), so a guest of either architecture, on any host, has a
+# name that is a hostname label: no underscore from x86_64.
+for arch in x86_64 aarch64; do
+    name="$(FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH="$arch" vm config | sed -n 's|^machine=.*/||p')"
+    if [[ "$name" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+        ok "a TCG $arch guest's machine name '$name' is a hostname label"
+    else
+        bad "a TCG $arch guest's machine name '$name' is not a hostname label"
+    fi
+done
 
 output="$(FLTH_ACCELERATOR=tcg FLTH_VM_MEM=512 FLTH_GUEST_MEM=256 FLTH_HOST_MEMORY_LIMIT_MIB=1151 vm up 2>&1)"
 check_eq "$?" 1 "TCG guest refuses a budget below the two selected sizes plus overhead"
