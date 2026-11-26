@@ -93,9 +93,12 @@ check_eq "$(cd "$nowhere" && "$REPO/scripts/ci-setup-linux.sh" --box-cache-key)"
 check_eq "$(cd "$nowhere" && FLTH_VM_GUEST=debian-13 "$REPO/scripts/ci-setup-linux.sh" --box-cache-key)" \
     "vagrant-box-cloud-image-debian-13-$(pinned debian-13)-amd64" \
     "  and on the debian-13 box for a consumer whose guest that is"
+check_eq "$(cd "$nowhere" && FLTH_GUEST_ARCH=aarch64 "$REPO/scripts/ci-setup-linux.sh" --box-cache-key)" \
+    "vagrant-box-cloud-image-debian-12-$(pinned debian-12)-arm64" \
+    "  and on the arm64 box for an emulated ARM64 guest"
 rmdir "$nowhere"
-check_eq "$(grep -c 'scripts/ci-setup-linux.sh' "$REPO/.github/workflows/ci.yml" | tr -d ' ')" 1 \
-    "the harness's own smoke job sets its runner up with the script consumers use"
+check_eq "$(grep -c 'scripts/ci-setup-linux.sh' "$REPO/.github/workflows/ci.yml" | tr -d ' ')" 2 \
+    "the harness's own smoke jobs, KVM and TCG, set their runners up with the script consumers use"
 
 # A WORKTREE'S tmp/ IS SCRATCH, NEVER SOURCE. Each worktree points TMPDIR at
 # its own tmp/, so the sandboxes these tests make stay off a shared /tmp;

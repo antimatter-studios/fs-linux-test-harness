@@ -53,4 +53,54 @@ check_eq "$(grep -c '^up$' "$FLTH_TEST_STUB/calls")" 1 "only the admitted native
 vm down > "$SANDBOX/down" 2>&1
 check_eq "$?" 0 "the admitted native guest stops"
 
+output="$(FLTH_ACCELERATOR=tcg FLTH_SHARED_MEMORY=2G FLTH_HOST_MEMORY_LIMIT_MIB=2432 vm up 2>&1)"
+check_eq "$?" 1 "TCG guest refuses a budget that only covers native boot"
+check_contains "$output" 'ram_mib=2048 tb_mib=1024 overhead_mib=384 total_mib=3456 limit_mib=2432' "TCG admission budgets for QEMU's automatic cache"
+check_contains "$(FLTH_ACCELERATOR=tcg vm config)" 'machines/shared-debian-12-tcg' "TCG selects its own shared guest state"
+# The guest's architecture is exported to every script vm.sh starts, so naming
+# the host's own must not name another machine.
+host_arch="$(uname -m)"
+case "$host_arch" in arm64) host_arch=aarch64 ;; esac
+check_eq "$(FLTH_GUEST_ARCH="$host_arch" vm config)" "$(vm config)" "a guest of the host's own architecture, named or not, is the same machine"
+check_eq "$(FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH="$host_arch" vm config)" "$(FLTH_ACCELERATOR=tcg vm config)" "  and so under TCG"
+# The machine's name is the guest's hostname (FLTH_VM_NAME, which the
+# Vagrantfile checks), so a guest of either architecture, on any host, has a
+# name that is a hostname label: no underscore from x86_64.
+for arch in x86_64 aarch64; do
+    name="$(FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH="$arch" vm config | sed -n 's|^machine=.*/||p')"
+    if [[ "$name" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+        ok "a TCG $arch guest's machine name '$name' is a hostname label"
+    else
+        bad "a TCG $arch guest's machine name '$name' is not a hostname label"
+    fi
+done
+
+output="$(FLTH_ACCELERATOR=tcg FLTH_VM_MEM=512 FLTH_GUEST_MEM=256 FLTH_HOST_MEMORY_LIMIT_MIB=1151 vm up 2>&1)"
+check_eq "$?" 1 "TCG guest refuses a budget below the two selected sizes plus overhead"
+check_contains "$output" 'ram_mib=256 tb_mib=512 overhead_mib=384 total_mib=1152 limit_mib=1151' "both new sizes reach preflight"
+
+check_contains "$(FLTH_VM_MEM=129 vm config)" 'vm.memory=96M' "an unset guest size is capped at 75% of the configured cache, rounded down"
+check_contains "$(FLTH_VM_MEM=8192 FLTH_RESOURCE_PROFILE=low vm config)" 'vm.memory=2G' "a profile size already below the ceiling is kept"
+check_contains "$(FLTH_VM_MEM=1024 FLTH_SHARED_MEMORY=256M vm config)" 'vm.memory=256M' "the legacy size still works as a fallback"
+check_contains "$(FLTH_VM_MEM=256 FLTH_GUEST_MEM=192 FLTH_SHARED_MEMORY=2G vm config)" 'vm.memory=192M' "the explicit guest size overrides the legacy size and can equal 75% of the limit"
+out="$(FLTH_VM_MEM=256 FLTH_GUEST_MEM=193 vm config 2>&1)"
+check_eq "$?" 1 "an explicit guest size over 75% is rejected"
+check_contains "$out" 'FLTH_GUEST_MEM=193 exceeds 75% of FLTH_VM_MEM=256 (192 MiB)' "the rejection names both settings and the maximum"
+for cap in '' 0; do
+    out="$(FLTH_VM_MEM="$cap" FLTH_GUEST_MEM=4096 vm config)"
+    check_contains "$out" 'vm.memory=4096M' "cache limit '$cap' leaves guest RAM unrestricted by the ratio"
+    check_contains "$out" 'vm.tcg_cache_limit_mib=0' "cache limit '$cap' selects automatic sizing"
+done
+check_contains "$(FLTH_GUEST_MEM=4096 vm config)" 'vm.memory=4096M' "an unset cap leaves guest RAM unrestricted by the ratio"
+for cap in 127 128M -1 4294967296; do
+    out="$(FLTH_VM_MEM="$cap" vm config 2>&1)"
+    check_eq "$?" 1 "invalid cache limit '$cap' is rejected"
+    check_contains "$out" 'FLTH_VM_MEM' "the rejection names the cache setting"
+done
+for guest in '' 0 2G -1; do
+    out="$(FLTH_GUEST_MEM="$guest" vm config 2>&1)"
+    check_eq "$?" 1 "invalid explicit guest size '$guest' is rejected"
+    check_contains "$out" 'FLTH_GUEST_MEM' "the rejection names the guest setting"
+done
+
 finish qemu-memory

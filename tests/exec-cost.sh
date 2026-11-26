@@ -10,6 +10,10 @@ abort 'multiplexed calls were refused' unless ExecCost.reused?(100, 200)
 abort 'an equal-cost fresh connection passed' if ExecCost.reused?(150, 150)
 abort 'a small timing fluctuation passed' if ExecCost.reused?(190, 200)
 abort 'the 20% boundary passed' if ExecCost.reused?(160, 200)
+abort 'a KVM guest lost its budget' unless ExecCost.budget_ms('x86_64-linux', '') == 250
+abort 'an HVF guest lost its budget' unless ExecCost.budget_ms('arm64-darwin23', '') == 500
+abort 'a TCG guest on a Mac was held to a hardware budget' unless ExecCost.budget_ms('arm64-darwin23', 'tcg') == 1000
+abort 'a TCG guest on Linux was held to a hardware budget' unless ExecCost.budget_ms('x86_64-linux', 'tcg') == 1000
 abort 'a failed VM call was accepted' if ExecCost.run('/usr/bin/false', ARGV.fetch(1))
 RUBY
 out="$(ruby "$RUBY_TEST" "$REPO/tests/exec-cost.rb" "$SANDBOX" 2>&1)"

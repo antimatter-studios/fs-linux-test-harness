@@ -5,18 +5,24 @@
 # consumer's machine directory. Run `vagrant` here by hand and it stops
 # at the first missing value, by design.
 #
-# THE GUEST ARCHITECTURE IS THE HOST'S, and so is the accelerator. There
-# is no emulated path: a VM run in software is a test suite that takes an
-# hour and times out somewhere unhelpful.
+# WITH A HARDWARE ACCELERATOR THE GUEST ARCHITECTURE IS THE HOST'S:
 #
 #   macOS arm64    HVF   box christhomas/vagrant-rpi-bookworm-arm64
-#                        plugins vagrant-qemu-christhomas and
-#                        vagrant-notify-forwarder-christhomas (forks that
-#                        fix problems specific to the Mac)
-#   Linux aarch64  KVM   box cloud-image/debian-12 (arm64); stock
-#                        vagrant-qemu; UEFI firmware from FLTH_QEMU_DIR
-#   Linux x86_64   KVM   box cloud-image/debian-12 (amd64); stock
-#                        vagrant-qemu; SeaBIOS; q35
+#   Linux aarch64  KVM   box cloud-image/debian-12 (arm64); UEFI
+#   Linux x86_64   KVM   box cloud-image/debian-12 (amd64); SeaBIOS; q35
+#
+# UNDER TCG (FLTH_ACCELERATOR=tcg) THE HOST DOES NOT CHOOSE THE GUEST.
+# FLTH_GUEST_ARCH does, the host's architecture by default, and on every
+# supported host it is the same Debian cloud box, provisioned and tested the
+# same way; only the emulated CPU differs:
+#
+#   x86_64   box cloud-image/debian-12 (amd64); q35; SeaBIOS; cpu max
+#   aarch64  box cloud-image/debian-12 (arm64); virt,highmem=on; UEFI
+#            (edk2, AAVMF on Linux); cpu max,pauth-impdef=on
+#
+# The provider plugins are the host's either way: on macOS
+# vagrant-qemu-christhomas and vagrant-notify-forwarder-christhomas (forks
+# that fix problems specific to the Mac), on Linux the stock vagrant-qemu.
 #
 # NOTHING IS SHARED AT BOOT (#222). The guest is shared by every consumer on
 # the host, and each run attaches its own tree while the guest runs: a
@@ -71,6 +77,47 @@ host =
   else
     raise "fs-linux-test-harness supports macOS arm64, Linux aarch64 and Linux x86_64 hosts; " \
           "this is #{host_os} #{host_cpu}"
+  end
+
+accelerator = ENV.fetch("FLTH_ACCELERATOR", "")
+tcg = accelerator == "tcg"
+unless accelerator.empty? || tcg
+  raise "Set FLTH_ACCELERATOR=tcg for software emulation, or leave it unset for the host's default."
+end
+accel_args = []
+if tcg
+  tb_size = ENV.fetch("FLTH_VM_TB_MIB", "0")
+  accel_args = ["-accel", "tcg,thread=multi"]
+  if tb_size != "0"
+    unless tb_size.match?(/\A[1-9][0-9]{0,9}\z/) && (128..4_294_967_295).cover?(tb_size.to_i)
+      raise "FLTH_VM_MEM must be a valid TCG cache size in MiB, got #{tb_size.inspect}"
+    end
+    accel_args[1] += ",tb-size=#{tb_size}"
+  end
+end
+
+# THE GUEST'S ARCHITECTURE. The host's, unless TCG emulates the other one.
+host_arch = (host == :linux_x86_64 ? "x86_64" : "aarch64")
+guest_arch = ENV.fetch("FLTH_GUEST_ARCH", "")
+guest_arch = host_arch if guest_arch.empty?
+unless %w[x86_64 aarch64].include?(guest_arch)
+  raise "FLTH_GUEST_ARCH must be x86_64 or aarch64, got #{guest_arch.inspect}"
+end
+unless guest_arch == host_arch || tcg
+  raise "FLTH_GUEST_ARCH=#{guest_arch} on this #{host_arch} host needs FLTH_ACCELERATOR=tcg."
+end
+
+# THE GUEST: which box, and how it boots.
+#   :rpi_arm64     the Mac's own box under HVF, booted directly from its kernel
+#   :debian_arm64  the Debian cloud box (arm64) under KVM or TCG, through UEFI
+#   :debian_amd64  the Debian cloud box (amd64) under KVM or TCG, through SeaBIOS
+platform =
+  if guest_arch == "x86_64"
+    :debian_amd64
+  elsif host == :macos_arm64 && !tcg
+    :rpi_arm64
+  else
+    :debian_arm64
   end
 
 vm_name   = flth_env("FLTH_VM_NAME", /\A[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\z/, "a hostname label")
@@ -166,7 +213,7 @@ end
 # nothing. Debian 12 boots either way. A later `-vga` replaces an earlier
 # one, so this gives the guest a standard VGA it never shows anywhere
 # (`-display none`), and its console is still the serial port.
-display_args = (host == :linux_x86_64 ? %w(-vga std) : [])
+display_args = (platform == :debian_amd64 ? %w(-vga std) : [])
 
 case host
 when :macos_arm64
@@ -178,15 +225,24 @@ when :macos_arm64
 when :linux_arm64, :linux_x86_64
   flth_require_plugin("vagrant-qemu", "the stock QEMU provider used on Linux")
   kvm = "/dev/kvm"
-  unless File.exist?(kvm) && File.readable?(kvm) && File.writable?(kvm)
+  unless tcg || (File.exist?(kvm) && File.readable?(kvm) && File.writable?(kvm))
     raise "#{kvm} is missing or not read-write for this user. KVM is required; " \
           "software emulation is refused. Add the user to the kvm group."
   end
 end
 
+# UEFI FIRMWARE FOR THE DEBIAN ARM64 BOX. The provider copies it out of
+# qemu_dir. Linux names it through links the harness makes (FLTH_QEMU_DIR);
+# Homebrew's QEMU ships it under those names, so a Mac needs FLTH_QEMU_DIR only
+# for another QEMU.
 qemu_dir = nil
-if host == :linux_arm64
-  qemu_dir = flth_env("FLTH_QEMU_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
+if platform == :debian_arm64
+  qemu_dir =
+    if host == :macos_arm64 && ENV["FLTH_QEMU_DIR"].to_s.empty?
+      "/opt/homebrew/share/qemu"
+    else
+      flth_env("FLTH_QEMU_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
+    end
   %w[edk2-aarch64-code.fd edk2-arm-vars.fd].each do |f|
     path = File.join(qemu_dir, f)
     raise "UEFI firmware #{path} is not readable (FLTH_FIRMWARE_CODE / FLTH_FIRMWARE_VARS)" unless File.readable?(path)
@@ -200,11 +256,11 @@ Vagrant.configure("2") do |config|
   # instead and this one is cleared.
   config.vagrant.plugins = {}
 
-  case host
-  when :macos_arm64
+  case platform
+  when :rpi_arm64
     if guest != "debian-12"
       raise "[vm] guest #{guest} has no macOS box: the macOS guest is Debian 12 " \
-            "(Raspberry Pi OS bookworm). Run a debian-13 guest on a Linux host."
+            "(Raspberry Pi OS bookworm). Run a debian-13 guest on a Linux host, or under FLTH_ACCELERATOR=tcg."
     end
     # A kernel with the common filesystem modules, booted directly: QEMU
     # loads it from beside the box, with no firmware and no bootloader.
@@ -214,7 +270,7 @@ Vagrant.configure("2") do |config|
     # Published as a public GitHub release, so the first boot on a Mac
     # fetches it and nobody adds a copy by hand (#8).
     config.vm.box_url = "https://github.com/christhomas/vagrant-rpi-bookworm-arm64/releases/download/v1.0.0/rpi-arm64.box"
-  when :linux_arm64, :linux_x86_64
+  when :debian_arm64, :debian_amd64
     # Built from Debian's official cloud images, qemu provider for both
     # architectures. Pinned so every run boots the same guest. Debian 12
     # is every consumer's unless its config names `[vm] guest`; Debian 13
@@ -226,7 +282,7 @@ Vagrant.configure("2") do |config|
     config.vm.box = box
     config.vm.box_version = version
   end
-  config.vm.box_architecture = (host == :linux_x86_64 ? "amd64" : "arm64")
+  config.vm.box_architecture = (platform == :debian_amd64 ? "amd64" : "arm64")
   config.vm.box_check_update = false
   config.vm.hostname = vm_name
 
@@ -267,8 +323,10 @@ Vagrant.configure("2") do |config|
     # it deletes grows anything, and the disk it writes is meant to be kept.
     qe.extra_drive_args = "snapshot=on,discard=unmap" if disposable
 
-    case host
-    when :macos_arm64
+    # QEMU takes TCG's properties through -accel (accel_args), which cannot be
+    # combined with a machine's accel= property.
+    case platform
+    when :rpi_arm64
       qe.arch = "aarch64"
       qe.machine = "virt,accel=hvf,highmem=on"
       qe.cpu = "host"
@@ -277,21 +335,23 @@ Vagrant.configure("2") do |config|
       # with the flags this provider used for its folders
       # (scripts/lib/engine-vagrant.sh, engine_vagrant_virtiofsd_args).
       qe.extra_qemu_args = console_args + kernel_args + hotplug_args
-    when :linux_arm64
+    when :debian_arm64
       qe.arch = "aarch64"
-      qe.machine = "virt,accel=kvm,highmem=on"
-      qe.cpu = "host"
+      # Under TCG, pointer authentication with QEMU's own cheap algorithm,
+      # which TCG runs much faster than the architected one.
+      qe.machine = tcg ? "virt,highmem=on" : "virt,accel=kvm,highmem=on"
+      qe.cpu = tcg ? "max,pauth-impdef=on" : "host"
       qe.net_device = "virtio-net-device"
       qe.qemu_dir = qemu_dir
-    when :linux_x86_64
+    when :debian_amd64
       qe.arch = "x86_64"
-      qe.machine = "q35,accel=kvm"
-      qe.cpu = "host"
+      qe.machine = tcg ? "q35" : "q35,accel=kvm"
+      qe.cpu = tcg ? "max" : "host"
       qe.net_device = "virtio-net-pci"
     end
 
-    if host != :macos_arm64
-      qe.extra_qemu_args = console_args + display_args + hotplug_args +
+    if platform != :rpi_arm64
+      qe.extra_qemu_args = console_args + display_args + hotplug_args + accel_args +
                            (boot_cmdline.empty? ? [] : kernel_args)
     end
   end
@@ -341,9 +401,8 @@ Vagrant.configure("2") do |config|
     # the service starts before the shares are mounted and holds the directories
     # under them (vagrant-notify-forwarder#33).
     receiver_off = File.expand_path("guest/notify-receiver-off.sh", __dir__)
-    config.notify_forwarder.binaries = {
-      [:linux, :arm64] => ["file://#{URI::DEFAULT_PARSER.escape(receiver_off)}", Digest::SHA256.file(receiver_off).hexdigest],
-    }
+    receiver = ["file://#{URI::DEFAULT_PARSER.escape(receiver_off)}", Digest::SHA256.file(receiver_off).hexdigest]
+    config.notify_forwarder.binaries = { [:linux, :arm64] => receiver, [:linux, :x86_64] => receiver }
   end
 
   # A DEADLINE THE HOST CANNOT FAIL TO ENFORCE. Every other teardown is

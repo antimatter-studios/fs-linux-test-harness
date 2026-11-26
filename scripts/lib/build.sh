@@ -43,12 +43,7 @@ FLTH_DOCKER="${FLTH_DOCKER:-docker}"
 build_configured() { [ -n "$CFG_build_command" ]; }
 
 # The guest's architecture, as the kernel names it.
-build_guest_arch() {
-    local arch
-    arch="$(uname -m)"
-    case "$arch" in arm64) arch=aarch64 ;; esac
-    printf '%s\n' "$arch"
-}
+build_guest_arch() { flth_guest_arch; }
 
 # The same, as an image platform names it.
 build_platform_arch() {

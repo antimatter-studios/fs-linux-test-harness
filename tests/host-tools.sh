@@ -79,6 +79,26 @@ out="$(bash "$REPO/scripts/host-tools.sh" 2>&1)"
 check_eq "$?" 0 "a Mac without the box added is ready: its first boot fetches it"
 check_lacks "$out" "the box $BOX" "and is not told to add it by hand"
 
+# Under TCG a Mac boots the Debian cloud box of either architecture: it needs that
+# emulator, and UEFI firmware for an arm64 guest, from FLTH_QEMU_DIR or Homebrew.
+mkdir -p "$SANDBOX/fw"
+: > "$SANDBOX/fw/edk2-aarch64-code.fd"
+out="$(FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH=aarch64 FLTH_QEMU_DIR="$SANDBOX/fw" bash "$REPO/scripts/host-tools.sh" 2>&1)"
+check_eq "$?" 1 "a Mac under TCG without the arm64 guest's firmware is not ready"
+check_contains "$out" "$SANDBOX/fw/edk2-arm-vars.fd" "  and is told which file is missing"
+printf '#!/bin/sh\nexit 0\n' > "$BIN/qemu-system-aarch64"
+printf '#!/bin/sh\nexit 0\n' > "$BIN/qemu-system-x86_64"
+chmod +x "$BIN/qemu-system-aarch64" "$BIN/qemu-system-x86_64"
+: > "$SANDBOX/fw/edk2-arm-vars.fd"
+out="$(FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH=aarch64 FLTH_QEMU_DIR="$SANDBOX/fw" bash "$REPO/scripts/host-tools.sh" 2>&1)"
+check_eq "$?" 0 "a Mac under TCG with both is ready for an arm64 guest"
+out="$(FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH=x86_64 FLTH_QEMU_DIR="$SANDBOX/none" bash "$REPO/scripts/host-tools.sh" 2>&1)"
+check_eq "$?" 0 "and for an x86_64 guest, which boots SeaBIOS and needs no firmware"
+out="$(FLTH_GUEST_ARCH=x86_64 bash "$REPO/scripts/host-tools.sh" 2>&1)"
+check_eq "$?" 1 "an x86_64 guest on a Mac without TCG is refused"
+check_contains "$out" "needs FLTH_ACCELERATOR=tcg" "  saying what it needs"
+rm -f "$BIN/qemu-system-aarch64" "$BIN/qemu-system-x86_64"
+
 # The forwarder plugin before 0.7.7 leaves its watchers running after a halt, and
 # they never end by themselves: 60 of them had piled up on one host (#164).
 for v in 0.6.0 0.7.5 0.7.6; do

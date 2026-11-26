@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # ci-setup-linux.sh — make a hosted x86_64 Linux CI runner able to boot
-# the VM: read-write /dev/kvm, QEMU, Vagrant from HashiCorp's apt
+# the VM: accelerator access, QEMU, Vagrant from HashiCorp's apt
 # repository, and the stock vagrant-qemu plugin, all pinned.
 #
 #   ci-setup-linux.sh                    set the runner up
@@ -36,6 +36,7 @@
 # cache is never restored for a different box.
 #
 # Environment (defaults are the pins the harness is tested with):
+#   FLTH_ACCELERATOR            tcg to opt into software emulation
 #   FLTH_VAGRANT_VERSION        2.4.9
 #   FLTH_VAGRANT_QEMU_VERSION   0.6.3
 #   FLTH_APT_TIMEOUT            240: the seconds each apt-get attempt may take
@@ -90,7 +91,9 @@ box_cache_key() {
         echo "ci-setup-linux: could not read the pinned Linux box for $guest from vagrant/Vagrantfile" >&2
         return 1
     fi
-    echo "vagrant-box-${box//\//-}-${box_version}-amd64"
+    local arch=amd64
+    [ "${FLTH_GUEST_ARCH:-x86_64}" != aarch64 ] || arch=arm64
+    echo "vagrant-box-${box//\//-}-${box_version}-$arch"
 }
 
 if [ "${1:-}" = --box-cache-key ]; then
@@ -107,27 +110,35 @@ fi
 group() { [ -n "${GITHUB_ACTIONS:-}" ] && echo "::group::$1" || echo "== $1"; }
 endgroup() { [ -z "${GITHUB_ACTIONS:-}" ] || echo "::endgroup::"; }
 
-group "KVM access"
-# The hosted image ships /dev/kvm as root:kvm 0660. The udev rule covers a
-# later re-creation of the node; on the 2026-09 image the trigger did not
-# change the existing node (and /etc/udev/rules did not exist), so the
-# mode is also set directly. Checked afterwards rather than assumed.
-if [ ! -e /dev/kvm ]; then
-    echo "ci-setup-linux: this runner has no /dev/kvm; the VM needs KVM." >&2
-    exit 1
-fi
-sudo mkdir -p /etc/udev/rules
-echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
-    sudo tee /etc/udev/rules/99-kvm4all.rules >/dev/null
-sudo udevadm control --reload-rules
-sudo udevadm trigger --name-match=kvm
-sudo chmod 0666 /dev/kvm
-ls -l /dev/kvm
-if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
-    echo "ci-setup-linux: /dev/kvm is not read-write for $(id -un)" >&2
-    exit 1
-fi
-endgroup
+configure_kvm() {
+    group "KVM access"
+    # The hosted image ships /dev/kvm as root:kvm 0660. The udev rule covers a
+    # later re-creation of the node; on the 2026-09 image the trigger did not
+    # change the existing node (and /etc/udev/rules did not exist), so the
+    # mode is also set directly. Checked afterwards rather than assumed.
+    if [ ! -e /dev/kvm ]; then
+        echo "ci-setup-linux: this runner has no /dev/kvm; use FLTH_ACCELERATOR=tcg for software emulation." >&2
+        exit 1
+    fi
+    sudo mkdir -p /etc/udev/rules
+    echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+        sudo tee /etc/udev/rules/99-kvm4all.rules >/dev/null
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger --name-match=kvm
+    sudo chmod 0666 /dev/kvm
+    ls -l /dev/kvm
+    if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+        echo "ci-setup-linux: /dev/kvm is not read-write for $(id -un)" >&2
+        exit 1
+    fi
+    endgroup
+}
+
+case "${FLTH_ACCELERATOR:-}" in
+    tcg) ;;
+    '') configure_kvm ;;
+    *) echo "ci-setup-linux: set FLTH_ACCELERATOR=tcg or leave it unset for KVM." >&2; exit 1 ;;
+esac
 
 group "QEMU"
 # Each apt-get retries, times out, is bounded and tried again after a stall
@@ -140,8 +151,19 @@ flth_apt "the package index" update -qq
 # extended attribute name that is not UTF-8 (#274). The install-virtiofsd
 # action installs upstream's 1.14.0 before this runs, and the host check at the
 # end refuses anything older.
-flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
-qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
+# Ruby runs scripts/qemu-artifacts.rb, which wraps every `vagrant up`, `halt`
+# and `destroy` (lib/engine-vagrant.sh). Vagrant's own Ruby is embedded and not
+# on PATH, and a self-hosted runner image need not have one.
+flth_apt "Ruby" install -y -qq ruby
+if [ "${FLTH_GUEST_ARCH:-x86_64}" = aarch64 ]; then
+    # An ARM64 guest emulated on this x86_64 runner (FLTH_ACCELERATOR=tcg),
+    # booted by UEFI firmware.
+    flth_apt "QEMU" install -y -qq qemu-system-arm qemu-efi-aarch64 qemu-utils
+    qemu-system-aarch64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
+else
+    flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
+    qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
+fi
 endgroup
 
 group "Vagrant $VAGRANT_VERSION and vagrant-qemu $VAGRANT_QEMU_VERSION"

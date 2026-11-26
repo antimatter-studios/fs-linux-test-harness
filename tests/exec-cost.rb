@@ -4,8 +4,18 @@ module ExecCost
   SAMPLES = 10
   # Apple M1 Max, 2026-11-03: 366ms exec versus 522ms forced fresh,
   # ten interleaved calls each; host scheduling also costs time outside SSH.
-  BUDGET_MS = RUBY_PLATFORM.include?('darwin') ? 500 : 250
+  # Under TCG (FLTH_ACCELERATOR=tcg) the guest's half of every call, sshd's
+  # session and the shell it starts, runs on an emulated CPU: an aarch64 guest
+  # on an Apple Silicon host, 2026-11-26, took 701.6ms exec versus 1321.7ms
+  # forced fresh. The reuse ratio below is what proves the connection is shared.
+  TCG_BUDGET_MS = 1000
   REUSE_RATIO = 0.8
+
+  def self.budget_ms(platform = RUBY_PLATFORM, accelerator = ENV.fetch('FLTH_ACCELERATOR', ''))
+    return TCG_BUDGET_MS if accelerator == 'tcg'
+
+    platform.include?('darwin') ? 500 : 250
+  end
 
   def self.reused?(normal_ms, fresh_ms)
     normal_ms < fresh_ms * REUSE_RATIO
@@ -55,9 +65,10 @@ module ExecCost
       puts format('  (exec: %.1fms per call; forced fresh SSH: %.1fms; %d calls each, interleaved)',
                   normal_ms, fresh_ms, SAMPLES)
       $stdout.flush
-      within_budget = normal_ms < BUDGET_MS
+      budget = budget_ms
+      within_budget = normal_ms < budget
       reused = reused?(normal_ms, fresh_ms)
-      warn "exec cost: exceeds the #{BUDGET_MS}ms per-call budget" unless within_budget
+      warn "exec cost: exceeds the #{budget}ms per-call budget" unless within_budget
       unless reused
         warn 'exec cost: not at least 20% faster than measured calls without SSH reuse'
       end

@@ -12,9 +12,8 @@
 # engine error.
 #
 # The guest architecture is the host's: arm64 guests on Apple Silicon
-# and arm64 Linux, x86_64 guests on x86_64 Linux. Hardware acceleration
-# is REQUIRED — a VM silently emulated in software is a test run that
-# takes an hour and times out somewhere unhelpful.
+# and arm64 Linux, x86_64 guests on x86_64 Linux. TCG is an explicit opt-in
+# on any of them, and FLTH_GUEST_ARCH then picks either architecture.
 set -uo pipefail
 
 QUIET=0
@@ -161,6 +160,20 @@ check_macos() {
         # release, which the Vagrantfile names as its URL, so the first
         # boot on a Mac fetches it (#8).
     fi
+    # Under TCG a Mac boots the Debian cloud box of either architecture: the
+    # emulator for it, and for an arm64 guest the UEFI firmware Homebrew's QEMU
+    # ships (FLTH_QEMU_DIR names another directory).
+    if [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
+        local arch="${FLTH_GUEST_ARCH:-aarch64}" fw f
+        have "qemu-system-$arch" ||
+            need "qemu-system-$arch" "emulates the $arch guest under TCG" "brew install antimatter-studios/tap/qemu"
+        if [ "$arch" = aarch64 ]; then
+            fw="${FLTH_QEMU_DIR:-/opt/homebrew/share/qemu}"
+            for f in edk2-aarch64-code.fd edk2-arm-vars.fd; do
+                [ -r "$fw/$f" ] || need "$fw/$f" "UEFI firmware for the arm64 guest under TCG (FLTH_QEMU_DIR names another directory)" "brew install antimatter-studios/tap/qemu"
+            done
+        fi
+    fi
 }
 
 # The virtiofsd the engine starts, in its order of choice
@@ -177,7 +190,7 @@ engine_virtiofsd() {
 
 check_linux() {
     local arch qemu pkg kvm="/dev/kvm"
-    arch="$(uname -m)"
+    arch="${FLTH_GUEST_ARCH:-$(uname -m)}"
     case "$arch" in
         aarch64 | arm64) qemu="qemu-system-aarch64"; pkg="qemu-system-arm" ;;
         x86_64) qemu="qemu-system-x86_64"; pkg="qemu-system-x86" ;;
@@ -200,10 +213,12 @@ check_linux() {
                 "$vfs_install"
         fi
     fi
-    if [ ! -e "$kvm" ]; then
-        need "$kvm" "hardware acceleration; software emulation is refused" "enable KVM for this host (kvm module / nested virtualisation)"
-    elif [ ! -r "$kvm" ] || [ ! -w "$kvm" ]; then
-        need "read-write access to $kvm" "hardware acceleration; software emulation is refused" "add $(id -un) to the kvm group, then log in again"
+    if [ "${FLTH_ACCELERATOR:-}" != tcg ]; then
+        if [ ! -e "$kvm" ]; then
+            need "$kvm" "hardware acceleration for the default Linux guest" "enable KVM for this host (kvm module / nested virtualisation)"
+        elif [ ! -r "$kvm" ] || [ ! -w "$kvm" ]; then
+            need "read-write access to $kvm" "hardware acceleration for the default Linux guest" "add $(id -un) to the kvm group, then log in again"
+        fi
     fi
     if [ "$qemu" = qemu-system-aarch64 ]; then
         local f
@@ -216,7 +231,17 @@ check_linux() {
     # one from `vagrant plugin install`; `vagrant plugin list` cannot.
 }
 
-case "$(uname -s)" in
+host="$(uname -s)"
+case "${FLTH_ACCELERATOR:-}" in
+    '' | tcg) ;;
+    *) echo "host tools: set FLTH_ACCELERATOR=tcg for software emulation, or leave it unset for the host's default." >&2; exit 1 ;;
+esac
+case "${FLTH_GUEST_ARCH:-}:${FLTH_ACCELERATOR:-}:$(uname -m)" in
+    :* | x86_64:*:x86_64 | aarch64:*:aarch64 | aarch64:*:arm64 | x86_64:tcg:* | aarch64:tcg:*) ;;
+    *) echo "host tools: FLTH_GUEST_ARCH=${FLTH_GUEST_ARCH} must be x86_64 or aarch64, and one of another architecture needs FLTH_ACCELERATOR=tcg." >&2; exit 1 ;;
+esac
+
+case "$host" in
     Darwin) check_macos ;;
     Linux) check_linux ;;
     *) need "macOS or Linux (found $(uname -s))" "the only hosts this harness drives" "(not installable)" ;;

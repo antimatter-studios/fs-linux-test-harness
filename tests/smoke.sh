@@ -270,7 +270,10 @@ check_true '! devices | grep "\"fs-$session_run\"" >/dev/null' "and when it ende
 attach_pid="$(cat "$attach_dir/pid" 2>/dev/null)"
 check_true '[ -n "$attach_pid" ] && ! kill -0 "$attach_pid" 2>/dev/null' "and its virtiofsd ($attach_pid) is gone" "its virtiofsd is still running"
 check_contains "$(devices)" "\"fs-$standing\"" "while the standing run keeps its own"
-check_eq "$("$VM" run hostname 2>/dev/null)" "shared-$SMOKE_GUEST" "the guest's hostname is the shared machine's name"
+# The machine's name, which a TCG guest suffixes (-tcg, and -tcg-<arch> for the
+# architecture that is not the host's), is the guest's hostname.
+smoke_machine="$(printf '%s\n' "$smoke_config" | sed -n 's|^machine=.*/||p')"
+check_eq "$("$VM" run hostname 2>/dev/null)" "$smoke_machine" "the guest's hostname is the shared machine's name"
 check_contains "$("$VM" run 'uname -a' 2>/dev/null)" "Linux shared-$SMOKE_GUEST" "uname -a runs in the guest"
 check_contains "$("$VM" run 'mkfs.ext4 -V 2>&1 | head -1' 2>/dev/null)" "mke2fs" "the consumer's setup installed its tooling inside the VM"
 # The guest's serial console is logged in the machine directory, for a

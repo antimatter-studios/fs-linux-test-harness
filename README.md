@@ -15,7 +15,7 @@ a Linux laptop should not run as root against test images. This harness
 gives a driver repository a disposable Debian VM to run them in, and
 takes care of everything around it:
 
-- booting the VM (Vagrant + QEMU, hardware-accelerated on every host),
+- booting the VM with Vagrant and QEMU,
 - running the repository's own setup script inside it to install its tooling,
 - running commands as root in the guest and handing back their output and exit status,
 - a directory shared between host and guest for images and results,
@@ -518,7 +518,7 @@ relative, and must not leave the repository.
 | Task | What it does |
 | --- | --- |
 | `chore check` | The VM-free self-test: `bash -n`, shellcheck, every unit test. CI job `unit`. |
-| `chore smoke` | Boot a real VM and drive every command through it (`tests/smoke.sh`). CI job `smoke-x86_64`. Needs KVM or HVF. |
+| `chore smoke` | Boot a real VM and drive every command through it (`tests/smoke.sh`). CI job `smoke-x86_64`. Set `FLTH_ACCELERATOR=tcg` to run it on x86_64 Linux without KVM. |
 | `chore smoke:destroy` | Delete the smoke run's shared guest, which lives in a cache directory of its own. |
 | `chore host:check` | Check this host. |
 
@@ -538,7 +538,14 @@ relative, and must not leave the repository.
 | `FLTH_VIRTIOFSD` | `virtiofsd` on PATH, then `/usr/libexec/virtiofsd`, then `/usr/lib/qemu/virtiofsd` | The virtiofsd that serves a run's tree. On Linux it must be upstream's 1.14.0 or newer; `chore vm:host:check` refuses an older one (#274). On macOS it must print a port release of 1.14.0.1 or newer for `--port-version`; `chore vm:host:check` refuses one that does not (#276). |
 | `FLTH_SHARED_MEMORY`, `FLTH_SHARED_CPUS`, `FLTH_SHARED_DISK` | selected resource profile | Shared guest memory, virtual CPU count and disk size. Explicit values override the selected resource profile. |
 | `FLTH_HOST_MEMORY_LIMIT_MIB` | unset | Per-guest QEMU admission limit, a positive integer in MiB (at most six digits). Refuses estimates above the limit before boot. |
-| `FLTH_TCG_TB_SIZE_MIB` | `128` | Translation cache cap in MiB (1–1024) for standalone TCG launches that use `scripts/qemu-tcg-accel.sh`. No effect on shared KVM/HVF guests. |
+| `FLTH_HOST_MEMORY_WAIT_SECONDS` | `0` | How long a guest boot waits, checking every 30 s, for the memory it needs to become free before it is refused. On a shared CI node other jobs' guests finish and give theirs back. |
+| `FLTH_HOST_MEMORY_RESERVE_MIB` | `2048` | Memory a guest boot leaves free for the host, in MiB. A boot is refused when the guest's RAM, TCG cache and QEMU overhead plus this do not fit in the available memory, which on Linux is capped by the cgroup's limit (a container or CI runner pod). |
+| `FLTH_GUEST_ARCH` | the host's | `x86_64` or `aarch64`. With `FLTH_ACCELERATOR=tcg` it picks the emulated guest on any host (see [The VM](#the-vm)), so a runner without KVM can test a build for either architecture. `ci-setup-linux.sh` installs `qemu-system-arm` and `qemu-efi-aarch64` for `aarch64`. Without TCG, any other architecture than the host's is refused. |
+| `FLTH_BUILD_PREBUILT` | unset | `1` makes `guest-test` skip the [build] step and test what is already in the share's `build/` directory, for a pipeline whose build job hands its output to a separate test job. An empty build directory fails. |
+| `FLTH_ACCELERATOR` | KVM on Linux, HVF on Apple Silicon | Set to `tcg` on any host to use QEMU software emulation of the guest `FLTH_GUEST_ARCH` names. Export it for all VM commands, including `down` and `destroy`. |
+| `FLTH_VM_MEM` | QEMU automatic sizing | TCG translation cache cap in MiB. Unset, empty, or `0` leaves sizing to QEMU. A configured cap must be at least `128`. |
+| `FLTH_GUEST_MEM` | `FLTH_SHARED_MEMORY` or the resource profile | Guest RAM in whole MiB. With a configured `FLTH_VM_MEM` cap, guest RAM can be at most 75% of the cap, rounded down. If unset, the fallback is limited to that ceiling. Both settings take effect at boot. |
+| `FLTH_TCG_TB_SIZE_MIB` | `128` | Translation cache cap in MiB (1–1024) for standalone launches using `scripts/qemu-tcg-accel.sh`. |
 | `FLTH_SHARED_DEADLINE` | `480` | Minutes the shared guest stays up **with nothing asking anything of it**, unless held. Every `run` and `exec` re-arms it when the call starts and when it ends, so a suite of many calls is never cut off however long it runs; only a single call longer than this is. The setup call re-arms it too. The guest takes new logins until it powers off. Re-arming happens at most once in a sixth of this, and at most once a minute, so the poweroff can fall up to that much early. |
 | `FLTH_SHARED_MIN_AVAILABLE` | `2048` | MiB of the shared guest's available memory below which a suite joining it is told the numbers and who is using it. At most a quarter of the guest's total memory counts, so a small guest is not warned for its size. |
 | `FLTH_WATCHDOG` | on | `off` starts no [watchdog](#what-stops-a-vm) with a guest. |
@@ -556,16 +563,26 @@ relative, and must not leave the repository.
 
 ## The VM
 
-The guest architecture is the host's, and hardware acceleration is
-required: a VM emulated in software is a suite that takes an hour and
-times out somewhere unhelpful, so the harness refuses rather than
-falling back.
+With a hardware accelerator, the default, the guest architecture matches the host:
 
 | Host | Accelerator | Box | Vagrant provider plugin | Firmware | Shared directory |
 | --- | --- | --- | --- | --- | --- |
-| macOS, Apple Silicon | HVF | `christhomas/vagrant-rpi-bookworm-arm64` | `vagrant-qemu-christhomas` + `vagrant-notify-forwarder-christhomas` (forks that fix Mac-specific problems) | Homebrew QEMU's | virtiofs, attached per run |
+| macOS, Apple Silicon | HVF | `christhomas/vagrant-rpi-bookworm-arm64` | `vagrant-qemu-christhomas` + `vagrant-notify-forwarder-christhomas` (forks that fix Mac-specific problems) | none (direct kernel boot) | virtiofs, attached per run |
 | Linux aarch64 | KVM | `cloud-image/debian-12` (arm64), pinned | stock `vagrant-qemu` | `FLTH_FIRMWARE_*` (Debian: AAVMF) | virtiofs, attached per run |
 | Linux x86_64 | KVM | `cloud-image/debian-12` (amd64), pinned, q35 | stock `vagrant-qemu` | none (SeaBIOS) | virtiofs, attached per run |
+
+`export FLTH_ACCELERATOR=tcg` selects software emulation on any of these hosts, and
+then the host no longer chooses the guest: `FLTH_GUEST_ARCH` does, the host's
+architecture by default. Every host boots the same Debian cloud box, provisioned,
+attached and tested the same way; only the emulated CPU differs. The provider
+plugins stay the host's. Each TCG guest has a machine directory of its own, ending
+in `-tcg`, and in `-tcg-aarch64` or `-tcg-x86-64` for the architecture that is
+not the host's (the name is the guest's hostname, which takes no underscore).
+
+| `FLTH_GUEST_ARCH` | Box | Machine | CPU | Firmware |
+| --- | --- | --- | --- | --- |
+| `x86_64` | `cloud-image/debian-12` (amd64), pinned | `q35` | `max` | none (SeaBIOS) |
+| `aarch64` | `cloud-image/debian-12` (arm64), pinned | `virt,highmem=on` | `max,pauth-impdef=on` | UEFI: Homebrew QEMU's `edk2-aarch64-code.fd` on a Mac (or `FLTH_QEMU_DIR`), `FLTH_FIRMWARE_*` on Linux |
 
 **Apple Silicon smoke runs have been recorded.** The latest, on
 2026-11-20 (#162, #164), ran `tests/smoke.sh` from `main` at e0458d2 with
@@ -1014,7 +1031,8 @@ these disposable boots.
 
 **The host's memory is checked before every boot attempt.** The per-guest QEMU
 estimate is **guest RAM + TCG translation cache + 384 MiB overhead**. The cache
-term is zero on KVM and HVF, the only accelerators the shared guest uses. The
+term is zero on KVM and HVF. When TCG sizes its own cache, admission budgets
+1 GiB for it. The
 overhead is an allowance for QEMU itself, not a measured maximum. A boot needs
 the estimate plus **2048 MiB left for the host** in what the host has available: Linux's
 `MemAvailable`, or macOS's free, inactive and speculative pages at the page size

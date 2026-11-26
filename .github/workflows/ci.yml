@@ -13,6 +13,9 @@ name: CI
 #                   realistic filesystem suite passes, a corrupted image
 #                   FAILS, and the shared guest, hold, reap, shutdown and
 #                   destroy behave on a real machine.
+#   smoke-tcg       a REAL VM boots under TCG on an x86_64 runner without
+#                   KVM, an x86_64 guest and an emulated ARM64 one, and
+#                   each runs a command that names its architecture.
 #   ci-ok           the single required check: green only when every job
 #                   above ran and succeeded.
 #   release         a version tag publishes its CHANGELOG notes as a GitHub
@@ -264,12 +267,86 @@ jobs:
           path: tests/smoke-consumer/.vm-share/results
           if-no-files-found: ignore
 
+  # The guest booted with software emulation (FLTH_ACCELERATOR=tcg) on our
+  # x86_64 runner, which has no KVM: an x86_64 guest, and an emulated ARM64
+  # guest (FLTH_GUEST_ARCH=aarch64), each booted through the harness with the
+  # smoke consumer's setup, and asked for its architecture. The runner's pod is
+  # small, so the TCG cache and guest RAM are capped. One gate for both legs:
+  # they share the class linux-x64.
+  smoke-tcg-gate:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: antimatter-vps-gate
+    timeout-minutes: 1
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: runner-gate pick linux-x64
+
+  smoke-tcg:
+    name: smoke (real VM, TCG, ${{ matrix.arch }} guest on x86_64)
+    needs: [changes, smoke-tcg-gate]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ needs.smoke-tcg-gate.outputs.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    env:
+      FLTH_ACCELERATOR: tcg
+      FLTH_GUEST_ARCH: ${{ matrix.arch }}
+      FLTH_VM_MEM: "256"
+      FLTH_GUEST_MEM: "192"
+      FLTH_SHARED_CPUS: "2"
+      FLTH_VM_GUEST: debian-12
+      FLTH_CONFIG: ${{ github.workspace }}/tests/smoke-consumer/fs-linux-test-harness.toml
+    steps:
+      - uses: actions/checkout@v4
+      # Our runner's image carries less than GitHub's: what the runner setup
+      # and the harness call.
+      - name: Host tools for our runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y --no-install-recommends ruby perl jq procps lsof curl gnupg lsb-release unzip openssh-client ca-certificates
+      - uses: ./.github/actions/install-chore
+        with:
+          version: ${{ env.CHORE_VERSION }}
+      - uses: ./.github/actions/install-virtiofsd
+      - name: QEMU and Vagrant, without KVM
+        id: vm-host
+        run: scripts/ci-setup-linux.sh
+      - name: Restore the Vagrant box
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.vagrant.d/boxes
+          key: ${{ steps.vm-host.outputs.box-cache-key }}
+      - name: chore host:check
+        run: chore host:check
+      - name: Boot the guest and ask its architecture
+        env:
+          WANT: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          got="$(scripts/vm.sh run uname -m | tr -d '\r' | tail -n 1)"
+          echo "guest uname -m: $got (after $(( $(date +%s) - started ))s)"
+          if [ "$got" != "$WANT" ]; then
+            echo "::error::the guest is $got, not $WANT"
+            exit 1
+          fi
+      - name: Destroy the guest
+        if: always()
+        run: scripts/vm.sh destroy || true
+
   # ci-ok-gate picks only ci-ok's runner. Like ci-ok it runs whatever became
   # of the jobs before it, and ci-ok falls back to GitHub's runner when it
   # answered nothing.
   ci-ok-gate:
     if: always()
-    needs: [changes-gate, changes, unit-linux-gate, unit-linux, unit-macos-gate, unit-macos, smoke-x86_64-gate, smoke-x86_64]
+    needs: [changes-gate, changes, unit-linux-gate, unit-linux, unit-macos-gate, unit-macos, smoke-x86_64-gate, smoke-x86_64, smoke-tcg-gate, smoke-tcg]
     runs-on: antimatter-vps-gate
     timeout-minutes: 1
     outputs:
@@ -281,7 +358,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes-gate, changes, unit-linux-gate, unit-linux, unit-macos-gate, unit-macos, smoke-x86_64-gate, smoke-x86_64, ci-ok-gate]
+    needs: [changes-gate, changes, unit-linux-gate, unit-linux, unit-macos-gate, unit-macos, smoke-x86_64-gate, smoke-x86_64, smoke-tcg-gate, smoke-tcg, ci-ok-gate]
     runs-on: ${{ needs.ci-ok-gate.outputs.runner || 'ubuntu-latest' }}
     steps:
       - name: jq for our runner

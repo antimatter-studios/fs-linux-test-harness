@@ -11,7 +11,7 @@
 #   vm.sh reload           restart the shared guest in place, if nobody else is using it
 #   vm.sh test [args...]   boot if needed, run the consumer's [test] command as a run of its own
 #   vm.sh build [args...]  run the [build] command in a container on the host; the guest runs its output
-#   vm.sh guest-test [args...]  build if [build] says so, boot if needed, run the [test] guest_command INSIDE the guest
+#   vm.sh guest-test [args...]  build if [build] says so (FLTH_BUILD_PREBUILT=1: use the existing build), boot if needed, run the [test] guest_command INSIDE the guest
 #   vm.sh session <cmd...> run a command on the host inside a session: the VM comes down when it ends
 #   vm.sh down             stop the shared guest and confirm it stopped, if nobody is using it
 #   vm.sh status           exit 0 when the VM is running, 1 otherwise
@@ -46,9 +46,7 @@ set -euo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 # shellcheck source=lib/common.sh
 . "$(dirname "$SELF")/lib/common.sh"
-# shellcheck source=scripts/lib/qemu-memory.sh
-. "$(dirname "$SELF")/lib/qemu-memory.sh"
-# shellcheck source=scripts/lib/build.sh
+# shellcheck source=lib/build.sh
 . "$(dirname "$SELF")/lib/build.sh"
 
 HOST_TOOLS="$FLTH_HARNESS/scripts/host-tools.sh"
@@ -821,12 +819,29 @@ confirmed_stopped() {
 # available: MemAvailable on Linux, free, inactive and speculative pages on macOS.
 # A measurement that could not be made refuses too, since a guess is how a full
 # machine starts.
-HOST_MEMORY_RESERVE_MIB=2048
+# FLTH_HOST_MEMORY_RESERVE_MIB changes it: a CI runner pod that runs nothing
+# else beside the guest needs less kept back than a workstation does.
+HOST_MEMORY_RESERVE_MIB="${FLTH_HOST_MEMORY_RESERVE_MIB:-2048}"
 
 host_memory_mib() {
     case "$(uname -s)" in
         Linux)
-            awk '/^MemAvailable:/ {print int($2 / 1024); found=1} END {if (!found) exit 1}' "${FLTH_TEST_MEMINFO:-/proc/meminfo}" ;;
+            # The machine's available memory, or less when this process runs in
+            # a cgroup with a memory limit (a container, a CI runner pod): the
+            # limit minus what the group already uses.
+            local machine cgroup max current
+            machine="$(awk '/^MemAvailable:/ {print int($2 / 1024); found=1} END {if (!found) exit 1}' "${FLTH_TEST_MEMINFO:-/proc/meminfo}")" || return 1
+            cgroup="${FLTH_TEST_CGROUP:-}"
+            [ -n "$cgroup" ] || [ -n "${FLTH_TEST_MEMINFO:-}" ] || cgroup=/sys/fs/cgroup
+            if [ -n "$cgroup" ]; then
+                max="$(cat "$cgroup/memory.max" 2>/dev/null || true)"
+                current="$(cat "$cgroup/memory.current" 2>/dev/null || true)"
+                if [[ "$max" =~ ^[0-9]+$ && "$current" =~ ^[0-9]+$ ]] && [ "$max" -gt "$current" ] &&
+                    [ $(((max - current) / 1048576)) -lt "$machine" ]; then
+                    machine=$(((max - current) / 1048576))
+                fi
+            fi
+            printf '%s\n' "$machine" ;;
         Darwin)
             local stats
             stats="$(vm_stat)" || return 1
@@ -840,17 +855,37 @@ host_memory_mib() {
 
 host_memory_check() {
     local available
-    flth_qemu_memory_check native "$CFG_vm_memory" || return
-    available="$(host_memory_mib)" || available=""
-    case "$available" in
-        '' | *[!0-9]*)
-            echo "vm: the host's free memory could not be measured, so the shared guest is not booted." >&2
-            return 1 ;;
-    esac
-    if [ "$available" -lt "$((FLTH_QEMU_TOTAL_MIB + HOST_MEMORY_RESERVE_MIB))" ]; then
+    [[ "$HOST_MEMORY_RESERVE_MIB" =~ ^[0-9]{1,6}$ ]] || {
+        echo "vm: FLTH_HOST_MEMORY_RESERVE_MIB must be a whole number of MiB, got $HOST_MEMORY_RESERVE_MIB" >&2
+        return 1
+    }
+    # FLTH_HOST_MEMORY_WAIT_SECONDS: how long a boot waits for the memory to
+    # become free before it is refused (0, the default, refuses at once). On a
+    # shared CI node, other jobs' guests finish and give theirs back.
+    local wait="${FLTH_HOST_MEMORY_WAIT_SECONDS:-0}" waited=0 needed
+    [[ "$wait" =~ ^[0-9]{1,6}$ ]] || {
+        echo "vm: FLTH_HOST_MEMORY_WAIT_SECONDS must be a whole number of seconds, got $wait" >&2
+        return 1
+    }
+    flth_qemu_memory_check "${FLTH_ACCELERATOR:-native}" "$CFG_vm_memory" "$FLTH_QEMU_TB_LIMIT_MIB" || return
+    needed=$((FLTH_QEMU_TOTAL_MIB + HOST_MEMORY_RESERVE_MIB))
+    while :; do
+        available="$(host_memory_mib)" || available=""
+        case "$available" in
+            '' | *[!0-9]*)
+                echo "vm: the host's free memory could not be measured, so the shared guest is not booted." >&2
+                return 1 ;;
+        esac
+        [ "$available" -lt "$needed" ] && [ "$waited" -lt "$wait" ] || break
+        echo "[vm] waiting for host memory: $available MiB available, $needed MiB needed (${waited}s of ${wait}s)" >&2
+        sleep 30
+        waited=$((waited + 30))
+    done
+    if [ "$available" -lt "$needed" ]; then
         echo "vm: not enough host memory for the shared guest: $available MiB available, and it needs" >&2
-        echo "    $FLTH_QEMU_GUEST_MIB MiB for the guest and $HOST_MEMORY_RESERVE_MIB MiB left for the host, plus $FLTH_QEMU_OVERHEAD_MIB MiB of QEMU overhead." >&2
-        echo "    FLTH_SHARED_MEMORY asks for less." >&2
+        echo "    $FLTH_QEMU_GUEST_MIB MiB for the guest, $FLTH_QEMU_TB_MIB MiB of TCG cache and $FLTH_QEMU_OVERHEAD_MIB MiB of QEMU overhead," >&2
+        echo "    and $HOST_MEMORY_RESERVE_MIB MiB left for the host (FLTH_HOST_MEMORY_RESERVE_MIB)." >&2
+        echo "    FLTH_GUEST_MEM, FLTH_VM_MEM or FLTH_SHARED_MEMORY can request less." >&2
         return 1
     fi
 }
@@ -996,7 +1031,7 @@ shared_tell_room() {
     [ "$floor" -le $((total / 4)) ] || floor=$((total / 4))
     [ "$available" -lt "$floor" ] || return 0
     echo "vm: the shared guest has $available MiB of $total MiB available, in use by: $(shared_suites)." >&2
-    echo "    A suite that needs more may be killed for memory. FLTH_SHARED_MEMORY sizes the guest at its next boot." >&2
+    echo "    A suite that needs more may be killed for memory. FLTH_GUEST_MEM or FLTH_SHARED_MEMORY sizes the guest at its next boot." >&2
 }
 
 # A KERNEL THAT HAS OOPSED KEEPS ANSWERING (#196), so a suite on it goes on and reports
@@ -1576,12 +1611,23 @@ vm_exec() {
 # A consumer with a [build] section builds first, in a container on the host
 # (lib/build.sh), and the guest is booted only for a build that succeeded. The
 # guest command finds what it built at FLTH_BUILD_DIR.
+#
+# FLTH_BUILD_PREBUILT=1 skips the build and tests what is already in the
+# share's build directory: a pipeline whose build job ran `vm.sh build` and
+# handed its output to a separate test job. An empty or missing build
+# directory fails rather than testing nothing.
 vm_guest_test() {
     [ -n "$CFG_test_guest_command" ] ||
         flth_die "$FLTH_CONFIG has no [test] guest_command"
     local script arg build_env=""
     if build_configured; then
-        (vm_build) || exit
+        if [ "${FLTH_BUILD_PREBUILT:-}" = 1 ]; then
+            [ -d "$FLTH_SHARE_HOST/build" ] && [ -n "$(ls -A "$FLTH_SHARE_HOST/build")" ] ||
+                flth_die "FLTH_BUILD_PREBUILT=1, and $FLTH_SHARE_HOST/build holds no build; run 'vm.sh build' or copy one there"
+            echo "[vm] testing the prebuilt $FLTH_SHARE_HOST/build (FLTH_BUILD_PREBUILT=1); no build" >&2
+        else
+            (vm_build) || exit
+        fi
         build_env="export FLTH_BUILD_DIR=$(quote_for_guest "$FLTH_SHARE_GUEST/build") && "
     fi
     script="cd $(quote_for_guest "$FLTH_REPO_GUEST") && $build_env$CFG_test_guest_command"
@@ -1608,6 +1654,7 @@ config=$FLTH_CONFIG
 root=$FLTH_ROOT
 project.name=$CFG_project_name
 vm.memory=$CFG_vm_memory
+vm.tcg_cache_limit_mib=$FLTH_QEMU_TB_LIMIT_MIB
 vm.cpus=$CFG_vm_cpus
 vm.build_jobs=$CFG_vm_build_jobs
 vm.test_jobs=$CFG_vm_test_jobs

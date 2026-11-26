@@ -31,6 +31,7 @@ engine_prepare() {
     export VAGRANT_DOTFILE_PATH="$FLTH_MACHINE_DIR/vagrant"
     export FLTH_VM_NAME="$FLTH_MACHINE_NAME"
     export FLTH_VM_MEMORY="$CFG_vm_memory"
+    export FLTH_VM_TB_MIB="${FLTH_QEMU_TB_LIMIT_MIB:-0}"
     export FLTH_VM_CPUS="$CFG_vm_cpus"
     export FLTH_VM_DISK="$CFG_vm_disk"
     export FLTH_VM_SSH_PORT="$CFG_vm_ssh_port"
@@ -50,7 +51,7 @@ engine_prepare() {
     # do not (Debian: /usr/share/AAVMF/AAVMF_{CODE,VARS}.fd). So the
     # names are provided as links, and where they point is host
     # configuration. An x86_64 guest boots SeaBIOS and needs none.
-    if [ "$(uname -s)" = Linux ] && engine_vagrant_host_is_arm; then
+    if [ "$(uname -s)" = Linux ] && [ "$(flth_guest_arch)" = aarch64 ]; then
         local code="${FLTH_FIRMWARE_CODE:-/usr/share/AAVMF/AAVMF_CODE.fd}"
         local vars="${FLTH_FIRMWARE_VARS:-/usr/share/AAVMF/AAVMF_VARS.fd}"
         local dir="$FLTH_CACHE_DIR/firmware"
@@ -788,16 +789,39 @@ engine_vagrant_virtiofsd() {
 # The flags the macOS provider gave its own folders' virtiofsd, which this replaces:
 # no sandbox (it runs as the host user), no file handles, extended attributes, and on
 # macOS one thread, because the port switches credentials process-wide, and the box's
-# vagrant user (1001) seen as the host user, where the build can translate ids.
+# vagrant user seen as the host user, where the build can translate ids.
 engine_vagrant_virtiofsd_args() {
-    local bin="$1"
+    local bin="$1" ids
     printf '%s\n' --sandbox=none --inode-file-handles=never --xattr
     if [ "$(uname -s)" = Darwin ]; then
         printf '%s\n' --thread-pool-size=1
         if "$bin" --help 2>&1 | grep -- --translate-uid >/dev/null; then
-            printf '%s\n' --translate-uid "map:1001:$(id -u):1" --translate-gid "map:1001:$(id -g):1"
+            ids="$(engine_vagrant_guest_ids)" || return 1
+            printf '%s\n' --translate-uid "map:${ids% *}:$(id -u):1" --translate-gid "map:${ids#* }:$(id -g):1"
         fi
     fi
+}
+
+# The box's vagrant user, "<uid> <gid>". The Mac's own box made it 1001. The Debian
+# cloud box, which a Mac boots under TCG, is asked once and the answer kept with the
+# machine: the box is pinned, so it cannot change under it.
+engine_vagrant_guest_ids() {
+    local cache="$FLTH_MACHINE_DIR/guest-ids" ids
+    if [ "$(flth_guest_box)" = rpi ]; then
+        printf '1001 1001\n'
+        return 0
+    fi
+    ids="$(cat "$cache" 2>/dev/null)"
+    case "$ids" in
+        [0-9]*' '[0-9]*) ;;
+        *)
+            ids="$(engine_run 'printf "%s %s\n" "$(id -u)" "$(id -g)"' | tail -n 1)"
+            case "$ids" in
+                [0-9]*' '[0-9]*) printf '%s\n' "$ids" > "$cache" ;;
+                *) echo "vm: could not read the guest's user and group ids (got '${ids}')" >&2; return 1 ;;
+            esac ;;
+    esac
+    printf '%s\n' "$ids"
 }
 
 # Process start time, to tell a daemon from a pid reused since.
@@ -851,7 +875,8 @@ engine_attach_tree() {
     mkdir -p "$(dirname "$sock")"
     rm -f "$sock"
     log="$record.log"
-    while IFS= read -r arg; do args+=("$arg"); done < <(engine_vagrant_virtiofsd_args "$bin")
+    arg="$(engine_vagrant_virtiofsd_args "$bin")" || return 1
+    while IFS= read -r arg; do args+=("$arg"); done <<<"$arg"
     # A session of its own, like the watchdog's: no signal to the run reaches it.
     perl -MPOSIX -e '
         my ($pidfile, $log) = splice(@ARGV, 0, 2);
@@ -923,10 +948,10 @@ engine_tree_slot() { sed -n 's/^slot //p' "$(engine_vagrant_attached_dir)/$1" 2>
 # guest must have let go of the mount already (lib/guest-run.sh, end), unless the
 # daemon has died, when nothing may touch the mount and the device goes first.
 #
-# On macOS the guest's kernel has no ACPI, and a device_del waits five seconds after
-# the attention button before the guest powers the slot off: the guest is asked to
-# power it off itself, which QEMU takes as the unplug, about a second. On a Linux
-# host the slot is ACPI hot-plug and device_del takes tens of milliseconds.
+# The Mac's own box boots a kernel with no ACPI, and a device_del waits five seconds
+# after the attention button before the guest powers the slot off: the guest is asked
+# to power it off itself, which QEMU takes as the unplug, about a second. The Debian
+# cloud box, on any host, takes device_del as it is.
 engine_detach_tree() {
     local run="$1" record slot pid start tries=0
     record="$(engine_vagrant_attached_dir)/$run"
@@ -934,7 +959,7 @@ engine_detach_tree() {
     pid="$(sed -n 's/^pid //p' "$record" 2>/dev/null)"
     start="$(sed -n 's/^start //p' "$record" 2>/dev/null)"
     if engine_alive "$(engine_identity)" && engine_vagrant_devices 2>/dev/null | grep -x "fs-$run" >/dev/null; then
-        if [ "$(uname -s)" = Darwin ] && [ -n "$slot" ]; then
+        if [ "$(flth_guest_box)" = rpi ] && [ -n "$slot" ]; then
             engine_run "echo 0 > /sys/bus/pci/slots/$slot/power" >/dev/null 2>&1 || true
             # A second at most, measured; a guest that did not power it off by three
             # is asked the slower way.

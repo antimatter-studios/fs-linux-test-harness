@@ -14,6 +14,8 @@ FLTH_HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 . "$FLTH_HARNESS/scripts/lib/engine.sh"
 # shellcheck source=scripts/lib/profile.sh
 . "$FLTH_HARNESS/scripts/lib/profile.sh"
+# shellcheck source=scripts/lib/qemu-memory.sh
+. "$FLTH_HARNESS/scripts/lib/qemu-memory.sh"
 
 # Machines, their disks and the firmware links are CACHE: regenerable,
 # large, and nothing a repository should carry. Sockets and Vagrant's
@@ -144,6 +146,40 @@ FLTH_SHARED_DEADLINE_MINUTES=480
 # THE GUEST SEES NO HOST DIRECTORY OF ITS OWN (#222). Each run attaches its own
 # tree to the running guest (lib/engine.sh, engine_attach_tree), so a tree anywhere
 # on the host can be tested, and there is no root to set or derive.
+
+# THE GUEST'S ARCHITECTURE: the host's, unless FLTH_GUEST_ARCH names another.
+# Under TCG (FLTH_ACCELERATOR=tcg) any supported host emulates either one, which
+# is how a runner without KVM tests a build for the other architecture. With a
+# hardware accelerator the guest is always the host's.
+flth_guest_arch() {
+    local host
+    host="$(uname -m)"
+    case "$host" in arm64) host=aarch64 ;; esac
+    case "${FLTH_GUEST_ARCH:-$host}" in
+        "$host") printf '%s\n' "$host" ;;
+        x86_64 | aarch64)
+            if [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
+                printf '%s\n' "$FLTH_GUEST_ARCH"
+            else
+                echo "vm: FLTH_GUEST_ARCH=$FLTH_GUEST_ARCH on this $(uname -s) $host host needs FLTH_ACCELERATOR=tcg." >&2
+                return 1
+            fi ;;
+        *) echo "vm: FLTH_GUEST_ARCH must be x86_64 or aarch64, got ${FLTH_GUEST_ARCH}." >&2; return 1 ;;
+    esac
+}
+
+# THE GUEST'S BOX: rpi for the Mac's own box, which only an Apple Silicon host
+# boots and only under HVF, and debian for the Debian cloud box every other guest
+# boots, TCG on a Mac included. What differs between them is the box's, not the
+# host's: the vagrant user's id, how a slot is powered off.
+flth_guest_box() {
+    if [ "$(uname -s)" = Darwin ] && [ "${FLTH_ACCELERATOR:-}" != tcg ]; then
+        printf 'rpi\n'
+    else
+        printf 'debian\n'
+    fi
+}
+
 # shellcheck disable=SC2034  # read by the scripts that source this
 flth_shared_load() {
     # Where the /cache a consumer asks for is: a directory of the guest's in a run,
@@ -152,7 +188,23 @@ flth_shared_load() {
     CFG_cache_size=""
     FLTH_MACHINE_NAME="shared-$CFG_vm_guest"
     [ -z "$FLTH_PROFILE_ID" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-p${FLTH_PROFILE_ID:0:20}"
+    # An explicit TCG run must never join an already running KVM guest.
+    if [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
+        FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-tcg"
+    fi
+    # A guest of another architecture is another machine. One of the host's own
+    # is the same machine, whether FLTH_GUEST_ARCH names it or is unset: it is
+    # exported below, so every script this one starts sees it set, and a name
+    # that changed with it would be another machine's halfway through a boot.
+    local guest_arch host_arch
+    guest_arch="$(flth_guest_arch)" || return
+    host_arch="$(uname -m)"
+    case "$host_arch" in arm64) host_arch=aarch64 ;; esac
+    # The name is the guest's hostname too, which takes no underscore: x86-64.
+    [ "$guest_arch" = "$host_arch" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-${guest_arch//_/-}"
+    export FLTH_GUEST_ARCH="$guest_arch"
     CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
+    flth_resolve_vm_memory || return
     CFG_vm_cpus="${FLTH_SHARED_CPUS:-$FLTH_SHARED_CPUS_DEFAULT}"
     CFG_vm_disk="${FLTH_SHARED_DISK:-$FLTH_SHARED_DISK_DEFAULT}"
     CFG_vm_ssh_port="$FLTH_SHARED_SSH_PORT"
