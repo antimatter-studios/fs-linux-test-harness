@@ -48,9 +48,8 @@ cleanup() {
     local pid
     for pid in $SUITES; do kill -KILL "$pid" 2>/dev/null; done
     for pid in "$FLTH_TEST_STUB"/guest-proc/*; do kill -KILL "${pid##*/}" 2>/dev/null; done
-    rm -rf "$SANDBOX"
 }
-trap cleanup EXIT
+at_exit cleanup
 
 one up >/dev/null 2>&1
 check_eq "$?" 0 "a boot succeeds"

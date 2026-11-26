@@ -29,7 +29,9 @@ cat > "$SANDBOX/descendant.sh" <<'COMMAND'
 if [ "$1" = stubborn ]; then
     trap 'echo TERM > "$SESSION_TEST_DIR/term"' TERM
     echo "$$" > "$SESSION_TEST_DIR/descendant"
-    while :; do sleep 30 & wait "$!"; done
+    # Bounded: left behind, it ends by itself after 300 seconds (#302).
+    for _ in {1..10}; do sleep 30 & wait "$!"; done
+    exit 0
 fi
 echo "$$" > "$SESSION_TEST_DIR/descendant"
 exec sleep 30
@@ -53,7 +55,8 @@ COMMAND
 cat > "$SANDBOX/forever.sh" <<'COMMAND'
 #!/usr/bin/env bash
 echo "$$" > "$SESSION_TEST_DIR/command"
-while :; do sleep 1; done
+# Bounded: left behind, it ends by itself after 300 seconds and more (#302).
+for _ in {1..300}; do sleep 1; done
 COMMAND
 # Sourced through BASH_ENV by every Bash the session starts, so it acts only in
 # vm-session.sh itself, and asks when it acts: Bash 3.2 sets $0 after reading

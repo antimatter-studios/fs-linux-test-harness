@@ -36,9 +36,8 @@ CALL=""
 cleanup() {
     : > "$GO"
     [ -z "$CALL" ] || wait "$CALL" 2>/dev/null
-    rm -rf "$SANDBOX"
 }
-trap cleanup EXIT
+at_exit cleanup
 
 one up >/dev/null 2>&1
 

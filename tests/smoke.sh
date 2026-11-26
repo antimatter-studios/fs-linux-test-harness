@@ -1026,7 +1026,7 @@ tree_root="$(tree_vm config | sed -n 's/^root=//p')"
 rm -rf "$tree_root/tmp/flth-tree"
 FLTH_TEST_SSH_ALIVE_INTERVAL=30 FLTH_TEST_SSH_ALIVE_COUNT=20 \
     perl -e 'alarm shift; exec @ARGV or exit 127' 900 "$VM" session bash -c '"$1" run "$2"' flth-tree "$VM" \
-    "mkdir -p $repo_guest/tmp/flth-tree; i=0; while :; do touch $repo_guest/tmp/flth-tree/\$i; i=\$((i + 1)); sleep 0.2; done" \
+    "mkdir -p $repo_guest/tmp/flth-tree; i=0; while [ \$i -lt 4500 ]; do touch $repo_guest/tmp/flth-tree/\$i; i=\$((i + 1)); sleep 0.2; done" \
     > "$tree_dir/out" 2> "$tree_dir/err" &
 tree_session=$!
 # The session's run: its tree attached, its daemon on record, and files arriving.

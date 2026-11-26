@@ -29,8 +29,6 @@ identity="$SANDBOX/machine.with[characters]/vagrant"
 first=$!
 /bin/sleep 300 >/dev/null 2>&1 &
 second=$!
-# shellcheck disable=SC2064  # expand now: the pids are fixed
-trap "kill -KILL $first $second 2>/dev/null; rm -rf '$SANDBOX'" EXIT
 printf '%s\n%s\n' "$first" "$second" > "$PROCESS_STUB/pids"
 printf '0\n' > "$PROCESS_STUB/pgrep-status"
 printf '0\n' > "$PROCESS_STUB/ps-status"

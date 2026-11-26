@@ -93,9 +93,8 @@ SUITES=""
 stop_suites() {
     local pid
     for pid in $SUITES; do kill -KILL "$pid" 2>/dev/null; done
-    rm -rf "$SANDBOX"
 }
-trap stop_suites EXIT
+at_exit stop_suites
 : > "$TOOLS"
 new_suite one; first=$SUITE; first_run=$RUN
 FLTH_RUN_ID="$first_run" one exec true
