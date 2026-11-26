@@ -11,7 +11,7 @@
 #   vm.sh reload           restart the shared guest in place, if nobody else is using it
 #   vm.sh test [args...]   boot if needed, run the consumer's [test] command as a run of its own
 #   vm.sh build [args...]  run the [build] command in a container on the host; the guest runs its output
-#   vm.sh guest-test [args...]  build if [build] says so, boot if needed, run the [test] guest_command INSIDE the guest
+#   vm.sh guest-test [args...]  build if [build] says so (FLTH_BUILD_PREBUILT=1: use the existing build), boot if needed, run the [test] guest_command INSIDE the guest
 #   vm.sh session <cmd...> run a command on the host inside a session: the VM comes down when it ends
 #   vm.sh down             stop the shared guest and confirm it stopped, if nobody is using it
 #   vm.sh status           exit 0 when the VM is running, 1 otherwise
@@ -1574,12 +1574,23 @@ vm_exec() {
 # A consumer with a [build] section builds first, in a container on the host
 # (lib/build.sh), and the guest is booted only for a build that succeeded. The
 # guest command finds what it built at FLTH_BUILD_DIR.
+#
+# FLTH_BUILD_PREBUILT=1 skips the build and tests what is already in the
+# share's build directory: a pipeline whose build job ran `vm.sh build` and
+# handed its output to a separate test job. An empty or missing build
+# directory fails rather than testing nothing.
 vm_guest_test() {
     [ -n "$CFG_test_guest_command" ] ||
         flth_die "$FLTH_CONFIG has no [test] guest_command"
     local script arg build_env=""
     if build_configured; then
-        (vm_build) || exit
+        if [ "${FLTH_BUILD_PREBUILT:-}" = 1 ]; then
+            [ -d "$FLTH_SHARE_HOST/build" ] && [ -n "$(ls -A "$FLTH_SHARE_HOST/build")" ] ||
+                flth_die "FLTH_BUILD_PREBUILT=1, and $FLTH_SHARE_HOST/build holds no build; run 'vm.sh build' or copy one there"
+            echo "[vm] testing the prebuilt $FLTH_SHARE_HOST/build (FLTH_BUILD_PREBUILT=1); no build" >&2
+        else
+            (vm_build) || exit
+        fi
         build_env="export FLTH_BUILD_DIR=$(quote_for_guest "$FLTH_SHARE_GUEST/build") && "
     fi
     script="cd $(quote_for_guest "$FLTH_REPO_GUEST") && $build_env$CFG_test_guest_command"
