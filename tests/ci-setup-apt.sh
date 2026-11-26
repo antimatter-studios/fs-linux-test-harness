@@ -292,6 +292,26 @@ rm -f "$SANDBOX/incomplete-mirrors"
 unset FLTH_APT_MIRRORS FLTH_APT_TIMEOUT
 export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
 
+# AN INDEX WITH NO CANDIDATE AND NO MIRROR LIST IS NOT RETRIED AT ONCE (#304).
+# Sources that name only the security host leave no mirror to move to. Each
+# attempt fetches the same index, and the three attempts used to finish within
+# two seconds, so a fault on the package server outlasting them failed the job.
+# So each attempt after the first waits, FLTH_APT_RETRY_WAIT seconds times the
+# attempt before it, and the failure names the sources it fetched from.
+printf 'Types: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: noble-security\nComponents: main\n' > "$SANDBOX/no-mirror.sources"
+export FLTH_APT_SOURCES="$SANDBOX/no-mirror.sources"
+export FLTH_APT_RETRY_WAIT=1
+printf 'http://security.ubuntu.com/ubuntu/\n' > "$SANDBOX/incomplete-mirrors"
+run_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
+rm -f "$SANDBOX/incomplete-mirrors"
+check_eq "$rc" 100 "an index with no candidate and no mirror list fails once its attempts are spent"
+check_contains "$out" "the index has no other mirror to try; waiting 1 s before attempt 2 of 3" "the second attempt waits before it runs"
+check_contains "$out" "waiting 2 s before attempt 3 of 3" "and the third waits longer, by the same step"
+check_eq "$(grep -c '^apt-get .* update' <<<"$calls" | tr -d ' ')" 2 "each retry fetches the index again"
+check_contains "$out" "failed (exit 100) in 3 attempts; the index came from $SANDBOX/no-mirror.sources" "the failure names the sources the index came from"
+unset FLTH_APT_RETRY_WAIT
+export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
+
 # ci-setup-linux.sh calls apt-get only through the bounded call: the
 # package index and QEMU, then HashiCorp's index and Vagrant.
 direct="$(grep -nE '(^|[^-_[:alnum:]])apt-get ' "$SETUP" | grep -vE '^[0-9]+: *#' || true)"
