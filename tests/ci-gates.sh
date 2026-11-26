@@ -13,7 +13,8 @@
 # matrix value. A job that only calls a reusable workflow (`uses:`) has no
 # runner of its own and no gate.
 #
-# The class is the job's: a job that boots a VM needs KVM. Our runner's image
+# The class is the job's: a job that boots a VM needs KVM, unless it sets
+# FLTH_ACCELERATOR=tcg for software emulation. Our runner's image
 # carries less than GitHub's, so a Linux job installs on it what it calls.
 # The per-run picker (scripts/pick-ci-runner.sh) and its reservation are gone.
 set -uo pipefail
@@ -35,7 +36,7 @@ CLASSES = %w[linux-x64 linux-x64-kvm linux-arm64 macos-arm64 windows-x64 windows
 # is added here, on purpose.
 EXPECTED = {
   "ci.yml" => { "changes" => "linux-x64", "unit-linux" => "linux-x64", "unit-macos" => "macos-arm64",
-                "smoke-x86_64" => "linux-x64-kvm", "ci-ok" => "linux-x64", "release" => "linux-x64" },
+                "smoke-x86_64" => "linux-x64-kvm", "smoke-tcg" => "linux-x64", "ci-ok" => "linux-x64", "release" => "linux-x64" },
   "box-cache.yml" => { "save" => "linux-x64-kvm" },
   "kvm-probe.yml" => { "probe-arm64" => "linux-arm64", "probe-x64" => "linux-x64-kvm",
                        "debian-13-boot" => "linux-x64-kvm", "virtiofs-hotplug" => "linux-x64-kvm" },
@@ -43,7 +44,8 @@ EXPECTED = {
   "branch-reap.yml" => {},
 }
 # What a job's own steps call that our runner's image may not carry.
-TOOLS = { "ci.yml" => { "unit-linux" => %w[jq ruby shellcheck], "ci-ok" => %w[jq], "release" => %w[gh jq] } }
+TOOLS = { "ci.yml" => { "unit-linux" => %w[jq ruby shellcheck], "smoke-tcg" => %w[ruby perl jq lsb-release],
+                        "ci-ok" => %w[jq], "release" => %w[gh jq] } }
 KVM = /ci-setup-linux\.sh|accel=kvm/
 
 def ok(msg) puts "ok\t#{msg}" end
@@ -102,7 +104,10 @@ files.each do |wf|
     end
     check !g.key?("strategy") && job["runs-on"].to_s !~ /matrix/, "#{wf}: #{id} has one gate for every matrix leg" if job.key?("strategy")
     body = (job["steps"] || []).map { |s| s["run"].to_s }.join("\n")
-    check asked == "linux-x64-kvm", "#{wf}: #{id} boots a VM, so its gate asks for KVM" if body =~ KVM
+    # A job that boots its VM with software emulation needs no KVM.
+    tcg = (job["env"] || {})["FLTH_ACCELERATOR"] == "tcg"
+    check asked == "linux-x64-kvm", "#{wf}: #{id} boots a VM, so its gate asks for KVM" if body =~ KVM && !tcg
+    check body !~ /accel=kvm/, "#{wf}: #{id} boots with TCG, so it asks for no KVM" if tcg
     ((TOOLS[wf] || {})[id] || []).each do |tool|
       ours = (job["steps"] || []).select { |s| s["if"].to_s.include?("runner.environment == 'self-hosted'") }
       check ours.any? { |s| s["run"].to_s =~ /apt-get install[^\n]*\b#{tool}\b/ }, "#{wf}: #{id} installs #{tool} on our runner"

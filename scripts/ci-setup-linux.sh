@@ -91,7 +91,9 @@ box_cache_key() {
         echo "ci-setup-linux: could not read the pinned Linux box for $guest from vagrant/Vagrantfile" >&2
         return 1
     fi
-    echo "vagrant-box-${box//\//-}-${box_version}-amd64"
+    local arch=amd64
+    [ "${FLTH_GUEST_ARCH:-x86_64}" != aarch64 ] || arch=arm64
+    echo "vagrant-box-${box//\//-}-${box_version}-$arch"
 }
 
 if [ "${1:-}" = --box-cache-key ]; then
