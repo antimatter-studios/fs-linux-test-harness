@@ -859,29 +859,14 @@ host_memory_check() {
         echo "vm: FLTH_HOST_MEMORY_RESERVE_MIB must be a whole number of MiB, got $HOST_MEMORY_RESERVE_MIB" >&2
         return 1
     }
-    # FLTH_HOST_MEMORY_WAIT_SECONDS: how long a boot waits for the memory to
-    # become free before it is refused (0, the default, refuses at once). On a
-    # shared CI node, other jobs' guests finish and give theirs back.
-    local wait="${FLTH_HOST_MEMORY_WAIT_SECONDS:-0}" waited=0 needed
-    [[ "$wait" =~ ^[0-9]{1,6}$ ]] || {
-        echo "vm: FLTH_HOST_MEMORY_WAIT_SECONDS must be a whole number of seconds, got $wait" >&2
-        return 1
-    }
     flth_qemu_memory_check "${FLTH_ACCELERATOR:-native}" "$CFG_vm_memory" "$FLTH_QEMU_TB_LIMIT_MIB" || return
-    needed=$((FLTH_QEMU_TOTAL_MIB + HOST_MEMORY_RESERVE_MIB))
-    while :; do
-        available="$(host_memory_mib)" || available=""
-        case "$available" in
-            '' | *[!0-9]*)
-                echo "vm: the host's free memory could not be measured, so the shared guest is not booted." >&2
-                return 1 ;;
-        esac
-        [ "$available" -lt "$needed" ] && [ "$waited" -lt "$wait" ] || break
-        echo "[vm] waiting for host memory: $available MiB available, $needed MiB needed (${waited}s of ${wait}s)" >&2
-        sleep 30
-        waited=$((waited + 30))
-    done
-    if [ "$available" -lt "$needed" ]; then
+    available="$(host_memory_mib)" || available=""
+    case "$available" in
+        '' | *[!0-9]*)
+            echo "vm: the host's free memory could not be measured, so the shared guest is not booted." >&2
+            return 1 ;;
+    esac
+    if [ "$available" -lt "$((FLTH_QEMU_TOTAL_MIB + HOST_MEMORY_RESERVE_MIB))" ]; then
         echo "vm: not enough host memory for the shared guest: $available MiB available, and it needs" >&2
         echo "    $FLTH_QEMU_GUEST_MIB MiB for the guest, $FLTH_QEMU_TB_MIB MiB of TCG cache and $FLTH_QEMU_OVERHEAD_MIB MiB of QEMU overhead," >&2
         echo "    and $HOST_MEMORY_RESERVE_MIB MiB left for the host (FLTH_HOST_MEMORY_RESERVE_MIB)." >&2
