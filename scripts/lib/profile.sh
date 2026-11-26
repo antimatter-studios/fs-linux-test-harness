@@ -12,8 +12,7 @@ flth_profile_load() {
             flth_config_error "profile must use lowercase letters, digits and inner hyphens"; return 1 ;;
     esac
     local arch records key value
-    arch="$(uname -m)"
-    case "$arch" in arm64) arch=aarch64 ;; esac
+    arch="$(flth_guest_arch)" || return 1
     FLTH_PROFILE_ARCH="$arch"
     records="$(ruby "$FLTH_HARNESS/scripts/run-profile.rb" resolve \
         "${FLTH_VM_PROFILE_DIR:-$FLTH_ROOT/run-profiles}/$FLTH_PROFILE_NAME.toml" "$arch")" || return 1

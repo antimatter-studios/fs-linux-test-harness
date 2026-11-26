@@ -51,7 +51,7 @@ engine_prepare() {
     # do not (Debian: /usr/share/AAVMF/AAVMF_{CODE,VARS}.fd). So the
     # names are provided as links, and where they point is host
     # configuration. An x86_64 guest boots SeaBIOS and needs none.
-    if [ "$(uname -s)" = Linux ] && engine_vagrant_host_is_arm; then
+    if [ "$(uname -s)" = Linux ] && [ "$(flth_guest_arch)" = aarch64 ]; then
         local code="${FLTH_FIRMWARE_CODE:-/usr/share/AAVMF/AAVMF_CODE.fd}"
         local vars="${FLTH_FIRMWARE_VARS:-/usr/share/AAVMF/AAVMF_VARS.fd}"
         local dir="$FLTH_CACHE_DIR/firmware"

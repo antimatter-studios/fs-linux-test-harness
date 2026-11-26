@@ -17,6 +17,9 @@
 #   Linux x86_64   KVM   box cloud-image/debian-12 (amd64); stock
 #                 TCG   (opt-in)
 #                        vagrant-qemu; SeaBIOS; q35
+#                 TCG   FLTH_GUEST_ARCH=aarch64: the arm64 box, emulated,
+#                        UEFI firmware from FLTH_QEMU_DIR, as on Linux
+#                        aarch64 (an x86_64 runner testing an ARM64 build)
 #
 # NOTHING IS SHARED AT BOOT (#222). The guest is shared by every consumer on
 # the host, and each run attaches its own tree while the guest runs: a
@@ -89,6 +92,17 @@ if tcg
     accel_args[1] += ",tb-size=#{tb_size}"
   end
 end
+
+# THE GUEST'S ARCHITECTURE. The host's, except an aarch64 guest emulated on
+# x86_64 Linux (FLTH_GUEST_ARCH=aarch64, FLTH_ACCELERATOR=tcg), which boots as
+# a Linux aarch64 host's guest does, only without KVM.
+host_arch = (host == :linux_x86_64 ? "x86_64" : "aarch64")
+guest_arch = ENV.fetch("FLTH_GUEST_ARCH", "")
+guest_arch = host_arch if guest_arch.empty?
+unless guest_arch == host_arch || (guest_arch == "aarch64" && host == :linux_x86_64 && tcg)
+  raise "FLTH_GUEST_ARCH=#{guest_arch} needs FLTH_ACCELERATOR=tcg on x86_64 Linux; this host is #{host}."
+end
+platform = (host == :linux_x86_64 && guest_arch == "aarch64") ? :linux_arm64 : host
 
 vm_name   = flth_env("FLTH_VM_NAME", /\A[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\z/, "a hostname label")
 guest     = flth_env("FLTH_VM_GUEST", /\Adebian-1[23]\z/, "debian-12 or debian-13")
@@ -183,7 +197,7 @@ end
 # nothing. Debian 12 boots either way. A later `-vga` replaces an earlier
 # one, so this gives the guest a standard VGA it never shows anywhere
 # (`-display none`), and its console is still the serial port.
-display_args = (host == :linux_x86_64 ? %w(-vga std) : [])
+display_args = (platform == :linux_x86_64 ? %w(-vga std) : [])
 
 case host
 when :macos_arm64
@@ -202,7 +216,7 @@ when :linux_arm64, :linux_x86_64
 end
 
 qemu_dir = nil
-if host == :linux_arm64
+if platform == :linux_arm64
   qemu_dir = flth_env("FLTH_QEMU_DIR", %r{\A/[A-Za-z0-9._/ -]*\z}, "an absolute path")
   %w[edk2-aarch64-code.fd edk2-arm-vars.fd].each do |f|
     path = File.join(qemu_dir, f)
@@ -243,7 +257,7 @@ Vagrant.configure("2") do |config|
     config.vm.box = box
     config.vm.box_version = version
   end
-  config.vm.box_architecture = (host == :linux_x86_64 ? "amd64" : "arm64")
+  config.vm.box_architecture = (platform == :linux_x86_64 ? "amd64" : "arm64")
   config.vm.box_check_update = false
   config.vm.hostname = vm_name
 
@@ -284,7 +298,7 @@ Vagrant.configure("2") do |config|
     # it deletes grows anything, and the disk it writes is meant to be kept.
     qe.extra_drive_args = "snapshot=on,discard=unmap" if disposable
 
-    case host
+    case platform
     when :macos_arm64
       qe.arch = "aarch64"
       qe.machine = tcg ? "virt,highmem=on" : "virt,accel=hvf,highmem=on"
@@ -296,8 +310,11 @@ Vagrant.configure("2") do |config|
       qe.extra_qemu_args = console_args + kernel_args + hotplug_args + accel_args
     when :linux_arm64
       qe.arch = "aarch64"
-      qe.machine = "virt,accel=kvm,highmem=on"
-      qe.cpu = "host"
+      # Emulated on an x86_64 host: TCG through -accel (accel_args), and
+      # pointer authentication with QEMU's own cheap algorithm, which TCG
+      # runs much faster than the architected one.
+      qe.machine = tcg ? "virt,highmem=on" : "virt,accel=kvm,highmem=on"
+      qe.cpu = tcg ? "max,pauth-impdef=on" : "host"
       qe.net_device = "virtio-net-device"
       qe.qemu_dir = qemu_dir
     when :linux_x86_64

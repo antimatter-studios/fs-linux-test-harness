@@ -176,7 +176,7 @@ engine_virtiofsd() {
 
 check_linux() {
     local arch qemu pkg kvm="/dev/kvm"
-    arch="$(uname -m)"
+    arch="${FLTH_GUEST_ARCH:-$(uname -m)}"
     case "$arch" in
         aarch64 | arm64) qemu="qemu-system-aarch64"; pkg="qemu-system-arm" ;;
         x86_64) qemu="qemu-system-x86_64"; pkg="qemu-system-x86" ;;
@@ -221,6 +221,10 @@ host="$(uname -s)"
 case "${FLTH_ACCELERATOR:-}:$host:$(uname -m)" in
     :* | tcg:Linux:x86_64 | tcg:Darwin:arm64) ;;
     *) echo "host tools: set FLTH_ACCELERATOR=tcg on Linux x86_64 or Apple Silicon, or leave it unset for the host's default." >&2; exit 1 ;;
+esac
+case "${FLTH_GUEST_ARCH:-}:${FLTH_ACCELERATOR:-}:$host:$(uname -m)" in
+    :* | x86_64:*:*:x86_64 | aarch64:*:*:aarch64 | aarch64:*:*:arm64 | aarch64:tcg:Linux:x86_64) ;;
+    *) echo "host tools: FLTH_GUEST_ARCH=aarch64 on another architecture needs FLTH_ACCELERATOR=tcg on x86_64 Linux." >&2; exit 1 ;;
 esac
 
 case "$host" in

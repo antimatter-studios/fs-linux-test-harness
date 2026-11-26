@@ -147,6 +147,26 @@ FLTH_SHARED_DEADLINE_MINUTES=480
 # tree to the running guest (lib/engine.sh, engine_attach_tree), so a tree anywhere
 # on the host can be tested, and there is no root to set or derive.
 # shellcheck disable=SC2034  # read by the scripts that source this
+# THE GUEST'S ARCHITECTURE: the host's, unless FLTH_GUEST_ARCH names another.
+# Only x86_64 Linux under TCG emulates another, an aarch64 guest, which is how
+# an x86_64 runner without KVM tests an ARM64 build.
+flth_guest_arch() {
+    local host
+    host="$(uname -m)"
+    case "$host" in arm64) host=aarch64 ;; esac
+    case "${FLTH_GUEST_ARCH:-$host}" in
+        "$host") printf '%s\n' "$host" ;;
+        aarch64)
+            if [ "$(uname -s)" = Linux ] && [ "$host" = x86_64 ] && [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
+                printf 'aarch64\n'
+            else
+                echo "vm: FLTH_GUEST_ARCH=aarch64 on this $(uname -s) $host host needs FLTH_ACCELERATOR=tcg on x86_64 Linux." >&2
+                return 1
+            fi ;;
+        *) echo "vm: FLTH_GUEST_ARCH must be x86_64 or aarch64, got ${FLTH_GUEST_ARCH}." >&2; return 1 ;;
+    esac
+}
+
 flth_shared_load() {
     # Where the /cache a consumer asks for is: a directory of the guest's in a run,
     # not a disk of the machine's.
@@ -158,6 +178,11 @@ flth_shared_load() {
     if [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
         FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-tcg"
     fi
+    # A guest of another architecture is another machine.
+    local guest_arch
+    guest_arch="$(flth_guest_arch)" || return
+    [ "${FLTH_GUEST_ARCH:-}" = "" ] || FLTH_MACHINE_NAME="$FLTH_MACHINE_NAME-$guest_arch"
+    export FLTH_GUEST_ARCH="$guest_arch"
     CFG_vm_memory="${FLTH_SHARED_MEMORY:-$FLTH_SHARED_MEMORY_DEFAULT}"
     flth_resolve_vm_memory || return
     CFG_vm_cpus="${FLTH_SHARED_CPUS:-$FLTH_SHARED_CPUS_DEFAULT}"

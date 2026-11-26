@@ -149,8 +149,15 @@ flth_apt "the package index" update -qq
 # extended attribute name that is not UTF-8 (#274). The install-virtiofsd
 # action installs upstream's 1.14.0 before this runs, and the host check at the
 # end refuses anything older.
-flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
-qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
+if [ "${FLTH_GUEST_ARCH:-x86_64}" = aarch64 ]; then
+    # An ARM64 guest emulated on this x86_64 runner (FLTH_ACCELERATOR=tcg),
+    # booted by UEFI firmware.
+    flth_apt "QEMU" install -y -qq qemu-system-arm qemu-efi-aarch64 qemu-utils
+    qemu-system-aarch64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
+else
+    flth_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
+    qemu-system-x86_64 --version | sed -n 1p   # not head: SIGPIPE under pipefail
+fi
 endgroup
 
 group "Vagrant $VAGRANT_VERSION and vagrant-qemu $VAGRANT_QEMU_VERSION"
