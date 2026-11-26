@@ -151,6 +151,10 @@ flth_apt "the package index" update -qq
 # extended attribute name that is not UTF-8 (#274). The install-virtiofsd
 # action installs upstream's 1.14.0 before this runs, and the host check at the
 # end refuses anything older.
+# Ruby runs scripts/qemu-artifacts.rb, which wraps every `vagrant up`, `halt`
+# and `destroy` (lib/engine-vagrant.sh). Vagrant's own Ruby is embedded and not
+# on PATH, and a self-hosted runner image need not have one.
+flth_apt "Ruby" install -y -qq ruby
 if [ "${FLTH_GUEST_ARCH:-x86_64}" = aarch64 ]; then
     # An ARM64 guest emulated on this x86_64 runner (FLTH_ACCELERATOR=tcg),
     # booted by UEFI firmware.
