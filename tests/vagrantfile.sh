@@ -181,8 +181,67 @@ check_eq "$(field config/$P.memory)" 256M "  Vagrant receives the resolved guest
 check_contains "$(field config/$P.extra_qemu_args)" 'size=256M,share=on' "  the virtiofs memory backend uses the same guest memory"
 check_contains "$(field config/$P.extra_qemu_args)" "pcie-root-port" "  TCG reserves the same hot-plug ports"
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  TCG uses a disposable overlay"
-FLTH_ACCELERATOR=tcg evaluate linux-gnu aarch64 1 vagrant-qemu
-check_contains "$(field error)" "on Linux x86_64 or Apple Silicon" "TCG is refused on a Linux aarch64 host"
+# --- TCG: FLTH_GUEST_ARCH picks the guest, and the host does not -----------------
+# The same Debian cloud box on every host, and only the emulated CPU differs. The
+# provider plugins stay the host's.
+tcg_pins() {
+    # tcg_pins <label> <host_os> <host_cpu> <plugins>
+    local label="$1"
+    shift
+    FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH=x86_64 evaluate "$1" "$2" 0 "$3"
+    check_eq "$(field ok)" true "$label: an x86_64 guest under TCG evaluates without KVM"
+    check_eq "$(field config/vm.box)|$(field config/vm.box_version)|$(field config/vm.box_architecture)" \
+        "cloud-image/debian-12|20260909.2596.0|amd64" "  the pinned amd64 Debian box"
+    check_eq "$(field config/$P.arch)|$(field config/$P.machine)|$(field config/$P.cpu)|$(field config/$P.net_device)" \
+        "x86_64|q35|max|virtio-net-pci" "  q35 with an emulated CPU"
+    check_eq "$(field config/$P.qemu_dir)" null "  SeaBIOS, no UEFI firmware"
+    check_contains "$(field config/$P.extra_qemu_args)" '"-vga","std"' "  and the standard VGA Debian's GRUB needs"
+    check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi"' "  booted by TCG"
+    check_contains "$(field config/$P.extra_qemu_args)" "pcie-root-port" "  with the same hot-plug ports"
+    check_lacks "$(field config/$P.extra_qemu_args)" "-kernel" "  through its own bootloader"
+    FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH=aarch64 evaluate "$1" "$2" 0 "$3"
+    check_eq "$(field ok)" true "$label: an aarch64 guest under TCG evaluates without KVM"
+    check_eq "$(field config/vm.box)|$(field config/vm.box_version)|$(field config/vm.box_architecture)" \
+        "cloud-image/debian-12|20260909.2596.0|arm64" "  the pinned arm64 Debian box"
+    check_eq "$(field config/$P.arch)|$(field config/$P.machine)|$(field config/$P.cpu)|$(field config/$P.net_device)" \
+        "aarch64|virt,highmem=on|max,pauth-impdef=on|virtio-net-device" "  virt with an emulated CPU and cheap pointer authentication"
+    check_lacks "$(field config/$P.extra_qemu_args)" "-vga" "  no display device: it boots through UEFI"
+    check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi"' "  booted by TCG"
+    check_contains "$(field config/$P.extra_qemu_args)" "pcie-root-port" "  with the same hot-plug ports"
+    check_lacks "$(field config/$P.extra_qemu_args)" "-kernel" "  through its own bootloader"
+}
+tcg_pins "Linux x86_64" linux-gnu x86_64 vagrant-qemu
+check_eq "$(field config/$P.qemu_dir)" "$SANDBOX/fw" "  firmware from FLTH_QEMU_DIR"
+tcg_pins "Linux aarch64" linux-gnu aarch64 vagrant-qemu
+tcg_pins "Apple Silicon" darwin23 arm64 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_eq "$(field config/$P.qemu_dir)" "$SANDBOX/fw" "  firmware from FLTH_QEMU_DIR when it is set"
+FLTH_QEMU_DIR="" FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH=aarch64 \
+    evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+if [ -r /opt/homebrew/share/qemu/edk2-aarch64-code.fd ]; then
+    check_eq "$(field config/$P.qemu_dir)" /opt/homebrew/share/qemu "  and from Homebrew's QEMU when it is not"
+else
+    check_contains "$(field error)" "/opt/homebrew/share/qemu/edk2-aarch64-code.fd is not readable" \
+        "  and from Homebrew's QEMU when it is not, refused by name when that has none"
+fi
+FLTH_ACCELERATOR=tcg evaluate linux-gnu aarch64 0 vagrant-qemu
+check_eq "$(field config/vm.box_architecture)|$(field config/$P.cpu)" "arm64|max,pauth-impdef=on" \
+    "TCG with no FLTH_GUEST_ARCH emulates the host's architecture"
+FLTH_ACCELERATOR=tcg evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_eq "$(field config/vm.box)|$(field config/vm.box_architecture)" "cloud-image/debian-12|arm64" "  on a Mac too, with the Debian box"
+check_eq "$(field config/notify_forwarder.enable)" true "  and the macOS plugins' settings"
+binaries="$(field config/notify_forwarder.binaries)"
+check_contains "$binaries" "x86_64" "  whose stand-in receiver is given for an x86_64 guest too"
+FLTH_ACCELERATOR=tcg FLTH_VM_GUEST=debian-13 FLTH_GUEST_ARCH=x86_64 \
+    evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_eq "$(field config/vm.box)" "cloud-image/debian-13" "a debian-13 guest boots on a Mac under TCG"
+FLTH_GUEST_ARCH=x86_64 evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_contains "$(field error)" "needs FLTH_ACCELERATOR=tcg" "another architecture without TCG is refused"
+FLTH_GUEST_ARCH=aarch64 evaluate linux-gnu x86_64 1 vagrant-qemu
+check_contains "$(field error)" "needs FLTH_ACCELERATOR=tcg" "  on Linux too"
+FLTH_ACCELERATOR=tcg FLTH_GUEST_ARCH=riscv64 evaluate linux-gnu x86_64 0 vagrant-qemu
+check_contains "$(field error)" "must be x86_64 or aarch64" "an architecture the harness has no box for is refused"
+FLTH_ACCELERATOR=kvm evaluate linux-gnu x86_64 1 vagrant-qemu
+check_contains "$(field error)" "FLTH_ACCELERATOR=tcg" "an accelerator other than tcg is refused"
 
 # --- [vm] guest ---------------------------------------------------------------
 FLTH_VM_GUEST=debian-13 evaluate linux-gnu x86_64 1 vagrant-qemu
@@ -229,10 +288,10 @@ check_contains "$(field config/vm.provision)" '"guest/apt-ready.sh"' "  the box'
 check_eq "$(field config/$P.extra_drive_args)" "snapshot=on,discard=unmap" "  a disposable boot's writes are discarded"
 evaluate darwin23 arm64 0 vagrant-qemu
 check_contains "$(field error)" "vagrant-qemu-christhomas is missing" "macOS with only the stock plugin is refused"
+evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
+check_lacks "$(field config/$P.extra_qemu_args)" "-accel" "HVF takes no -accel"
 FLTH_ACCELERATOR=tcg evaluate darwin23 arm64 0 vagrant-qemu-christhomas,vagrant-notify-forwarder-christhomas
-check_eq "$(field config/$P.machine)|$(field config/$P.cpu)" "virt,highmem=on|max" "Apple Silicon TCG keeps the ARM virt machine"
-check_eq "$(field config/vm.box)" "christhomas/vagrant-rpi-bookworm-arm64" "  TCG uses the same box as HVF"
-check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi"' "  with no cap, QEMU sizes the translation cache"
+check_contains "$(field config/$P.extra_qemu_args)" '"-accel","tcg,thread=multi"' "Apple Silicon TCG: with no cap, QEMU sizes the translation cache"
 
 # --- the serial console (#61) -----------------------------------------------
 # The provider sends the guest's serial console, where its kernel writes,

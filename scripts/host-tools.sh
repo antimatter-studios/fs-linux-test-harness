@@ -13,7 +13,7 @@
 #
 # The guest architecture is the host's: arm64 guests on Apple Silicon
 # and arm64 Linux, x86_64 guests on x86_64 Linux. TCG is an explicit opt-in
-# on Linux x86_64 and Apple Silicon.
+# on any of them, and FLTH_GUEST_ARCH then picks either architecture.
 set -uo pipefail
 
 QUIET=0
@@ -160,6 +160,20 @@ check_macos() {
         # release, which the Vagrantfile names as its URL, so the first
         # boot on a Mac fetches it (#8).
     fi
+    # Under TCG a Mac boots the Debian cloud box of either architecture: the
+    # emulator for it, and for an arm64 guest the UEFI firmware Homebrew's QEMU
+    # ships (FLTH_QEMU_DIR names another directory).
+    if [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
+        local arch="${FLTH_GUEST_ARCH:-aarch64}" fw f
+        have "qemu-system-$arch" ||
+            need "qemu-system-$arch" "emulates the $arch guest under TCG" "brew install antimatter-studios/tap/qemu"
+        if [ "$arch" = aarch64 ]; then
+            fw="${FLTH_QEMU_DIR:-/opt/homebrew/share/qemu}"
+            for f in edk2-aarch64-code.fd edk2-arm-vars.fd; do
+                [ -r "$fw/$f" ] || need "$fw/$f" "UEFI firmware for the arm64 guest under TCG (FLTH_QEMU_DIR names another directory)" "brew install antimatter-studios/tap/qemu"
+            done
+        fi
+    fi
 }
 
 # The virtiofsd the engine starts, in its order of choice
@@ -218,13 +232,13 @@ check_linux() {
 }
 
 host="$(uname -s)"
-case "${FLTH_ACCELERATOR:-}:$host:$(uname -m)" in
-    :* | tcg:Linux:x86_64 | tcg:Darwin:arm64) ;;
-    *) echo "host tools: set FLTH_ACCELERATOR=tcg on Linux x86_64 or Apple Silicon, or leave it unset for the host's default." >&2; exit 1 ;;
+case "${FLTH_ACCELERATOR:-}" in
+    '' | tcg) ;;
+    *) echo "host tools: set FLTH_ACCELERATOR=tcg for software emulation, or leave it unset for the host's default." >&2; exit 1 ;;
 esac
-case "${FLTH_GUEST_ARCH:-}:${FLTH_ACCELERATOR:-}:$host:$(uname -m)" in
-    :* | x86_64:*:*:x86_64 | aarch64:*:*:aarch64 | aarch64:*:*:arm64 | aarch64:tcg:Linux:x86_64) ;;
-    *) echo "host tools: FLTH_GUEST_ARCH=aarch64 on another architecture needs FLTH_ACCELERATOR=tcg on x86_64 Linux." >&2; exit 1 ;;
+case "${FLTH_GUEST_ARCH:-}:${FLTH_ACCELERATOR:-}:$(uname -m)" in
+    :* | x86_64:*:x86_64 | aarch64:*:aarch64 | aarch64:*:arm64 | x86_64:tcg:* | aarch64:tcg:*) ;;
+    *) echo "host tools: FLTH_GUEST_ARCH=${FLTH_GUEST_ARCH} must be x86_64 or aarch64, and one of another architecture needs FLTH_ACCELERATOR=tcg." >&2; exit 1 ;;
 esac
 
 case "$host" in

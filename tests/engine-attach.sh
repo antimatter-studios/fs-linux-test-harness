@@ -32,7 +32,11 @@ RUNS="$SANDBOX/guest-runs"
 # The guest is up while $SANDBOX/alive exists, and what is asked of it is logged.
 : > "$SANDBOX/alive"
 engine_alive() { [ -f "$SANDBOX/alive" ]; }
-engine_run() { printf '%s\n' "$1" >> "$RUNS"; }
+# A Debian box's vagrant user is 1000.
+engine_run() {
+    printf '%s\n' "$1" >> "$RUNS"
+    case "$1" in *'id -u'*) printf '1000 1000\n' ;; esac
+}
 
 "$FLTH_TEST_QMP_START" ""
 check_eq "$([ -S "$FLTH_VM_QMP" ] && echo up)" up "the stand-in QMP listens where the engine looks"
@@ -119,6 +123,23 @@ check_eq "$(( SECONDS - t0 >= 2 ))" 1 "of about three seconds"
 engine_attach_tree run-mac "$SANDBOX/tree-one" 2>/dev/null
 check_contains "$(cat "$(engine_vagrant_vfs_socket run-mac).args")" "--thread-pool-size=1" \
     "a macOS daemon has one thread: the port switches credentials process-wide"
+check_eq "$(engine_vagrant_guest_ids)" "1001 1001" "the Mac's own box has its vagrant user at 1001"
+
+# --- macOS under TCG: the Debian cloud box, as on Linux ------------------------------
+
+export FLTH_ACCELERATOR=tcg
+rm -f "$FLTH_MACHINE_DIR/guest-ids"
+: > "$RUNS"
+check_eq "$(engine_vagrant_guest_ids)" "1000 1000" "under TCG a Mac asks the Debian box for its vagrant user's ids"
+check_eq "$(engine_vagrant_guest_ids)" "1000 1000" "  and keeps the answer"
+check_eq "$(grep -c 'id -u' "$RUNS" | tr -d ' ')" 1 "  asking only once"
+engine_attach_tree run-tcg "$SANDBOX/tree-two" 2>/dev/null
+: > "$QMP_LOG"
+: > "$RUNS"
+engine_detach_tree run-tcg 2>/dev/null
+check_lacks "$(cat "$RUNS")" "/sys/bus/pci/slots" "and its slot is not powered off by the guest"
+check_eq "$(qmp_lines device_del)" 1 "  but removed with device_del, as on a Linux host"
+unset FLTH_ACCELERATOR
 unset FLTH_TEST_UNAME
 
 # --- a guest that has gone ----------------------------------------------------------

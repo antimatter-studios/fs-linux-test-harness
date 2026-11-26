@@ -146,27 +146,41 @@ FLTH_SHARED_DEADLINE_MINUTES=480
 # THE GUEST SEES NO HOST DIRECTORY OF ITS OWN (#222). Each run attaches its own
 # tree to the running guest (lib/engine.sh, engine_attach_tree), so a tree anywhere
 # on the host can be tested, and there is no root to set or derive.
-# shellcheck disable=SC2034  # read by the scripts that source this
+
 # THE GUEST'S ARCHITECTURE: the host's, unless FLTH_GUEST_ARCH names another.
-# Only x86_64 Linux under TCG emulates another, an aarch64 guest, which is how
-# an x86_64 runner without KVM tests an ARM64 build.
+# Under TCG (FLTH_ACCELERATOR=tcg) any supported host emulates either one, which
+# is how a runner without KVM tests a build for the other architecture. With a
+# hardware accelerator the guest is always the host's.
 flth_guest_arch() {
     local host
     host="$(uname -m)"
     case "$host" in arm64) host=aarch64 ;; esac
     case "${FLTH_GUEST_ARCH:-$host}" in
         "$host") printf '%s\n' "$host" ;;
-        aarch64)
-            if [ "$(uname -s)" = Linux ] && [ "$host" = x86_64 ] && [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
-                printf 'aarch64\n'
+        x86_64 | aarch64)
+            if [ "${FLTH_ACCELERATOR:-}" = tcg ]; then
+                printf '%s\n' "$FLTH_GUEST_ARCH"
             else
-                echo "vm: FLTH_GUEST_ARCH=aarch64 on this $(uname -s) $host host needs FLTH_ACCELERATOR=tcg on x86_64 Linux." >&2
+                echo "vm: FLTH_GUEST_ARCH=$FLTH_GUEST_ARCH on this $(uname -s) $host host needs FLTH_ACCELERATOR=tcg." >&2
                 return 1
             fi ;;
         *) echo "vm: FLTH_GUEST_ARCH must be x86_64 or aarch64, got ${FLTH_GUEST_ARCH}." >&2; return 1 ;;
     esac
 }
 
+# THE GUEST'S BOX: rpi for the Mac's own box, which only an Apple Silicon host
+# boots and only under HVF, and debian for the Debian cloud box every other guest
+# boots, TCG on a Mac included. What differs between them is the box's, not the
+# host's: the vagrant user's id, how a slot is powered off.
+flth_guest_box() {
+    if [ "$(uname -s)" = Darwin ] && [ "${FLTH_ACCELERATOR:-}" != tcg ]; then
+        printf 'rpi\n'
+    else
+        printf 'debian\n'
+    fi
+}
+
+# shellcheck disable=SC2034  # read by the scripts that source this
 flth_shared_load() {
     # Where the /cache a consumer asks for is: a directory of the guest's in a run,
     # not a disk of the machine's.
