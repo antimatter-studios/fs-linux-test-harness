@@ -313,9 +313,10 @@ unset FLTH_APT_RETRY_WAIT
 export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
 
 # ci-setup-linux.sh calls apt-get only through the bounded call: the
-# package index and QEMU, then HashiCorp's index and Vagrant.
+# package index and QEMU (one of two installs, for the guest's architecture),
+# then HashiCorp's index and Vagrant.
 direct="$(grep -nE '(^|[^-_[:alnum:]])apt-get ' "$SETUP" | grep -vE '^[0-9]+: *#' || true)"
 check_eq "$direct" "" "ci-setup-linux.sh runs no apt-get of its own"
-check_eq "$(grep -cE '^ *flth_apt ' "$SETUP" | tr -d ' ')" 4 "ci-setup-linux.sh bounds all four of its apt-get calls"
+check_eq "$(grep -cE '^ *flth_apt ' "$SETUP" | tr -d ' ')" 5 "ci-setup-linux.sh bounds all five of its apt-get calls"
 
 finish ci-setup-apt
