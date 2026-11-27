@@ -59,6 +59,13 @@ if [ -f "$SANDBOX/incomplete-mirrors" ] && [ -f "\$FLTH_APT_SOURCES" ]; then
         esac
     done < "$SANDBOX/incomplete-mirrors"
 fi
+# \$SANDBOX/update-says is what an update prints, and \$SANDBOX/update-status the
+# status it then exits with: a source that refuses its index (#307).
+if [ -f "$SANDBOX/update-says" ]; then
+    case " \$* " in
+        *" update "*) cat "$SANDBOX/update-says"; exit "\$(cat "$SANDBOX/update-status")" ;;
+    esac
+fi
 [ -f "$SANDBOX/hang" ] && exec sleep 30
 if [ -f "$SANDBOX/hang-once" ]; then rm -f "$SANDBOX/hang-once"; exec sleep 30; fi
 if [ -f "$SANDBOX/fail" ]; then echo "E: the stub mirror refused" >&2; exit 100; fi
@@ -310,6 +317,76 @@ check_contains "$out" "waiting 2 s before attempt 3 of 3" "and the third waits l
 check_eq "$(grep -c '^apt-get .* update' <<<"$calls" | tr -d ' ')" 2 "each retry fetches the index again"
 check_contains "$out" "failed (exit 100) in 3 attempts; the index came from $SANDBOX/no-mirror.sources" "the failure names the sources the index came from"
 unset FLTH_APT_RETRY_WAIT
+export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
+
+# A SOURCE THE HARNESS INSTALLS NOTHING FROM DOES NOT FAIL THE SETUP (#307). A
+# hosted runner's packages.microsoft.com answered 403, apt-get update exited 100
+# on every attempt, and no mirror switch moves a third party's source. The update
+# fetched every other index, so the call is done and says what it ignored. A
+# failure of an Ubuntu or HashiCorp index, or an error that names no source, still
+# fails.
+printf '%s\n' 'Types: deb' 'URIs: http://azure.archive.ubuntu.com/ubuntu/' 'Suites: noble' 'Components: main' > "$SANDBOX/third.sources"
+export FLTH_APT_SOURCES="$SANDBOX/third.sources"
+export FLTH_APT_MIRRORS="http://mirror-two.example/ubuntu/" FLTH_APT_RETRY_WAIT=0
+microsoft="https://packages.microsoft.com/ubuntu/24.04/prod"
+# refused <url>: what apt-get update prints for a source that answers 403.
+refused() {
+    printf 'E: Failed to fetch %s/dists/noble/InRelease  403  Forbidden [IP: 192.0.2.1 443]\n' "$1"
+    printf "E: The repository '%s noble InRelease' is no longer signed.\n" "$1"
+    printf 'N: Updating from such a repository cannot be done securely, and is therefore disabled by default.\n'
+}
+# update_says <status>: every update prints stdin and exits <status>.
+update_says() { echo "$1" > "$SANDBOX/update-status"; cat > "$SANDBOX/update-says"; }
+updates() { grep -c '^apt-get .* update' <<<"$calls" | tr -d ' '; }
+
+update_says 100 < <(refused "$microsoft")
+run_apt "the package index" update -qq
+check_eq "$rc" 0 "an update refused only by a source the harness installs nothing from succeeds"
+check_contains "$out" "ignoring a source the harness installs nothing from: $microsoft" "naming the source it ignored"
+check_eq "$(updates)" 1 "and is not tried again"
+check_contains "$(cat "$FLTH_APT_SOURCES")" "URIs: http://azure.archive.ubuntu.com/ubuntu/" "and leaves the Ubuntu mirror alone"
+run_apt "QEMU" install -y -qq qemu-system-x86 qemu-utils
+check_eq "$rc" 0 "and QEMU installs after it"
+
+update_says 0 < <(printf '%s\n' "W: Failed to fetch $microsoft/dists/noble/InRelease  503  Service Unavailable" \
+    'W: Some index files failed to download. They have been ignored, or old ones used instead.')
+run_apt "the package index" update -qq
+check_eq "$rc" 0 "an update that only warns about such a source succeeds"
+check_eq "$(updates)" 1 "at the first attempt"
+
+for needed in http://azure.archive.ubuntu.com/ubuntu http://security.ubuntu.com/ubuntu \
+    https://apt.releases.hashicorp.com mirror+file:/etc/apt/apt-mirrors.txt http://mirror-two.example/ubuntu; do
+    update_says 100 < <(refused "$needed")
+    run_apt "the package index" update -qq
+    check_eq "$rc" 100 "a refused index from $needed fails"
+    check_contains "$out" "ci-setup-linux: apt could not fetch: $needed" "and the failure names $needed"
+done
+
+update_says 100 < <(refused "$microsoft"; refused https://apt.releases.hashicorp.com)
+run_apt "HashiCorp's package index" update -qq
+check_eq "$rc" 100 "a HashiCorp failure beside a third party's still fails"
+check_contains "$out" "ci-setup-linux: apt could not fetch: https://apt.releases.hashicorp.com" "naming HashiCorp's index"
+check_lacks "$out" "ignoring a source" "and ignores nothing"
+
+update_says 100 < <(refused "$microsoft"; echo 'E: Could not get lock /var/lib/apt/lists/lock')
+run_apt "the package index" update -qq
+check_eq "$rc" 100 "an error that names no source still fails beside a third party's refusal"
+
+update_says 100 < <(echo 'W: GPG error: http://security.ubuntu.com/ubuntu noble-security InRelease: the signatures were invalid'
+    refused "$microsoft")
+run_apt "the package index" update -qq
+check_eq "$rc" 100 "an Ubuntu signature error beside a third party's refusal still fails"
+
+# The update a mirror switch makes before it installs ignores such a source too.
+# The stalled mirror is matched first, so only the next mirror's update says this.
+update_says 100 < <(refused "$microsoft")
+echo "http://azure.archive.ubuntu.com/ubuntu/" > "$SANDBOX/stalled-mirrors"
+export FLTH_APT_TIMEOUT=2
+run_apt "QEMU" install -y -qq qemu-utils
+check_eq "$rc" 0 "an install after a mirror switch ignores such a source in the new index fetch"
+check_contains "$out" "ignoring a source the harness installs nothing from: $microsoft" "saying so"
+rm -f "$SANDBOX/update-says" "$SANDBOX/update-status" "$SANDBOX/stalled-mirrors"
+unset FLTH_APT_MIRRORS FLTH_APT_RETRY_WAIT FLTH_APT_TIMEOUT
 export FLTH_APT_SOURCES="$SANDBOX/no-such.sources"
 
 # ci-setup-linux.sh calls apt-get only through the bounded call: the
