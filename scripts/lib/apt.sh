@@ -36,7 +36,15 @@
 #     install from those lists finds none of the packages it was asked for, on
 #     every retry, because each reuses them. So an update that says so is treated
 #     as a stall, and an install first asks apt-cache for a candidate for each
-#     package: one with none fetches the next mirror's index before it installs.
+#     package: one with none fetches the next mirror's index before it installs;
+#   - ignores a source nothing is installed from (#307). A hosted runner's
+#     image configures third parties' sources, and one answering 403 failed
+#     every attempt, since no mirror switch moves it. An update whose errors all
+#     name such sources is done, and says which it ignored. The Ubuntu archives
+#     and HashiCorp's repository are still required, and so is anything the
+#     files in FLTH_APT_SOURCES or FLTH_APT_MIRRORS name. An error that names
+#     no source still fails. A failure names each required source apt could not
+#     fetch.
 #
 # Environment:
 #   FLTH_APT_SOURCES   the sources files to read and rewrite (default: the
@@ -151,9 +159,118 @@ flth_apt_missing() {
 # An apt-get run whose index files did not all download, from what it printed.
 flth_apt_index_incomplete() { grep -qE 'Some index files failed to download|^(W|E): Failed to fetch' "$1"; }
 
+# The sources an apt-get update complained about, from what it printed: one URL
+# per line, without its /dists/ path or trailing slash. A line `?` stands for an
+# error that names no source. The summary apt prints after a failed fetch, and
+# other warnings, add nothing.
+flth_apt_complaints() {
+    awk -v quote="'" '
+        !/^(E|W): / { next }
+        /Some index files failed to download/ { next }
+        {
+            url = ""
+            if (match($0, /^(E|W): Failed to fetch /)) url = substr($0, RLENGTH + 1)
+            else if (match($0, /^E: The repository /)) { url = substr($0, RLENGTH + 1); sub("^" quote, "", url) }
+            else if (match($0, /^E: Release file for /)) url = substr($0, RLENGTH + 1)
+            else if (match($0, /GPG error: /)) url = substr($0, RSTART + RLENGTH)
+            sub(/[[:space:]].*/, "", url)
+            sub(/\/dists\/.*/, "", url)
+            sub(/\/+$/, "", url)
+            if (url != "") print url
+            else if ($0 ~ /^E: /) print "?"
+        }
+    ' "$1" | awk '!seen[$0]++'
+}
+
+# Every URI this setup needs an index from, beyond the hosts flth_apt_needed
+# knows: what the sources files name, what a mirror list among them names, and
+# the mirrors a switch may move to.
+flth_apt_needed_uris() {
+    local files uri
+    files="$(flth_apt_sources)"
+    {
+        # shellcheck disable=SC2086  # one path per line, none with spaces
+        [ -z "$files" ] || awk '
+            /^[[:space:]]*#/ { next }
+            $1 == "URIs:" { for (i = 2; i <= NF; i++) print $i; next }
+            $1 == "deb" || $1 == "deb-src" {
+                i = 2
+                if ($2 ~ /^\[/) { while (i <= NF && $i !~ /\]$/) i++; i++ }
+                if (i <= NF) print $i
+            }
+        ' $files
+        for uri in ${FLTH_APT_MIRRORS:-http://archive.ubuntu.com/ubuntu/ http://mirrors.edge.kernel.org/ubuntu/}; do
+            printf '%s\n' "$uri"
+        done
+    } | while IFS= read -r uri; do
+        printf '%s\n' "$uri"
+        case "$uri" in
+            mirror+file:*) awk 'NF && $1 !~ /^#/ { print $1 }' "${uri#mirror+file:}" 2>/dev/null || true ;;
+        esac
+    done
+}
+
+# Whether <url> is a source something is installed from: an Ubuntu archive,
+# HashiCorp's repository, a mirror list, or one of <uris> (one per line).
+flth_apt_needed() {
+    local url="$1" uri host
+    case "$url" in mirror+file:* | mirror:*) return 0 ;; esac
+    host="${url#*://}"
+    host="${host%%/*}"
+    case "$host" in ubuntu.com | *.ubuntu.com | apt.releases.hashicorp.com) return 0 ;; esac
+    while IFS= read -r uri; do
+        while [ "${uri%/}" != "$uri" ]; do uri="${uri%/}"; done
+        [ -n "$uri" ] || continue
+        case "$url/" in "$uri"/*) return 0 ;; esac
+    done <<< "$2"
+    return 1
+}
+
+# The required sources <log> complains about, space-separated.
+flth_apt_needed_failures() {
+    local url uris failed=""
+    uris="$(flth_apt_needed_uris)"
+    while IFS= read -r url; do
+        case "$url" in "" | "?") continue ;; esac
+        if flth_apt_needed "$url" "$uris"; then failed="${failed:+$failed }$url"; fi
+    done < <(flth_apt_complaints "$1")
+    printf '%s\n' "$failed"
+}
+
+# Whether every complaint in an update's <log> names a source nothing is
+# installed from. Prints those sources, space-separated, when so.
+flth_apt_only_unneeded() {
+    local url uris ignored=""
+    uris="$(flth_apt_needed_uris)"
+    while IFS= read -r url; do
+        case "$url" in "") continue ;; "?") return 1 ;; esac
+        if flth_apt_needed "$url" "$uris"; then return 1; fi
+        ignored="${ignored:+$ignored }$url"
+    done < <(flth_apt_complaints "$1")
+    [ -n "$ignored" ] || return 1
+    printf '%s\n' "$ignored"
+}
+
+# Judge the update <what> made, from flth_apt's own `rc` and `log`: one that only
+# unneeded sources failed becomes done, and one that did not download every index
+# becomes `incomplete`. A status other than apt-get's own 0 or 100, such as a
+# stall's, is left alone.
+flth_apt_judge_update() {
+    local ignored
+    case "$rc" in 0 | 100) ;; *) return 0 ;; esac
+    if ignored="$(flth_apt_only_unneeded "$log")"; then
+        echo "apt: $1: ignoring a source the harness installs nothing from: $ignored"
+        rc=0
+    elif [ "$rc" -eq 0 ] && flth_apt_index_incomplete "$log"; then
+        rc=100
+        incomplete=1
+    fi
+    return 0
+}
+
 flth_apt() {
     local what="$1" limit="${FLTH_APT_TIMEOUT:-240}" attempts="${FLTH_APT_ATTEMPTS:-3}"
-    local attempt=1 start rc log mirror name="" next tried="" named="" refresh="" missing="" incomplete="" refresh_done="" wait from
+    local attempt=1 start rc log mirror name="" next tried="" named="" refresh="" missing="" incomplete="" refresh_done="" wait from failed
     shift
     log="$(mktemp)" || return 1
     mirror="$(flth_apt_mirror)"
@@ -177,10 +294,7 @@ flth_apt() {
             refresh=""
             refresh_done=1
         fi
-        if [ "$rc" -eq 0 ] && [ -n "$refresh_done" ] && flth_apt_index_incomplete "$log"; then
-            rc=100
-            incomplete=1
-        fi
+        [ -z "$refresh_done" ] || flth_apt_judge_update "$what"
         if [ "$rc" -eq 0 ] && [ "$1" = install ]; then
             missing="$(flth_apt_missing "$@")"
             if [ -n "$missing" ]; then
@@ -193,10 +307,7 @@ flth_apt() {
             timeout --kill-after=30 "$limit" \
                 sudo DEBIAN_FRONTEND=noninteractive apt-get "${FLTH_APT_OPTIONS[@]}" "$@" >> "$log" 2>&1 ||
             rc=$?
-        if [ "$rc" -eq 0 ] && [ "$1" = update ] && flth_apt_index_incomplete "$log"; then
-            rc=100
-            incomplete=1
-        fi
+        [ "$1" != update ] || flth_apt_judge_update "$what"
         if [ "$rc" -eq 0 ]; then
             echo "apt: $what: done in $((SECONDS - start)) s"
             rm -f "$log"
@@ -237,6 +348,8 @@ flth_apt() {
     done
     echo "ci-setup-linux: the last lines apt-get printed for $what:" >&2
     tail -n 20 "$log" >&2
+    failed="$(flth_apt_needed_failures "$log")"
+    [ -z "$failed" ] || echo "ci-setup-linux: apt could not fetch: $failed" >&2
     rm -f "$log"
     case "$rc" in
         124 | 137)
