@@ -116,12 +116,16 @@ if [ ! -e /dev/kvm ]; then
     echo "ci-setup-linux: this runner has no /dev/kvm; the VM needs KVM." >&2
     exit 1
 fi
-sudo mkdir -p /etc/udev/rules
-echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
-    sudo tee /etc/udev/rules/99-kvm4all.rules >/dev/null
-sudo udevadm control --reload-rules
-sudo udevadm trigger --name-match=kvm
-sudo chmod 0666 /dev/kvm
+# A runner pod that already gets a read-write /dev/kvm (our self-hosted runners) has no udevd, a
+# read-only /sys and no right to chmod device nodes, and needs none of it.
+if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+    sudo mkdir -p /etc/udev/rules
+    echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+        sudo tee /etc/udev/rules/99-kvm4all.rules >/dev/null
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger --name-match=kvm
+    sudo chmod 0666 /dev/kvm
+fi
 ls -l /dev/kvm
 if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
     echo "ci-setup-linux: /dev/kvm is not read-write for $(id -un)" >&2
